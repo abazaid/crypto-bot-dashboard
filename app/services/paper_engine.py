@@ -612,7 +612,16 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
         ),
         symbol,
     )
-    _notify(db, "TRADE", f"Paper trade opened at {entry_price:.6f} qty={qty:.6f}", symbol, telegram=True)
+    _notify(
+        db,
+        "TRADE",
+        (
+            f"Paper trade opened entry={entry_price:.6f} qty={qty:.6f} "
+            f"entry_usdt={allocation:.2f} tp={trade.tp_price:.6f} sl={trade.sl_price:.6f}"
+        ),
+        symbol,
+        telegram=True,
+    )
 
 
 def _manage_open_positions(db: Session) -> None:
@@ -639,13 +648,23 @@ def _manage_open_positions(db: Session) -> None:
             proceeds = t.quantity * price
             exit_fee = proceeds * fee_rate
             pnl_value = (price - t.entry_price) * t.quantity - exit_fee
+            pnl_pct = ((price - t.entry_price) / t.entry_price) * 100 if t.entry_price > 0 else 0.0
             cash += proceeds - exit_fee
             t.status = "closed"
             t.exit_price = price
             t.exit_time = datetime.utcnow()
             t.pnl = pnl_value
             t.exit_reason = reason
-            _notify(db, "TRADE", f"Paper trade closed ({reason}) pnl={pnl_value:.4f}", t.symbol, telegram=True)
+            _notify(
+                db,
+                "TRADE",
+                (
+                    f"Paper trade closed ({reason}) exit={price:.6f} "
+                    f"pnl_pct={pnl_pct:+.2f}% pnl_usdt={pnl_value:+.4f}"
+                ),
+                t.symbol,
+                telegram=True,
+            )
             continue
 
         if not t.highest_price or price > t.highest_price:
@@ -673,13 +692,23 @@ def _manage_open_positions(db: Session) -> None:
         exit_fee = proceeds * fee_rate
         entry_fee = (t.entry_price * t.quantity) * fee_rate
         pnl_value = (price - t.entry_price) * t.quantity - entry_fee - exit_fee
+        pnl_pct = ((price - t.entry_price) / t.entry_price) * 100 if t.entry_price > 0 else 0.0
         cash += proceeds - exit_fee
         t.status = "closed"
         t.exit_price = price
         t.exit_time = datetime.utcnow()
         t.pnl = pnl_value
         t.exit_reason = reason
-        _notify(db, "TRADE", f"Paper trade closed ({reason}) pnl={pnl_value:.4f}", t.symbol, telegram=True)
+        _notify(
+            db,
+            "TRADE",
+            (
+                f"Paper trade closed ({reason}) exit={price:.6f} "
+                f"pnl_pct={pnl_pct:+.2f}% pnl_usdt={pnl_value:+.4f}"
+            ),
+            t.symbol,
+            telegram=True,
+        )
 
     _update_cash_balance(db, cash)
 

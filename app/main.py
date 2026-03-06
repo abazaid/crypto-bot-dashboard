@@ -358,6 +358,32 @@ async def run_now() -> RedirectResponse:
     return RedirectResponse("/logs", status_code=303)
 
 
+@app.get("/settings/reset-paper")
+async def reset_paper_account() -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        db.query(Trade).delete()
+        db.query(SymbolSnapshot).delete()
+        updates = {
+            "paper_cash_balance": str(settings.paper_start_balance),
+            "daily_start_equity": str(settings.paper_start_balance),
+            "daily_anchor_date": "",
+            "bot_paused": "false",
+            "trading_mode": "paper",
+        }
+        for key, value in updates.items():
+            row = db.query(Setting).filter(Setting.key == key).first()
+            if row:
+                row.value = value
+            else:
+                db.add(Setting(key=key, value=value))
+        db.add(LogEntry(event_type="RESET", symbol="-", message=f"Paper account reset to {settings.paper_start_balance:.2f} USDT"))
+        db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/overview", status_code=303)
+
+
 @app.get("/settings/test-telegram")
 async def test_telegram() -> RedirectResponse:
     db = SessionLocal()
