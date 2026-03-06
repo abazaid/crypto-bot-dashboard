@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.models import LogEntry, Setting, SymbolSnapshot, Trade
 from app.services.binance_public import get_24h_tickers, get_book_tickers, get_exchange_info, get_klines, get_prices
 from app.services.strategy import (
+    atr_from_klines,
     bb_width,
     percent_change,
     ema,
@@ -19,9 +20,21 @@ from app.services.strategy import (
 )
 from app.services.telegram_alerts import send_telegram_message
 
-EXCLUDED_SYMBOLS = {"USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT", "USDPUSDT", "USD1USDT", "DAIUSDT"}
-SAFETY_MIN_24H_VOLUME = 20_000_000.0
-SAFETY_MAX_SPREAD_PCT = 0.15
+EXCLUDED_SYMBOLS = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "DAIUSDT"}
+SAFETY_MIN_24H_VOLUME = 10_000_000.0
+SAFETY_MAX_SPREAD_PCT = 0.20
+SAFETY_MIN_ATR_RATIO = 0.015
+KSA_OFFSET = timedelta(hours=3)
+
+
+def _ksa_now() -> datetime:
+    return datetime.utcnow() + KSA_OFFSET
+
+
+def _ksa_day_start_utc() -> datetime:
+    now_ksa = _ksa_now()
+    day_start_ksa = now_ksa.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start_ksa - KSA_OFFSET
 
 
 def _log(db: Session, event_type: str, message: str, symbol: str | None = None) -> None:
@@ -95,15 +108,17 @@ def init_defaults(db: Session) -> None:
         "fee_rate": str(settings.fee_rate),
         "take_profit_pct": str(settings.take_profit_pct),
         "stop_loss_pct": str(settings.stop_loss_pct),
-        "trailing_stop_pct": "0.008",
+        "trailing_stop_pct": "0.01",
         "risk_per_trade_pct": "1.0",
+        "max_entry_usdt": "0",
         "max_symbols": str(settings.max_symbols),
         "max_open_trades": str(settings.max_open_trades),
         "min_quote_volume": str(settings.min_quote_volume),
         "max_spread_pct": str(settings.max_spread_pct),
-        "time_stop_minutes": "180",
+        "time_stop_minutes": str(settings.time_stop_minutes),
         "cooldown_minutes": "30",
         "daily_loss_limit_pct": "3.0",
+        "max_trades_per_day": "10",
         "btc_filter_enabled": "true",
         "daily_anchor_date": "",
         "daily_start_equity": str(settings.paper_start_balance),
@@ -115,6 +130,26 @@ def init_defaults(db: Session) -> None:
     }
     for key, default in defaults.items():
         _get_setting(db, key, default)
+
+    # Upgrade old defaults to enhanced profile only if values are still legacy.
+    upgrades = {
+        "take_profit_pct": {"0.02", "0.0200000000000000"},
+        "trailing_stop_pct": {"0.008", "0.0080000000000000"},
+        "time_stop_minutes": {"180", "180.0"},
+        "min_quote_volume": {"20000000", "20000000.0"},
+        "max_spread_pct": {"0.15", "0.1500000000000000"},
+    }
+    target = {
+        "take_profit_pct": str(settings.take_profit_pct),
+        "trailing_stop_pct": "0.01",
+        "time_stop_minutes": str(settings.time_stop_minutes),
+        "min_quote_volume": str(settings.min_quote_volume),
+        "max_spread_pct": str(settings.max_spread_pct),
+    }
+    for key, legacy_values in upgrades.items():
+        row = db.query(Setting).filter(Setting.key == key).first()
+        if row and row.value in legacy_values:
+            row.value = target[key]
     db.commit()
 
 
@@ -159,7 +194,7 @@ def _reconcile_cash_if_needed(db: Session) -> None:
 
 
 def _daily_loss_triggered(db: Session) -> bool:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _ksa_now().strftime("%Y-%m-%d")
     anchor = _get_setting(db, "daily_anchor_date", "")
     if anchor != today:
         _set_setting(db, "daily_anchor_date", today)
@@ -180,7 +215,7 @@ def _daily_loss_triggered(db: Session) -> bool:
 
 
 def _btc_market_blocked() -> bool:
-    klines = get_klines("BTCUSDT", "1h", 220)
+    klines = get_klines("BTCUSDT", "4h", 220)
     closes = [float(k[4]) for k in klines]
     return ema(closes[-160:], 50) < ema(closes[-210:], 200)
 
@@ -289,6 +324,11 @@ def _dynamic_rank_symbols(db: Session, safety_symbols: List[dict]) -> List[dict]
             closes_15m = [float(k[4]) for k in k15]
             if len(quote_volumes_5m) < 50 or len(closes_15m) < 10:
                 continue
+            atr14 = atr_from_klines(k15, 14)
+            last_price = max(float(item["last_price"]), 1e-9)
+            atr_ratio = atr14 / last_price
+            if atr_ratio < SAFETY_MIN_ATR_RATIO:
+                continue
 
             volume_1h = sum(quote_volumes_5m[-12:])
             volume_24h = max(item["volume_24h"], 1.0)
@@ -329,6 +369,7 @@ def _dynamic_rank_symbols(db: Session, safety_symbols: List[dict]) -> List[dict]
                     "relative_strength": relative_strength,
                     "short_term_momentum": short_term_momentum,
                     "volatility_expansion": volatility_expansion,
+                    "atr_ratio": atr_ratio,
                     "k5": k5,
                     "k15": k15,
                 }
@@ -359,7 +400,11 @@ def _build_priority_watchlist(db: Session, scanned: List[dict]) -> List[dict]:
             cond_volume = is_volume_accumulation(volumes_15m)
             cond_volatility = is_volatility_expanding(closes_15m)
             cond_rel = relative_strength_ok(closes_15m, btc_closes)
-            momentum = cond_volume and cond_volatility and cond_rel
+            k1h = get_klines(symbol, "1h", 230)
+            closes_1h = [float(k[4]) for k in k1h]
+            ema200_1h = ema(closes_1h[-210:], 200) if len(closes_1h) >= 210 else 0.0
+            cond_price_above_ema200_1h = item["last_price"] > ema200_1h if ema200_1h > 0 else False
+            momentum = cond_volume and cond_volatility and cond_rel and cond_price_above_ema200_1h
 
             signal, signal_status, checks = trend_pullback_signal_with_checks(k5, k15)
             trend_status = "Bullish" if signal_status in {"Buy Ready", "Watch"} else "Bearish"
@@ -384,7 +429,9 @@ def _build_priority_watchlist(db: Session, scanned: List[dict]) -> List[dict]:
                         f"vol24h={item['volume_24h']:.0f} "
                         f"ratio1h24h={item.get('vol_ratio_1h_24h', 0):.5f} "
                         f"volExp={item.get('recent_volume_expansion', 0):.3f} "
-                        f"rs={item.get('relative_strength', 0):+.3f}"
+                        f"rs={item.get('relative_strength', 0):+.3f} "
+                        f"atr={item.get('atr_ratio', 0)*100:.2f}% "
+                        f"price_above_ema200_1h={cond_price_above_ema200_1h}"
                     ),
                     symbol,
                 )
@@ -393,10 +440,39 @@ def _build_priority_watchlist(db: Session, scanned: List[dict]) -> List[dict]:
                     "ENTRY_DECISION",
                     (
                         f"strategy_ready={signal} reason={checks.get('reason_code')} trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
+                        f"price_above_ema50_15m={checks.get('price_above_ema50_15m_ok')} "
+                        f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)} "
                         f"rsi_ok={checks.get('rsi_ok')} rsi={checks.get('rsi_value', 0):.2f} "
                         f"volume_spike={checks.get('volume_spike_ok')} vol_now={checks.get('volume_now', 0):.2f} "
                         f"vol_avg20={checks.get('volume_avg20', 0):.2f} resistance_ok={checks.get('resistance_ok')} "
                         f"failed={','.join(checks.get('failed_checks', [])) if checks.get('failed_checks') else 'none'}"
+                    ),
+                    symbol,
+                )
+            else:
+                scanner_reasons = []
+                if not cond_volume:
+                    scanner_reasons.append("volume_accumulation_failed")
+                if not cond_volatility:
+                    scanner_reasons.append("volatility_expansion_failed")
+                if not cond_rel:
+                    scanner_reasons.append("relative_strength_failed")
+                if not cond_price_above_ema200_1h:
+                    scanner_reasons.append("price_below_ema200_1h")
+                if signal_status == "Blocked":
+                    scanner_reasons.append("trend_blocked")
+                reason_text = ",".join(scanner_reasons) if scanner_reasons else "scanner_filter_failed"
+                _notify(
+                    db,
+                    "ENTRY_DECISION",
+                    (
+                        f"rejected reason={reason_text} "
+                        f"signal_status={signal_status} "
+                        f"trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
+                        f"price_above_ema50_15m={checks.get('price_above_ema50_15m_ok')} "
+                        f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)} "
+                        f"rsi_ok={checks.get('rsi_ok')} volume_spike={checks.get('volume_spike_ok')} "
+                        f"resistance_ok={checks.get('resistance_ok')}"
                     ),
                     symbol,
                 )
@@ -450,6 +526,17 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
     if _in_cooldown(db, symbol, cooldown):
         _notify(db, "ENTRY_DECISION", f"rejected reason=cooldown({cooldown}m)", symbol)
         return
+    today_start = _ksa_day_start_utc()
+    max_trades_per_day = _get_int(db, "max_trades_per_day", 10)
+    trades_today = db.query(Trade).filter(Trade.entry_time >= today_start).count()
+    if trades_today >= max_trades_per_day:
+        _notify(
+            db,
+            "ENTRY_DECISION",
+            f"rejected reason=max_trades_per_day ({trades_today}/{max_trades_per_day})",
+            symbol,
+        )
+        return
 
     cash = _cash_balance(db)
     if cash <= 25:
@@ -460,6 +547,7 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
     tp_pct = _get_float(db, "take_profit_pct", settings.take_profit_pct)
     sl_pct = _get_float(db, "stop_loss_pct", settings.stop_loss_pct)
     risk_pct = _get_float(db, "risk_per_trade_pct", 1.0) / 100.0
+    max_entry_usdt = _get_float(db, "max_entry_usdt", 0.0)
     market_price = float(item["last_price"])
     entry_price = _apply_slippage(db, market_price, "buy")
     sl_price = entry_price * (1 - sl_pct)
@@ -467,6 +555,8 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
     risk_capital = _compute_equity(db) * risk_pct
     qty = risk_capital / risk_per_unit
     max_affordable_qty = (cash * 0.95) / entry_price
+    if max_entry_usdt > 0:
+        max_affordable_qty = min(max_affordable_qty, max_entry_usdt / entry_price)
     qty = min(qty, max_affordable_qty)
     symbol_filters = filters_map.get(symbol, {"min_qty": 0.0, "step_size": 0.0, "min_notional": 10.0})
     qty = _round_step_down(qty, symbol_filters.get("step_size", 0.0))
@@ -479,6 +569,14 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
 
     allocation = qty * entry_price
     min_notional = max(10.0, symbol_filters.get("min_notional", 10.0))
+    if max_entry_usdt > 0 and max_entry_usdt < min_notional:
+        _notify(
+            db,
+            "ENTRY_DECISION",
+            f"rejected reason=max_entry_usdt_too_low ({max_entry_usdt:.4f}<{min_notional:.4f})",
+            symbol,
+        )
+        return
     if allocation < min_notional:
         _notify(db, "ENTRY_DECISION", f"rejected reason=min_notional ({allocation:.4f}<{min_notional:.4f})", symbol)
         return
@@ -501,11 +599,15 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
     )
     db.add(trade)
     _update_cash_balance(db, new_cash)
+    checks = item.get("entry_checks", {})
     _notify(
         db,
         "ENTRY_DECISION",
         (
-            f"accepted reason=all_entry_checks_passed score={item.get('scanner_score', 0):.4f} "
+            f"accepted reason={checks.get('reason_code', 'score_based_accept')} "
+            f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)} "
+            f"scanner_score={item.get('scanner_score', 0):.4f} "
+            f"entry_usdt={allocation:.4f} "
             f"qty={qty:.6f} entry_price={entry_price:.6f} risk_pct={risk_pct*100:.2f}"
         ),
         symbol,
@@ -524,8 +626,8 @@ def _manage_open_positions(db: Session) -> None:
         return
 
     fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
-    time_stop_minutes = _get_int(db, "time_stop_minutes", 180)
-    trailing_stop_pct = _get_float(db, "trailing_stop_pct", 0.008)
+    time_stop_minutes = _get_int(db, "time_stop_minutes", settings.time_stop_minutes)
+    trailing_stop_pct = _get_float(db, "trailing_stop_pct", 0.01)
     cash = _cash_balance(db)
 
     for t in open_trades:
@@ -591,11 +693,13 @@ def run_cycle(db: Session) -> None:
 
     _manage_open_positions(db)
     if _daily_loss_triggered(db):
+        _notify(db, "ENTRY_DECISION", "rejected reason=daily_loss_limit_reached", "-")
         db.commit()
         return
 
     if _mode_is_paused(db):
         _notify(db, "PAUSE", "Bot paused. Skipping new entries.", telegram=True)
+        _notify(db, "ENTRY_DECISION", "rejected reason=bot_paused", "-")
         db.commit()
         return
 
@@ -603,7 +707,7 @@ def run_cycle(db: Session) -> None:
     try:
         btc_filter_enabled = _get_bool(db, "btc_filter_enabled", True)
         market_blocked = _btc_market_blocked() if btc_filter_enabled else False
-        _notify(db, "REGIME", f"BTC filter={'on' if btc_filter_enabled else 'off'} blocked={market_blocked}")
+        _notify(db, "REGIME", f"BTC filter={'on' if btc_filter_enabled else 'off'} timeframe=4h blocked={market_blocked}")
         safety_symbols = _scan_symbols(db)
         ranked_symbols = _dynamic_rank_symbols(db, safety_symbols)
         filters_map = _symbol_filters_map([r["symbol"] for r in ranked_symbols])
@@ -616,7 +720,8 @@ def run_cycle(db: Session) -> None:
                     f"vol24h={ranked['volume_24h']:.0f} "
                     f"ratio1h24h={ranked.get('vol_ratio_1h_24h', 0):.5f} "
                     f"volExp={ranked.get('recent_volume_expansion', 0):.3f} "
-                    f"rs={ranked.get('relative_strength', 0):+.3f}"
+                    f"rs={ranked.get('relative_strength', 0):+.3f} "
+                    f"atr={ranked.get('atr_ratio', 0)*100:.2f}%"
                 ),
                 ranked["symbol"],
             )
@@ -627,7 +732,9 @@ def run_cycle(db: Session) -> None:
         return
 
     if market_blocked:
-        _notify(db, "RISK", "BTC regime filter active (EMA50<EMA200). No new trades.")
+        _notify(db, "RISK", "BTC regime filter active on 4h (EMA50<EMA200). No new trades.")
+        for item in watchlist:
+            _notify(db, "ENTRY_DECISION", "rejected reason=btc_regime_blocked_4h", item["symbol"])
         db.commit()
         return
 
@@ -641,6 +748,8 @@ def run_cycle(db: Session) -> None:
                 "ENTRY_DECISION",
                 (
                     f"rejected reason={checks.get('reason_code', 'strategy_not_ready')} trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
+                    f"price_above_ema50_15m={checks.get('price_above_ema50_15m_ok')} "
+                    f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)} "
                     f"rsi_ok={checks.get('rsi_ok')} volume_spike={checks.get('volume_spike_ok')} resistance_ok={checks.get('resistance_ok')}"
                 ),
                 item["symbol"],
@@ -653,7 +762,7 @@ def run_cycle(db: Session) -> None:
 def portfolio_snapshot(db: Session) -> dict:
     cash = _cash_balance(db)
     open_trades = db.query(Trade).filter(Trade.status == "open").all()
-    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = _ksa_day_start_utc()
     week_start = day_start - timedelta(days=7)
     closed_today = db.query(Trade).filter(Trade.status == "closed", Trade.exit_time >= day_start).all()
     closed_week = db.query(Trade).filter(Trade.status == "closed", Trade.exit_time >= week_start).all()

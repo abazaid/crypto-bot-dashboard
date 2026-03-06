@@ -53,6 +53,23 @@ def bb_width(values: List[float], length: int = 20, k: float = 2.0) -> float:
     return (upper - lower) / mid
 
 
+def atr_from_klines(klines: List[list], length: int = 14) -> float:
+    if len(klines) < length + 1:
+        return 0.0
+    trs = []
+    prev_close = float(klines[0][4])
+    for k in klines[1:]:
+        high = float(k[2])
+        low = float(k[3])
+        close = float(k[4])
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        trs.append(tr)
+        prev_close = close
+    if len(trs) < length:
+        return 0.0
+    return mean(trs[-length:])
+
+
 def is_volume_accumulation(volumes: List[float]) -> bool:
     if len(volumes) < 60:
         return False
@@ -75,7 +92,7 @@ def relative_strength_ok(coin_closes_15m: List[float], btc_closes_15m: List[floa
     return coin_change > btc_change
 
 
-def resistance_distance_ok(klines_15m: List[list], current_price: float, min_distance_pct: float = 2.0) -> bool:
+def resistance_distance_ok(klines_15m: List[list], current_price: float, min_distance_pct: float = 3.0) -> bool:
     highs = [float(k[2]) for k in klines_15m[-60:]]
     higher_highs = [h for h in highs if h > current_price]
     if not higher_highs:
@@ -98,10 +115,13 @@ def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[li
         return False, "No Data", {
             "data_ok": False,
             "trend_ok": False,
+            "price_above_ema50_15m_ok": False,
             "pullback_ok": False,
             "rsi_ok": False,
             "volume_spike_ok": False,
             "resistance_ok": False,
+            "score_count": 0,
+            "score_threshold": 3,
             "rsi_value": 0.0,
             "volume_now": 0.0,
             "volume_avg20": 0.0,
@@ -119,37 +139,46 @@ def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[li
     avg_volume = mean(volumes_5m[-20:]) if len(volumes_5m) >= 20 else volume
 
     trend_ok = ema50_15m > ema200_15m
-    pullback_ok = abs(price - ema20_5m) / price <= 0.004 or abs(price - ema50_5m) / price <= 0.006
-    rsi_ok = 40 <= rsi_5m <= 55
-    volume_ok = volume > avg_volume * 1.5
-    resistance_ok = resistance_distance_ok(klines_15m, price, 2.0)
+    price_above_ema50_15m_ok = price > ema50_15m
+    pullback_ok = abs(price - ema20_5m) / price <= 0.01 or abs(price - ema50_5m) / price <= 0.01
+    rsi_ok = 35 <= rsi_5m <= 65
+    volume_ok = volume >= avg_volume * 1.3
+    resistance_ok = resistance_distance_ok(klines_15m, price, 1.5)
+    score_checks = {
+        "trend": trend_ok,
+        "pullback": pullback_ok,
+        "rsi": rsi_ok,
+        "volume_spike": volume_ok,
+        "resistance": resistance_ok,
+    }
+    score_passed = [k for k, v in score_checks.items() if v]
+    score_failed = [k for k, v in score_checks.items() if not v]
+    score_count = len(score_passed)
+    score_threshold = 3
     checks = {
         "data_ok": True,
         "trend_ok": trend_ok,
+        "price_above_ema50_15m_ok": price_above_ema50_15m_ok,
         "pullback_ok": pullback_ok,
         "rsi_ok": rsi_ok,
         "volume_spike_ok": volume_ok,
         "resistance_ok": resistance_ok,
+        "score_count": score_count,
+        "score_threshold": score_threshold,
+        "score_passed": score_passed,
+        "score_failed": score_failed,
         "rsi_value": rsi_5m,
         "volume_now": volume,
         "volume_avg20": avg_volume,
     }
-    failed_checks = []
-    if not trend_ok:
-        failed_checks.append("trend")
-    if not pullback_ok:
-        failed_checks.append("pullback")
-    if not rsi_ok:
-        failed_checks.append("rsi")
-    if not volume_ok:
-        failed_checks.append("volume_spike")
-    if not resistance_ok:
-        failed_checks.append("resistance")
+    failed_checks = list(score_failed)
+    if score_count < score_threshold:
+        failed_checks.append(f"score<{score_threshold}")
     checks["failed_checks"] = failed_checks
-    checks["reason_code"] = "all_entry_checks_passed" if not failed_checks else "_".join(failed_checks) + "_failed"
+    checks["reason_code"] = f"score_{score_count}_of_5"
 
-    if trend_ok and pullback_ok and rsi_ok and volume_ok and resistance_ok:
+    if score_count >= score_threshold:
         return True, "Buy Ready", checks
-    if trend_ok:
+    if score_count == score_threshold - 1:
         return False, "Watch", checks
     return False, "Blocked", checks

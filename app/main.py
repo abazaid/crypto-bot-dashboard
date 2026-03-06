@@ -1,6 +1,7 @@
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request
@@ -22,13 +23,26 @@ app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
 templates = Jinja2Templates(directory="app/web/templates")
 scheduler = BackgroundScheduler(timezone="UTC")
 cycle_lock = threading.Lock()
+try:
+    APP_TZ = ZoneInfo(settings.app_timezone)
+    UTC_TZ = ZoneInfo("UTC")
+except Exception:
+    APP_TZ = timezone(timedelta(hours=3), name="AST")
+    UTC_TZ = timezone.utc
 
 
 def _base_context(active_page: str) -> dict:
+    now_local = datetime.utcnow().replace(tzinfo=UTC_TZ).astimezone(APP_TZ)
     return {
         "active_page": active_page,
-        "last_update": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "last_update": now_local.strftime("%Y-%m-%d %H:%M %Z"),
     }
+
+
+def _as_local(dt: datetime | None) -> datetime:
+    if not dt:
+        return datetime.utcnow().replace(tzinfo=UTC_TZ).astimezone(APP_TZ)
+    return dt.replace(tzinfo=UTC_TZ).astimezone(APP_TZ)
 
 
 def _format_age(delta: timedelta) -> str:
@@ -156,6 +170,7 @@ async def trades(request: Request) -> HTMLResponse:
                 {
                     "symbol": t.symbol,
                     "entry": f"{t.entry_price:.6f}",
+                    "entry_usdt": f"{(t.entry_price * t.quantity):.2f} USDT",
                     "current": f"{cur:.6f}",
                     "pnl_pct": pnl_pct,
                     "tp": f"{t.tp_price:.6f}",
@@ -167,8 +182,9 @@ async def trades(request: Request) -> HTMLResponse:
         closed_data = [
             {
                 "symbol": t.symbol,
-                "entry_time": t.entry_time.strftime("%H:%M"),
-                "exit_time": t.exit_time.strftime("%H:%M") if t.exit_time else "-",
+                "entry_time": _as_local(t.entry_time).strftime("%H:%M"),
+                "exit_time": _as_local(t.exit_time).strftime("%H:%M") if t.exit_time else "-",
+                "entry_usdt": f"{(t.entry_price * t.quantity):.2f} USDT",
                 "pnl_pct": ((t.exit_price - t.entry_price) / t.entry_price * 100) if t.exit_price else 0,
                 "exit_reason": t.exit_reason or "-",
             }
@@ -201,9 +217,11 @@ async def settings_page(request: Request) -> HTMLResponse:
                     "cooldown_minutes": int(float(settings_map.get("cooldown_minutes", settings.cooldown_minutes))),
                     "daily_loss_limit_pct": f"{float(settings_map.get('daily_loss_limit_pct', settings.daily_loss_limit_pct)):.2f}%",
                     "btc_filter_enabled": settings_map.get("btc_filter_enabled", "true").lower() == "true",
-                    "time_stop_minutes": int(float(settings_map.get("time_stop_minutes", 180))),
+                    "time_stop_minutes": int(float(settings_map.get("time_stop_minutes", settings.time_stop_minutes))),
+                    "max_trades_per_day": int(float(settings_map.get("max_trades_per_day", 10))),
                     "risk_per_trade_pct": f"{float(settings_map.get('risk_per_trade_pct', 1.0)):.2f}%",
-                    "trailing_stop_pct": f"{float(settings_map.get('trailing_stop_pct', 0.008)) * 100:.2f}%",
+                    "max_entry_usdt": f"{float(settings_map.get('max_entry_usdt', 0.0)):,.2f}",
+                    "trailing_stop_pct": f"{float(settings_map.get('trailing_stop_pct', 0.01)) * 100:.2f}%",
                     "slippage_enabled": settings_map.get("slippage_enabled", "false").lower() == "true",
                     "slippage_bps": f"{float(settings_map.get('slippage_bps', 8.0)):.2f}",
                     "trading_mode": settings_map.get("trading_mode", "paper").capitalize(),
@@ -245,9 +263,11 @@ async def save_settings(request: Request) -> RedirectResponse:
         sl_pct = _to_float(str(form.get("stop_loss", settings.stop_loss_pct * 100)), settings.stop_loss_pct * 100, 0.1) / 100
         cooldown_minutes = _to_int(str(form.get("cooldown_minutes", settings.cooldown_minutes)), settings.cooldown_minutes, 1)
         daily_loss_limit_pct = _to_float(str(form.get("daily_loss_limit_pct", settings.daily_loss_limit_pct)), settings.daily_loss_limit_pct, 0.1)
-        time_stop_minutes = _to_int(str(form.get("time_stop_minutes", 180)), 180, 1)
+        time_stop_minutes = _to_int(str(form.get("time_stop_minutes", settings.time_stop_minutes)), settings.time_stop_minutes, 1)
+        max_trades_per_day = _to_int(str(form.get("max_trades_per_day", "10")), 10, 1)
         risk_per_trade_pct = _to_float(str(form.get("risk_per_trade_pct", "1.0")), 1.0, 0.1)
-        trailing_stop_pct = _to_float(str(form.get("trailing_stop_pct", "0.8")), 0.8, 0.1) / 100
+        max_entry_usdt = _to_float(str(form.get("max_entry_usdt", "0")), 0.0, 0.0)
+        trailing_stop_pct = _to_float(str(form.get("trailing_stop_pct", "1.0")), 1.0, 0.1) / 100
         slippage_enabled = str(form.get("slippage_enabled", "off")).lower() in {"on", "true", "1", "yes"}
         slippage_bps = _to_float(str(form.get("slippage_bps", "8")), 8.0, 0.0)
         btc_filter_enabled = str(form.get("btc_filter_enabled", "off")).lower() in {"on", "true", "1", "yes"}
@@ -264,7 +284,9 @@ async def save_settings(request: Request) -> RedirectResponse:
             "cooldown_minutes": str(cooldown_minutes),
             "daily_loss_limit_pct": str(daily_loss_limit_pct),
             "time_stop_minutes": str(time_stop_minutes),
+            "max_trades_per_day": str(max_trades_per_day),
             "risk_per_trade_pct": str(risk_per_trade_pct),
+            "max_entry_usdt": str(max_entry_usdt),
             "trailing_stop_pct": str(trailing_stop_pct),
             "slippage_enabled": "true" if slippage_enabled else "false",
             "slippage_bps": str(slippage_bps),
@@ -365,7 +387,7 @@ async def logs(request: Request) -> HTMLResponse:
         rows = db.query(LogEntry).order_by(desc(LogEntry.timestamp)).limit(80).all()
         logs_data = [
             {
-                "time": r.timestamp.strftime("%H:%M:%S"),
+                "time": _as_local(r.timestamp).strftime("%H:%M:%S"),
                 "event": r.event_type,
                 "symbol": r.symbol or "-",
                 "message": r.message,

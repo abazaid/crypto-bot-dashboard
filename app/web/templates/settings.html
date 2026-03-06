@@ -49,6 +49,10 @@
       <input type="number" name="time_stop_minutes" value="{{ settings.time_stop_minutes }}">
     </label>
     <label>
+      Max trades per day
+      <input type="number" name="max_trades_per_day" value="{{ settings.max_trades_per_day }}">
+    </label>
+    <label>
       Cooldown (minutes)
       <input type="number" name="cooldown_minutes" value="{{ settings.cooldown_minutes }}">
     </label>
@@ -59,6 +63,10 @@
     <label>
       Risk per trade %
       <input type="text" name="risk_per_trade_pct" value="{{ settings.risk_per_trade_pct }}">
+    </label>
+    <label>
+      Max entry amount (USDT)
+      <input type="text" name="max_entry_usdt" value="{{ settings.max_entry_usdt }}" placeholder="0 = no cap">
     </label>
     <label class="checkbox-row">
       <input type="checkbox" name="slippage_enabled" {% if settings.slippage_enabled %}checked{% endif %}>
