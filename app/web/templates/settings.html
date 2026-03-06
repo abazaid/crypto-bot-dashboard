@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Settings | Crypto Bot{% endblock %}
+{% block page_title %}Strategy Settings{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>Editable Parameters</h2>
+    <span>UI draft</span>
+  </div>
+
+  <form class="settings-grid" method="post" action="/settings/save">
+    <label>
+      Max symbols scanned
+      <input type="number" name="max_symbols_scanned" value="{{ settings.max_symbols_scanned }}">
+    </label>
+    <label>
+      Max open trades
+      <input type="number" name="max_open_trades" value="{{ settings.max_open_trades }}">
+    </label>
+    <label>
+      Minimum volume
+      <input type="text" name="minimum_volume" value="{{ settings.minimum_volume }}">
+    </label>
+    <label>
+      Maximum spread
+      <input type="text" name="maximum_spread" value="{{ settings.maximum_spread }}">
+    </label>
+    <label>
+      Take profit %
+      <input type="text" name="take_profit" value="{{ settings.take_profit }}">
+    </label>
+    <label>
+      Stop loss %
+      <input type="text" name="stop_loss" value="{{ settings.stop_loss }}">
+    </label>
+    <label>
+      Trailing stop %
+      <input type="text" name="trailing_stop_pct" value="{{ settings.trailing_stop_pct }}">
+    </label>
+    <label>
+      Trading mode
+      <select name="trading_mode">
+        <option value="paper" {% if settings.trading_mode == 'Paper' %}selected{% endif %}>Paper</option>
+        <option value="live" {% if settings.trading_mode == 'Live' %}selected{% endif %}>Live</option>
+      </select>
+    </label>
+    <label>
+      Max trade duration (min)
+      <input type="number" name="time_stop_minutes" value="{{ settings.time_stop_minutes }}">
+    </label>
+    <label>
+      Cooldown (minutes)
+      <input type="number" name="cooldown_minutes" value="{{ settings.cooldown_minutes }}">
+    </label>
+    <label>
+      Daily loss limit %
+      <input type="text" name="daily_loss_limit_pct" value="{{ settings.daily_loss_limit_pct }}">
+    </label>
+    <label>
+      Risk per trade %
+      <input type="text" name="risk_per_trade_pct" value="{{ settings.risk_per_trade_pct }}">
+    </label>
+    <label class="checkbox-row">
+      <input type="checkbox" name="slippage_enabled" {% if settings.slippage_enabled %}checked{% endif %}>
+      Enable slippage simulation
+    </label>
+    <label>
+      Slippage (bps)
+      <input type="text" name="slippage_bps" value="{{ settings.slippage_bps }}">
+    </label>
+    <label class="checkbox-row">
+      <input type="checkbox" name="btc_filter_enabled" {% if settings.btc_filter_enabled %}checked{% endif %}>
+      Enable BTC market filter
+    </label>
+    <label class="checkbox-row">
+      <input type="checkbox" name="telegram_enabled" {% if settings.telegram_enabled %}checked{% endif %}>
+      Enable Telegram alerts
+    </label>
+    <label>
+      Telegram Bot Token
+      <input type="password" name="telegram_bot_token" placeholder="{% if settings.telegram_token_set %}Saved (enter to replace){% else %}Paste bot token{% endif %}">
+    </label>
+    <label>
+      Telegram Chat ID
+      <input type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}">
+    </label>
+    <div class="actions">
+      <button type="submit" class="btn">Save Settings</button>
+      <a href="/settings/run-now" class="btn">Run Cycle Now</a>
+      <a href="/settings/test-telegram" class="btn ghost">Test Telegram</a>
+      {% if settings.bot_paused %}
+      <a href="/settings/resume" class="btn ghost">Resume Bot</a>
+      {% else %}
+      <a href="/settings/pause" class="btn danger">Pause Bot</a>
+      {% endif %}
+    </div>
+  </form>
+</section>
+{% endblock %}

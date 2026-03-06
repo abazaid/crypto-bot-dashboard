@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Overview | Crypto Bot{% endblock %}
+{% block page_title %}Overview{% endblock %}
+{% block content %}
+<section class="grid cards">
+  <article class="card">
+    <p>Account Balance</p>
+    <h3>{{ metrics.balance }}</h3>
+  </article>
+  <article class="card">
+    <p>Daily PnL</p>
+    <h3 class="{% if metrics.daily_pnl_value > 0 %}up{% elif metrics.daily_pnl_value < 0 %}down{% endif %}">{{ metrics.daily_pnl }}</h3>
+  </article>
+  <article class="card">
+    <p>Weekly PnL</p>
+    <h3 class="{% if metrics.weekly_pnl_value > 0 %}up{% elif metrics.weekly_pnl_value < 0 %}down{% endif %}">{{ metrics.weekly_pnl }}</h3>
+  </article>
+  <article class="card">
+    <p>Win Rate</p>
+    <h3>{{ metrics.win_rate }}</h3>
+  </article>
+  <article class="card">
+    <p>Open Positions</p>
+    <h3>{{ metrics.open_positions }}</h3>
+  </article>
+  <article class="card">
+    <p>Drawdown</p>
+    <h3 class="warn">{{ metrics.drawdown }}</h3>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Equity Curve</h2>
+    <span>Sample data</span>
+  </div>
+  <div class="bars">
+    {% for p in equity_points %}
+      <div class="bar-wrap">
+        <div class="bar" style="height: {{ ((p - 980) * 1.5)|int }}px;"></div>
+        <small>{{ p }}</small>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

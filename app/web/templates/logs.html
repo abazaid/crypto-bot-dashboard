@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Logs | Crypto Bot{% endblock %}
+{% block page_title %}System Logs{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>Recent Events</h2>
+  </div>
+  <div class="log-list">
+    {% for l in logs %}
+      <div class="log-item">
+        <span class="time">{{ l.time }}</span>
+        <span class="tag">{{ l.event }}</span>
+        <span class="symbol">{{ l.symbol }}</span>
+        <p>{{ l.message }}</p>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

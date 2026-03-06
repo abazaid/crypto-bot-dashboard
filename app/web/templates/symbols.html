@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Symbols | Crypto Bot{% endblock %}
+{% block page_title %}Symbols Scanner{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>Top Candidates</h2>
+    <span>Filtered USDT pairs</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>24h Volume</th>
+          <th>Spread</th>
+          <th>Trend</th>
+          <th>Signal</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in symbols %}
+        <tr>
+          <td>{{ s.symbol }}</td>
+          <td>{{ s.volume_24h }}</td>
+          <td>{{ s.spread }}</td>
+          <td>{{ s.trend }}</td>
+          <td>{{ s.signal }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
