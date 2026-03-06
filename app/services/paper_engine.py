@@ -135,6 +135,29 @@ def _compute_equity(db: Session) -> float:
     return cash + positions_value
 
 
+def _expected_cash_from_trades(db: Session) -> float:
+    fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
+    expected = settings.paper_start_balance
+    trades = db.query(Trade).order_by(Trade.entry_time.asc(), Trade.id.asc()).all()
+    for t in trades:
+        allocation = t.entry_price * t.quantity
+        entry_fee = allocation * fee_rate
+        expected -= allocation + entry_fee
+        if t.status == "closed" and t.exit_price is not None:
+            proceeds = t.exit_price * t.quantity
+            exit_fee = proceeds * fee_rate
+            expected += proceeds - exit_fee
+    return expected
+
+
+def _reconcile_cash_if_needed(db: Session) -> None:
+    expected = _expected_cash_from_trades(db)
+    current = _cash_balance(db)
+    if abs(expected - current) >= 0.5:
+        _update_cash_balance(db, expected)
+        _notify(db, "ACCOUNT", f"Cash reconciled from {current:.4f} to {expected:.4f}")
+
+
 def _daily_loss_triggered(db: Session) -> bool:
     today = datetime.utcnow().strftime("%Y-%m-%d")
     anchor = _get_setting(db, "daily_anchor_date", "")
@@ -545,7 +568,8 @@ def _manage_open_positions(db: Session) -> None:
 
         proceeds = t.quantity * price
         exit_fee = proceeds * fee_rate
-        pnl_value = (price - t.entry_price) * t.quantity - exit_fee
+        entry_fee = (t.entry_price * t.quantity) * fee_rate
+        pnl_value = (price - t.entry_price) * t.quantity - entry_fee - exit_fee
         cash += proceeds - exit_fee
         t.status = "closed"
         t.exit_price = price
@@ -559,6 +583,7 @@ def _manage_open_positions(db: Session) -> None:
 
 def run_cycle(db: Session) -> None:
     init_defaults(db)
+    _reconcile_cash_if_needed(db)
     if _get_setting(db, "trading_mode", "paper").lower() != "paper":
         _notify(db, "MODE", "Live mode disabled in this build; forced to paper mode.", telegram=True)
         _set_setting(db, "trading_mode", "paper")
