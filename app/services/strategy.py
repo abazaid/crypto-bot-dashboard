@@ -95,7 +95,19 @@ def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[li
     volumes_5m = [float(k[5]) for k in klines_5m]
     closes_15m = [float(k[4]) for k in klines_15m]
     if len(closes_5m) < 210 or len(closes_15m) < 210:
-        return False, "No Data", {"data_ok": False}
+        return False, "No Data", {
+            "data_ok": False,
+            "trend_ok": False,
+            "pullback_ok": False,
+            "rsi_ok": False,
+            "volume_spike_ok": False,
+            "resistance_ok": False,
+            "rsi_value": 0.0,
+            "volume_now": 0.0,
+            "volume_avg20": 0.0,
+            "reason_code": "insufficient_klines_data",
+            "failed_checks": ["data_ok"],
+        }
 
     ema20_5m = ema(closes_5m[-120:], 20)
     ema50_5m = ema(closes_5m[-160:], 50)
@@ -122,6 +134,19 @@ def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[li
         "volume_now": volume,
         "volume_avg20": avg_volume,
     }
+    failed_checks = []
+    if not trend_ok:
+        failed_checks.append("trend")
+    if not pullback_ok:
+        failed_checks.append("pullback")
+    if not rsi_ok:
+        failed_checks.append("rsi")
+    if not volume_ok:
+        failed_checks.append("volume_spike")
+    if not resistance_ok:
+        failed_checks.append("resistance")
+    checks["failed_checks"] = failed_checks
+    checks["reason_code"] = "all_entry_checks_passed" if not failed_checks else "_".join(failed_checks) + "_failed"
 
     if trend_ok and pullback_ok and rsi_ok and volume_ok and resistance_ok:
         return True, "Buy Ready", checks

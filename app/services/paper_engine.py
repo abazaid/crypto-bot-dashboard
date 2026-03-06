@@ -392,10 +392,11 @@ def _build_priority_watchlist(db: Session, scanned: List[dict]) -> List[dict]:
                     db,
                     "ENTRY_DECISION",
                     (
-                        f"strategy_ready={signal} trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
+                        f"strategy_ready={signal} reason={checks.get('reason_code')} trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
                         f"rsi_ok={checks.get('rsi_ok')} rsi={checks.get('rsi_value', 0):.2f} "
                         f"volume_spike={checks.get('volume_spike_ok')} vol_now={checks.get('volume_now', 0):.2f} "
-                        f"vol_avg20={checks.get('volume_avg20', 0):.2f} resistance_ok={checks.get('resistance_ok')}"
+                        f"vol_avg20={checks.get('volume_avg20', 0):.2f} resistance_ok={checks.get('resistance_ok')} "
+                        f"failed={','.join(checks.get('failed_checks', [])) if checks.get('failed_checks') else 'none'}"
                     ),
                     symbol,
                 )
@@ -504,8 +505,8 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
         db,
         "ENTRY_DECISION",
         (
-            f"accepted score={item.get('scanner_score', 0):.4f} qty={qty:.6f} "
-            f"entry_price={entry_price:.6f} risk_pct={risk_pct*100:.2f}"
+            f"accepted reason=all_entry_checks_passed score={item.get('scanner_score', 0):.4f} "
+            f"qty={qty:.6f} entry_price={entry_price:.6f} risk_pct={risk_pct*100:.2f}"
         ),
         symbol,
     )
@@ -639,7 +640,7 @@ def run_cycle(db: Session) -> None:
                 db,
                 "ENTRY_DECISION",
                 (
-                    f"rejected reason=strategy_not_ready trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
+                    f"rejected reason={checks.get('reason_code', 'strategy_not_ready')} trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
                     f"rsi_ok={checks.get('rsi_ok')} volume_spike={checks.get('volume_spike_ok')} resistance_ok={checks.get('resistance_ok')}"
                 ),
                 item["symbol"],
