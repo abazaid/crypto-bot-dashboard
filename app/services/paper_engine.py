@@ -258,8 +258,9 @@ def _dynamic_rank_symbols(db: Session, safety_symbols: List[dict]) -> List[dict]
     for item in safety_symbols:
         symbol = item["symbol"]
         try:
-            k5 = get_klines(symbol, "5m", 90)
-            k15 = get_klines(symbol, "15m", 60)
+            # Keep enough history for Layer 2 entry checks while deriving Layer 1 rank features.
+            k5 = get_klines(symbol, "5m", 260)
+            k15 = get_klines(symbol, "15m", 260)
             quote_volumes_5m = [float(k[7]) for k in k5]
             closes_5m = [float(k[4]) for k in k5]
             closes_15m = [float(k[4]) for k in k15]
