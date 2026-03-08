@@ -20,3 +20,49 @@ def apply_sqlite_migrations(engine: Engine) -> None:
             exists = any(r[1] == column for r in conn.execute(text(f"PRAGMA table_info({table})")).fetchall())
             if not exists:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS market_observations (
+                    id INTEGER PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    observed_at DATETIME NOT NULL,
+                    last_price REAL NOT NULL DEFAULT 0.0,
+                    volume_24h REAL NOT NULL DEFAULT 0.0,
+                    spread_pct REAL NOT NULL DEFAULT 0.0,
+                    score REAL NOT NULL DEFAULT 0.0,
+                    trend_status VARCHAR(20) NOT NULL DEFAULT 'Neutral',
+                    signal_status VARCHAR(30) NOT NULL DEFAULT 'No Data',
+                    decision_reason VARCHAR(120) NOT NULL DEFAULT '-'
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_market_observations_symbol ON market_observations(symbol)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_market_observations_observed_at ON market_observations(observed_at)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS shadow_trades (
+                    id INTEGER PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'open',
+                    entry_time DATETIME NOT NULL,
+                    exit_time DATETIME,
+                    entry_price REAL NOT NULL,
+                    exit_price REAL,
+                    quantity REAL NOT NULL,
+                    notional_usdt REAL NOT NULL DEFAULT 0.0,
+                    tp_price REAL NOT NULL,
+                    sl_price REAL NOT NULL,
+                    pnl REAL,
+                    pnl_pct REAL,
+                    exit_reason VARCHAR(50),
+                    source_score REAL NOT NULL DEFAULT 0.0
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shadow_trades_symbol ON shadow_trades(symbol)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shadow_trades_status ON shadow_trades(status)"))

@@ -102,12 +102,30 @@ def resistance_distance_ok(klines_15m: List[list], current_price: float, min_dis
     return distance_pct > min_distance_pct
 
 
-def trend_pullback_signal(klines_5m: List[list], klines_15m: List[list]) -> Tuple[bool, str]:
-    ok, status, _ = trend_pullback_signal_with_checks(klines_5m, klines_15m)
+def trend_pullback_signal(klines_5m: List[list], klines_15m: List[list], config: dict | None = None) -> Tuple[bool, str]:
+    ok, status, _ = trend_pullback_signal_with_checks(klines_5m, klines_15m, config=config)
     return ok, status
 
 
-def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[list]) -> Tuple[bool, str, dict]:
+def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[list], config: dict | None = None) -> Tuple[bool, str, dict]:
+    cfg = {
+        "use_score_system": True,
+        "score_threshold": 3,
+        "trend_enabled": True,
+        "pullback_enabled": True,
+        "rsi_enabled": True,
+        "volume_spike_enabled": True,
+        "resistance_enabled": True,
+        "price_above_ema50_enabled": False,
+        "pullback_max_dist_pct": 1.0,
+        "rsi_min": 35.0,
+        "rsi_max": 65.0,
+        "volume_spike_multiplier": 1.3,
+        "resistance_min_dist_pct": 1.5,
+    }
+    if config:
+        cfg.update(config)
+
     closes_5m = [float(k[4]) for k in klines_5m]
     volumes_5m = [float(k[5]) for k in klines_5m]
     closes_15m = [float(k[4]) for k in klines_15m]
@@ -121,7 +139,7 @@ def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[li
             "volume_spike_ok": False,
             "resistance_ok": False,
             "score_count": 0,
-            "score_threshold": 3,
+            "score_threshold": int(cfg["score_threshold"]),
             "rsi_value": 0.0,
             "volume_now": 0.0,
             "volume_avg20": 0.0,
@@ -140,21 +158,35 @@ def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[li
 
     trend_ok = ema50_15m > ema200_15m
     price_above_ema50_15m_ok = price > ema50_15m
-    pullback_ok = abs(price - ema20_5m) / price <= 0.01 or abs(price - ema50_5m) / price <= 0.01
-    rsi_ok = 35 <= rsi_5m <= 65
-    volume_ok = volume >= avg_volume * 1.3
-    resistance_ok = resistance_distance_ok(klines_15m, price, 1.5)
-    score_checks = {
+    pullback_limit = max(0.1, float(cfg["pullback_max_dist_pct"])) / 100.0
+    pullback_ok = abs(price - ema20_5m) / price <= pullback_limit or abs(price - ema50_5m) / price <= pullback_limit
+    rsi_ok = float(cfg["rsi_min"]) <= rsi_5m <= float(cfg["rsi_max"])
+    volume_ok = volume >= avg_volume * float(cfg["volume_spike_multiplier"])
+    resistance_ok = resistance_distance_ok(klines_15m, price, float(cfg["resistance_min_dist_pct"]))
+    condition_values = {
         "trend": trend_ok,
         "pullback": pullback_ok,
         "rsi": rsi_ok,
         "volume_spike": volume_ok,
         "resistance": resistance_ok,
+        "price_above_ema50": price_above_ema50_15m_ok,
     }
-    score_passed = [k for k, v in score_checks.items() if v]
-    score_failed = [k for k, v in score_checks.items() if not v]
+
+    enabled_map = {
+        "trend": bool(cfg["trend_enabled"]),
+        "pullback": bool(cfg["pullback_enabled"]),
+        "rsi": bool(cfg["rsi_enabled"]),
+        "volume_spike": bool(cfg["volume_spike_enabled"]),
+        "resistance": bool(cfg["resistance_enabled"]),
+        "price_above_ema50": bool(cfg["price_above_ema50_enabled"]),
+    }
+
+    active_score_conditions = [name for name in ("pullback", "rsi", "volume_spike", "resistance", "price_above_ema50") if enabled_map[name]]
+    score_passed = [name for name in active_score_conditions if condition_values[name]]
+    score_failed = [name for name in active_score_conditions if not condition_values[name]]
     score_count = len(score_passed)
-    score_threshold = 3
+    score_threshold = max(1, int(cfg["score_threshold"])) if active_score_conditions else 0
+    score_threshold = min(score_threshold, len(active_score_conditions)) if active_score_conditions else 0
     checks = {
         "data_ok": True,
         "trend_ok": trend_ok,
@@ -167,18 +199,39 @@ def trend_pullback_signal_with_checks(klines_5m: List[list], klines_15m: List[li
         "score_threshold": score_threshold,
         "score_passed": score_passed,
         "score_failed": score_failed,
+        "enabled_conditions": [k for k, enabled in enabled_map.items() if enabled],
         "rsi_value": rsi_5m,
         "volume_now": volume,
         "volume_avg20": avg_volume,
     }
-    failed_checks = list(score_failed)
-    if score_count < score_threshold:
-        failed_checks.append(f"score<{score_threshold}")
-    checks["failed_checks"] = failed_checks
-    checks["reason_code"] = f"score_{score_count}_of_5"
+    failed_checks: List[str] = []
+    trend_required_failed = enabled_map["trend"] and not trend_ok
+    if trend_required_failed:
+        failed_checks.append("trend")
 
-    if score_count >= score_threshold:
+    if bool(cfg["use_score_system"]):
+        failed_checks.extend(score_failed)
+        if score_count < score_threshold:
+            failed_checks.append(f"score<{score_threshold}")
+        strategy_ready = (not trend_required_failed) and (score_count >= score_threshold)
+    else:
+        must_pass = []
+        if enabled_map["trend"]:
+            must_pass.append("trend")
+        must_pass.extend(active_score_conditions)
+        for name in must_pass:
+            if not condition_values[name]:
+                failed_checks.append(name)
+        strategy_ready = len(failed_checks) == 0
+
+    checks["failed_checks"] = failed_checks
+    if bool(cfg["use_score_system"]):
+        checks["reason_code"] = f"score_{score_count}_of_{max(1, len(active_score_conditions))}"
+    else:
+        checks["reason_code"] = "all_enabled_conditions_passed" if strategy_ready else "enabled_conditions_failed"
+
+    if strategy_ready:
         return True, "Buy Ready", checks
-    if score_count == score_threshold - 1:
+    if not trend_required_failed and bool(cfg["use_score_system"]) and score_count == max(score_threshold - 1, 0):
         return False, "Watch", checks
     return False, "Blocked", checks

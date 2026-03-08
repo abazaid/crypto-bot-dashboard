@@ -4,10 +4,49 @@
 {% block content %}
 <section class="panel">
   <div class="panel-head">
+    <h2>Signal Legend</h2>
+    <span>How to read signal values</span>
+  </div>
+  <div class="table-wrap symbols-legend-table">
+    <table>
+      <thead>
+        <tr>
+          <th>Signal</th>
+          <th>Meaning</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Buy Ready</td>
+          <td>Entry checks passed (score threshold reached). Trade can be opened if risk/execution limits allow.</td>
+        </tr>
+        <tr>
+          <td>Watch</td>
+          <td>Coin is close to entry but did not pass enough conditions yet.</td>
+        </tr>
+        <tr>
+          <td>Momentum Candidate</td>
+          <td>Scanner found strong momentum profile. Still requires entry checks before opening a trade.</td>
+        </tr>
+        <tr>
+          <td>Blocked</td>
+          <td>Core entry logic is blocked for this symbol (for example trend/score conditions not met).</td>
+        </tr>
+        <tr>
+          <td>No Data</td>
+          <td>Not enough market data received for a reliable decision in this cycle.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h2>Top Candidates</h2>
     <span>Filtered USDT pairs</span>
   </div>
-  <div class="table-wrap">
+  <div class="table-wrap symbols-main-table">
     <table>
       <thead>
         <tr>
@@ -15,12 +54,12 @@
           <th>24h Volume</th>
           <th>Spread</th>
           <th>Score</th>
-          <th>Trend ✓/✗</th>
-          <th>Pullback ✓/✗</th>
-          <th>RSI ✓/✗</th>
-          <th>Volume ✓/✗</th>
-          <th>Resistance ✓/✗</th>
           <th>Trend</th>
+          <th>Pullback</th>
+          <th>RSI</th>
+          <th>Volume</th>
+          <th>Resistance</th>
+          <th>Market Trend</th>
           <th>Signal</th>
           <th>Reason</th>
         </tr>

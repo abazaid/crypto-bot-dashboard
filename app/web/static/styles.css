@@ -211,11 +211,20 @@ body {
 
 .table-wrap {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.symbols-main-table table {
+  min-width: 1180px;
+}
+
+.symbols-legend-table table {
+  min-width: 680px;
 }
 
 th,
@@ -335,5 +344,27 @@ th {
 
   .log-item {
     grid-template-columns: 1fr;
+  }
+
+  .content {
+    padding: 14px;
+  }
+
+  .topbar h1 {
+    font-size: 22px;
+  }
+
+  th,
+  td {
+    padding: 9px 6px;
+    font-size: 14px;
+  }
+
+  .symbols-main-table table {
+    min-width: 1040px;
+  }
+
+  .symbols-legend-table table {
+    min-width: 560px;
   }
 }

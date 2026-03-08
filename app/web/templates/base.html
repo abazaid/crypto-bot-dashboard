@@ -26,6 +26,8 @@
         <a href="/symbols" class="{% if active_page == 'symbols' %}active{% endif %}">Symbols</a>
         <a href="/trades" class="{% if active_page == 'trades' %}active{% endif %}">Trades</a>
         <a href="/statistics" class="{% if active_page == 'statistics' %}active{% endif %}">Statistics</a>
+        <a href="/advisor" class="{% if active_page == 'advisor' %}active{% endif %}">Advisor</a>
+        <a href="/strategy" class="{% if active_page == 'strategy' %}active{% endif %}">Strategy</a>
         <a href="/settings" class="{% if active_page == 'settings' %}active{% endif %}">Settings</a>
         <a href="/logs" class="{% if active_page == 'logs' %}active{% endif %}">Logs</a>
       </nav>
@@ -45,7 +47,7 @@
       {% block content %}{% endblock %}
     </main>
   </div>
-  {% if active_page in ['overview', 'symbols', 'trades', 'logs', 'statistics'] %}
+  {% if active_page in ['overview', 'symbols', 'trades', 'logs', 'statistics', 'advisor', 'strategy'] %}
   <script>
     setTimeout(function () {
       window.location.reload();

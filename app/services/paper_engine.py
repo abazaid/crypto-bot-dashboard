@@ -6,7 +6,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import LogEntry, Setting, SymbolSnapshot, Trade
+from app.models import LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.binance_public import get_24h_tickers, get_book_tickers, get_exchange_info, get_klines, get_prices
 from app.services.strategy import (
     atr_from_klines,
@@ -127,6 +127,26 @@ def init_defaults(db: Session) -> None:
         "telegram_enabled": "false",
         "telegram_bot_token": "",
         "telegram_chat_id": "",
+        "strategy_use_score_system": "true",
+        "strategy_score_threshold": "3",
+        "strategy_trend_enabled": "true",
+        "strategy_pullback_enabled": "true",
+        "strategy_rsi_enabled": "true",
+        "strategy_volume_spike_enabled": "true",
+        "strategy_resistance_enabled": "true",
+        "strategy_price_above_ema50_enabled": "false",
+        "strategy_pullback_max_dist_pct": "1.0",
+        "strategy_rsi_min": "35",
+        "strategy_rsi_max": "65",
+        "strategy_volume_spike_multiplier": "1.3",
+        "strategy_resistance_min_dist_pct": "1.5",
+        "momentum_volume_enabled": "true",
+        "momentum_volatility_enabled": "true",
+        "momentum_relative_strength_enabled": "true",
+        "momentum_price_above_ema200_1h_enabled": "true",
+        "shadow_enabled": "true",
+        "shadow_notional_usdt": "100",
+        "shadow_max_open": "30",
     }
     for key, default in defaults.items():
         _get_setting(db, key, default)
@@ -151,6 +171,133 @@ def init_defaults(db: Session) -> None:
         if row and row.value in legacy_values:
             row.value = target[key]
     db.commit()
+
+
+def _strategy_config(db: Session) -> dict:
+    return {
+        "use_score_system": _get_bool(db, "strategy_use_score_system", True),
+        "score_threshold": _get_int(db, "strategy_score_threshold", 3),
+        "trend_enabled": _get_bool(db, "strategy_trend_enabled", True),
+        "pullback_enabled": _get_bool(db, "strategy_pullback_enabled", True),
+        "rsi_enabled": _get_bool(db, "strategy_rsi_enabled", True),
+        "volume_spike_enabled": _get_bool(db, "strategy_volume_spike_enabled", True),
+        "resistance_enabled": _get_bool(db, "strategy_resistance_enabled", True),
+        "price_above_ema50_enabled": _get_bool(db, "strategy_price_above_ema50_enabled", False),
+        "pullback_max_dist_pct": _get_float(db, "strategy_pullback_max_dist_pct", 1.0),
+        "rsi_min": _get_float(db, "strategy_rsi_min", 35.0),
+        "rsi_max": _get_float(db, "strategy_rsi_max", 65.0),
+        "volume_spike_multiplier": _get_float(db, "strategy_volume_spike_multiplier", 1.3),
+        "resistance_min_dist_pct": _get_float(db, "strategy_resistance_min_dist_pct", 1.5),
+    }
+
+
+def _record_market_observations(db: Session, snapshots: List[dict], reasons: Dict[str, str]) -> None:
+    now = datetime.utcnow()
+    for s in snapshots:
+        db.add(
+            MarketObservation(
+                symbol=s["symbol"],
+                observed_at=now,
+                last_price=float(s.get("last_price", 0.0)),
+                volume_24h=float(s.get("volume_24h", 0.0)),
+                spread_pct=float(s.get("spread_pct", 0.0)),
+                score=float(s.get("score", 0.0)),
+                trend_status=str(s.get("trend_status", "Neutral")),
+                signal_status=str(s.get("signal_status", "No Data")),
+                decision_reason=reasons.get(s["symbol"], "-"),
+            )
+        )
+    # Keep storage bounded.
+    total = db.query(MarketObservation).count()
+    limit = 25000
+    if total > limit:
+        to_delete = total - limit
+        oldest = db.query(MarketObservation).order_by(MarketObservation.id.asc()).limit(to_delete).all()
+        for row in oldest:
+            db.delete(row)
+
+
+def _manage_shadow_positions(db: Session) -> None:
+    if not _get_bool(db, "shadow_enabled", True):
+        return
+    open_shadow = db.query(ShadowTrade).filter(ShadowTrade.status == "open").all()
+    if not open_shadow:
+        return
+    try:
+        prices = get_prices([t.symbol for t in open_shadow])
+    except Exception as exc:
+        _notify(db, "ERROR", f"Shadow price update failed: {exc}")
+        return
+
+    fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
+    time_stop_minutes = _get_int(db, "time_stop_minutes", settings.time_stop_minutes)
+    for t in open_shadow:
+        price = prices.get(t.symbol)
+        if price is None:
+            continue
+        age_minutes = (datetime.utcnow() - t.entry_time).total_seconds() / 60.0
+        reason = None
+        if price >= t.tp_price:
+            reason = "TP"
+        elif price <= t.sl_price:
+            reason = "SL"
+        elif age_minutes >= time_stop_minutes:
+            reason = "Time Stop"
+        if not reason:
+            continue
+
+        proceeds = t.quantity * price
+        entry_value = t.entry_price * t.quantity
+        entry_fee = entry_value * fee_rate
+        exit_fee = proceeds * fee_rate
+        pnl_value = (price - t.entry_price) * t.quantity - entry_fee - exit_fee
+        pnl_pct = ((price - t.entry_price) / t.entry_price) * 100 if t.entry_price > 0 else 0.0
+        t.status = "closed"
+        t.exit_time = datetime.utcnow()
+        t.exit_price = price
+        t.pnl = pnl_value
+        t.pnl_pct = pnl_pct
+        t.exit_reason = reason
+        _notify(db, "SHADOW", f"closed reason={reason} pnl_pct={pnl_pct:+.2f}% pnl_usdt={pnl_value:+.4f}", t.symbol)
+
+
+def _open_shadow_trades(db: Session, watchlist: List[dict]) -> None:
+    if not _get_bool(db, "shadow_enabled", True):
+        return
+    max_open = _get_int(db, "shadow_max_open", 30)
+    open_count = db.query(ShadowTrade).filter(ShadowTrade.status == "open").count()
+    if open_count >= max_open:
+        return
+
+    notional = _get_float(db, "shadow_notional_usdt", 100.0)
+    tp_pct = _get_float(db, "take_profit_pct", settings.take_profit_pct)
+    sl_pct = _get_float(db, "stop_loss_pct", settings.stop_loss_pct)
+    for item in watchlist:
+        if open_count >= max_open:
+            break
+        if not item.get("strategy_ready"):
+            continue
+        symbol = item["symbol"]
+        if db.query(ShadowTrade).filter(ShadowTrade.status == "open", ShadowTrade.symbol == symbol).first():
+            continue
+        price = float(item.get("last_price", 0.0))
+        if price <= 0:
+            continue
+        qty = notional / price
+        shadow = ShadowTrade(
+            symbol=symbol,
+            status="open",
+            entry_time=datetime.utcnow(),
+            entry_price=price,
+            quantity=qty,
+            notional_usdt=notional,
+            tp_price=price * (1 + tp_pct),
+            sl_price=price * (1 - sl_pct),
+            source_score=float(item.get("scanner_score", 0.0)),
+        )
+        db.add(shadow)
+        open_count += 1
+        _notify(db, "SHADOW", f"opened notional={notional:.2f} entry={price:.6f} qty={qty:.6f}", symbol)
 
 
 def _mode_is_paused(db: Session) -> bool:
@@ -265,7 +412,7 @@ def _apply_slippage(db: Session, price: float, side: str) -> float:
     return price * (1 - pct)
 
 
-def _scan_symbols(db: Session) -> List[dict]:
+def _scan_symbols(db: Session) -> tuple[List[dict], dict]:
     min_quote_volume = max(_get_float(db, "min_quote_volume", settings.min_quote_volume), SAFETY_MIN_24H_VOLUME)
     max_spread_pct = min(_get_float(db, "max_spread_pct", settings.max_spread_pct), SAFETY_MAX_SPREAD_PCT)
     t24 = get_24h_tickers()
@@ -273,9 +420,13 @@ def _scan_symbols(db: Session) -> List[dict]:
     book_map: Dict[str, dict] = {b["symbol"]: b for b in books}
 
     candidates = []
+    total_usdt_pairs = 0
     for t in t24:
         symbol = t["symbol"]
-        if not symbol.endswith("USDT") or symbol in EXCLUDED_SYMBOLS:
+        if not symbol.endswith("USDT"):
+            continue
+        total_usdt_pairs += 1
+        if symbol in EXCLUDED_SYMBOLS:
             continue
         quote_vol = float(t.get("quoteVolume", 0.0))
         if quote_vol < min_quote_volume:
@@ -299,7 +450,13 @@ def _scan_symbols(db: Session) -> List[dict]:
                 "last_price": last,
             }
         )
-    return candidates
+    stats = {
+        "total_usdt_pairs": total_usdt_pairs,
+        "safety_passed": len(candidates),
+        "min_quote_volume": min_quote_volume,
+        "max_spread_pct": max_spread_pct,
+    }
+    return candidates, stats
 
 
 def _dynamic_rank_symbols(db: Session, safety_symbols: List[dict]) -> List[dict]:
@@ -381,10 +538,14 @@ def _dynamic_rank_symbols(db: Session, safety_symbols: List[dict]) -> List[dict]
     return ranked[:max_symbols]
 
 
-def _build_priority_watchlist(db: Session, scanned: List[dict]) -> List[dict]:
+def _build_priority_watchlist(db: Session, scanned: List[dict], strategy_cfg: dict) -> List[dict]:
     watchlist = []
     btc_klines_15m = get_klines("BTCUSDT", "15m", 120)
     btc_closes = [float(k[4]) for k in btc_klines_15m]
+    momentum_volume_enabled = _get_bool(db, "momentum_volume_enabled", True)
+    momentum_volatility_enabled = _get_bool(db, "momentum_volatility_enabled", True)
+    momentum_rs_enabled = _get_bool(db, "momentum_relative_strength_enabled", True)
+    momentum_price_1h_enabled = _get_bool(db, "momentum_price_above_ema200_1h_enabled", True)
 
     db.query(SymbolSnapshot).delete()
     db.flush()
@@ -404,9 +565,15 @@ def _build_priority_watchlist(db: Session, scanned: List[dict]) -> List[dict]:
             closes_1h = [float(k[4]) for k in k1h]
             ema200_1h = ema(closes_1h[-210:], 200) if len(closes_1h) >= 210 else 0.0
             cond_price_above_ema200_1h = item["last_price"] > ema200_1h if ema200_1h > 0 else False
-            momentum = cond_volume and cond_volatility and cond_rel and cond_price_above_ema200_1h
+            momentum_checks = {
+                "volume": (not momentum_volume_enabled) or cond_volume,
+                "volatility": (not momentum_volatility_enabled) or cond_volatility,
+                "relative_strength": (not momentum_rs_enabled) or cond_rel,
+                "price_above_ema200_1h": (not momentum_price_1h_enabled) or cond_price_above_ema200_1h,
+            }
+            momentum = all(momentum_checks.values())
 
-            signal, signal_status, checks = trend_pullback_signal_with_checks(k5, k15)
+            signal, signal_status, checks = trend_pullback_signal_with_checks(k5, k15, config=strategy_cfg)
             trend_status = "Bullish" if signal_status in {"Buy Ready", "Watch"} else "Bearish"
             if momentum and signal_status != "Blocked":
                 signal_status = "Momentum Candidate"
@@ -451,13 +618,13 @@ def _build_priority_watchlist(db: Session, scanned: List[dict]) -> List[dict]:
                 )
             else:
                 scanner_reasons = []
-                if not cond_volume:
+                if momentum_volume_enabled and not cond_volume:
                     scanner_reasons.append("volume_accumulation_failed")
-                if not cond_volatility:
+                if momentum_volatility_enabled and not cond_volatility:
                     scanner_reasons.append("volatility_expansion_failed")
-                if not cond_rel:
+                if momentum_rs_enabled and not cond_rel:
                     scanner_reasons.append("relative_strength_failed")
-                if not cond_price_above_ema200_1h:
+                if momentum_price_1h_enabled and not cond_price_above_ema200_1h:
                     scanner_reasons.append("price_below_ema200_1h")
                 if signal_status == "Blocked":
                     scanner_reasons.append("trend_blocked")
@@ -721,25 +888,37 @@ def run_cycle(db: Session) -> None:
         _set_setting(db, "trading_mode", "paper")
 
     _manage_open_positions(db)
-    if _daily_loss_triggered(db):
+    _manage_shadow_positions(db)
+    blocked_by_daily_loss = _daily_loss_triggered(db)
+    if blocked_by_daily_loss:
         _notify(db, "ENTRY_DECISION", "rejected reason=daily_loss_limit_reached", "-")
-        db.commit()
-        return
 
-    if _mode_is_paused(db):
+    paused = _mode_is_paused(db)
+    if paused:
         _notify(db, "PAUSE", "Bot paused. Skipping new entries.", telegram=True)
         _notify(db, "ENTRY_DECISION", "rejected reason=bot_paused", "-")
-        db.commit()
-        return
 
     _notify(db, "SCAN", "Market scan started")
     try:
         btc_filter_enabled = _get_bool(db, "btc_filter_enabled", True)
         market_blocked = _btc_market_blocked() if btc_filter_enabled else False
         _notify(db, "REGIME", f"BTC filter={'on' if btc_filter_enabled else 'off'} timeframe=4h blocked={market_blocked}")
-        safety_symbols = _scan_symbols(db)
+        safety_symbols, scan_stats = _scan_symbols(db)
         ranked_symbols = _dynamic_rank_symbols(db, safety_symbols)
+        strategy_cfg = _strategy_config(db)
         filters_map = _symbol_filters_map([r["symbol"] for r in ranked_symbols])
+        _notify(
+            db,
+            "SCAN",
+            (
+                f"scan_stats total_usdt={scan_stats.get('total_usdt_pairs', 0)} "
+                f"safety_passed={scan_stats.get('safety_passed', 0)} "
+                f"ranked={len(ranked_symbols)} "
+                f"max_symbols={_get_int(db, 'max_symbols', settings.max_symbols)} "
+                f"min_vol={scan_stats.get('min_quote_volume', 0):.0f} "
+                f"max_spread={scan_stats.get('max_spread_pct', 0):.2f}%"
+            ),
+        )
         for ranked in ranked_symbols[:5]:
             _notify(
                 db,
@@ -754,35 +933,71 @@ def run_cycle(db: Session) -> None:
                 ),
                 ranked["symbol"],
             )
-        watchlist = _build_priority_watchlist(db, ranked_symbols)
+        watchlist = _build_priority_watchlist(db, ranked_symbols, strategy_cfg)
+        _notify(db, "SCAN", f"watchlist_size={len(watchlist)}")
     except Exception as exc:
         _notify(db, "ERROR", f"Scanner failed: {exc}", telegram=True)
         db.commit()
         return
 
+    # Persist learning data snapshots for internal advisor/training datasets.
+    latest_decisions = (
+        db.query(LogEntry)
+        .filter(LogEntry.event_type == "ENTRY_DECISION")
+        .order_by(desc(LogEntry.id))
+        .limit(800)
+        .all()
+    )
+    decision_map: Dict[str, str] = {}
+    for log in latest_decisions:
+        sym = (log.symbol or "").strip()
+        if not sym or sym == "-" or sym in decision_map:
+            continue
+        reason_match = "unknown"
+        msg = log.message or ""
+        if "reason=" in msg:
+            reason_match = msg.split("reason=", 1)[1].split()[0]
+        decision_map[sym] = reason_match
+    observations = [
+        {
+            "symbol": r["symbol"],
+            "last_price": float(r.get("last_price", 0.0)),
+            "volume_24h": float(r.get("volume_24h", 0.0)),
+            "spread_pct": float(r.get("spread_pct", 0.0)),
+            "score": float(r.get("score", 0.0)),
+            "trend_status": "Bullish",
+            "signal_status": "Ranked",
+        }
+        for r in ranked_symbols
+    ]
+    _record_market_observations(db, observations, decision_map)
+    _notify(db, "DATA", f"stored_observations={len(observations)}")
+
     if market_blocked:
         _notify(db, "RISK", "BTC regime filter active on 4h (EMA50<EMA200). No new trades.")
         for item in watchlist:
             _notify(db, "ENTRY_DECISION", "rejected reason=btc_regime_blocked_4h", item["symbol"])
-        db.commit()
-        return
-
-    for item in watchlist:
-        if item.get("strategy_ready"):
-            _try_open_trade(db, item, filters_map)
-        else:
-            checks = item.get("entry_checks", {})
-            _notify(
-                db,
-                "ENTRY_DECISION",
-                (
-                    f"rejected reason={checks.get('reason_code', 'strategy_not_ready')} trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
-                    f"price_above_ema50_15m={checks.get('price_above_ema50_15m_ok')} "
-                    f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)} "
-                    f"rsi_ok={checks.get('rsi_ok')} volume_spike={checks.get('volume_spike_ok')} resistance_ok={checks.get('resistance_ok')}"
-                ),
-                item["symbol"],
-            )
+    elif not paused and not blocked_by_daily_loss:
+        _open_shadow_trades(db, watchlist)
+        for item in watchlist:
+            if item.get("strategy_ready"):
+                _try_open_trade(db, item, filters_map)
+            else:
+                checks = item.get("entry_checks", {})
+                _notify(
+                    db,
+                    "ENTRY_DECISION",
+                    (
+                        f"rejected reason={checks.get('reason_code', 'strategy_not_ready')} trend={checks.get('trend_ok')} pullback={checks.get('pullback_ok')} "
+                        f"price_above_ema50_15m={checks.get('price_above_ema50_15m_ok')} "
+                        f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)} "
+                        f"rsi_ok={checks.get('rsi_ok')} volume_spike={checks.get('volume_spike_ok')} resistance_ok={checks.get('resistance_ok')}"
+                    ),
+                    item["symbol"],
+                )
+    else:
+        _open_shadow_trades(db, watchlist)
+        _notify(db, "ENTRY_DECISION", "rejected reason=entries_blocked_but_shadow_running", "-")
 
     _notify(db, "CYCLE", "Trading cycle completed")
     db.commit()

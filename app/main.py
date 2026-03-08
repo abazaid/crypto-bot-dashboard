@@ -1,6 +1,7 @@
 import time
 import threading
 import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -15,7 +16,7 @@ from sqlalchemy.exc import OperationalError
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.migrations import apply_sqlite_migrations
-from app.models import LogEntry, Setting, SymbolSnapshot, Trade
+from app.models import LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.paper_engine import init_defaults, portfolio_snapshot, run_cycle, statistics_snapshot
 from app.services.telegram_alerts import telegram_test
 
@@ -66,10 +67,30 @@ def _as_check(value: str | None) -> str:
         return "-"
     low = value.strip().lower()
     if low in {"true", "1", "yes", "on"}:
-        return "✓"
+        return "OK"
     if low in {"false", "0", "no", "off", "none"}:
-        return "✗"
+        return "X"
     return "-"
+
+
+def _entry_recommendation(signal: str, reason: str, score: str) -> str:
+    signal_l = (signal or "").lower()
+    reason_l = (reason or "").lower()
+    if signal_l == "buy ready":
+        return "Candidate looks ready. Wait for next cycle confirmation and execution limits."
+    if "btc_regime_blocked" in reason_l:
+        return "Blocked by BTC regime filter. No new entries until regime turns positive."
+    if "bot_paused" in reason_l or "daily_loss" in reason_l:
+        return "Bot-level risk protection is active. Review pause and daily loss status."
+    if "score<3" in reason_l:
+        return f"Not enough score ({score}). Wait for one or more conditions to turn positive."
+    if signal_l == "watch":
+        return "Close to entry. Keep under watch for improving score/volume."
+    if signal_l == "momentum candidate":
+        return "Momentum detected; keep monitoring until entry checks confirm."
+    if signal_l == "blocked":
+        return "Core conditions blocked for now."
+    return "No action yet. Continue monitoring."
 
 
 @app.on_event("startup")
@@ -268,6 +289,93 @@ async def settings_page(request: Request) -> HTMLResponse:
         return templates.TemplateResponse("settings.html", ctx)
     finally:
         db.close()
+
+
+@app.get("/strategy", response_class=HTMLResponse)
+async def strategy_page(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        m = {s.key: s.value for s in db.query(Setting).all()}
+        ctx = _base_context("strategy")
+        ctx.update(
+            {
+                "request": request,
+                "strategy": {
+                    "use_score_system": m.get("strategy_use_score_system", "true").lower() == "true",
+                    "score_threshold": int(float(m.get("strategy_score_threshold", "3"))),
+                    "trend_enabled": m.get("strategy_trend_enabled", "true").lower() == "true",
+                    "pullback_enabled": m.get("strategy_pullback_enabled", "true").lower() == "true",
+                    "rsi_enabled": m.get("strategy_rsi_enabled", "true").lower() == "true",
+                    "volume_spike_enabled": m.get("strategy_volume_spike_enabled", "true").lower() == "true",
+                    "resistance_enabled": m.get("strategy_resistance_enabled", "true").lower() == "true",
+                    "price_above_ema50_enabled": m.get("strategy_price_above_ema50_enabled", "false").lower() == "true",
+                    "pullback_max_dist_pct": f"{float(m.get('strategy_pullback_max_dist_pct', '1.0')):.2f}",
+                    "rsi_min": f"{float(m.get('strategy_rsi_min', '35')):.2f}",
+                    "rsi_max": f"{float(m.get('strategy_rsi_max', '65')):.2f}",
+                    "volume_spike_multiplier": f"{float(m.get('strategy_volume_spike_multiplier', '1.3')):.2f}",
+                    "resistance_min_dist_pct": f"{float(m.get('strategy_resistance_min_dist_pct', '1.5')):.2f}",
+                    "momentum_volume_enabled": m.get("momentum_volume_enabled", "true").lower() == "true",
+                    "momentum_volatility_enabled": m.get("momentum_volatility_enabled", "true").lower() == "true",
+                    "momentum_relative_strength_enabled": m.get("momentum_relative_strength_enabled", "true").lower() == "true",
+                    "momentum_price_above_ema200_1h_enabled": m.get("momentum_price_above_ema200_1h_enabled", "true").lower() == "true",
+                },
+            }
+        )
+        return templates.TemplateResponse("strategy.html", ctx)
+    finally:
+        db.close()
+
+
+@app.post("/strategy/save")
+async def strategy_save(request: Request) -> RedirectResponse:
+    def _to_int(value: str, default: int, min_value: int) -> int:
+        try:
+            return max(min_value, int(float(value)))
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value: str, default: float, min_value: float) -> float:
+        try:
+            cleaned = str(value).replace(",", "").replace("%", "")
+            return max(min_value, float(cleaned))
+        except (TypeError, ValueError):
+            return default
+
+    form = await request.form()
+    to_bool = lambda key: str(form.get(key, "off")).lower() in {"on", "true", "1", "yes"}
+    mapping = {
+        "strategy_use_score_system": "true" if to_bool("use_score_system") else "false",
+        "strategy_score_threshold": str(_to_int(str(form.get("score_threshold", "3")), 3, 1)),
+        "strategy_trend_enabled": "true" if to_bool("trend_enabled") else "false",
+        "strategy_pullback_enabled": "true" if to_bool("pullback_enabled") else "false",
+        "strategy_rsi_enabled": "true" if to_bool("rsi_enabled") else "false",
+        "strategy_volume_spike_enabled": "true" if to_bool("volume_spike_enabled") else "false",
+        "strategy_resistance_enabled": "true" if to_bool("resistance_enabled") else "false",
+        "strategy_price_above_ema50_enabled": "true" if to_bool("price_above_ema50_enabled") else "false",
+        "strategy_pullback_max_dist_pct": str(_to_float(str(form.get("pullback_max_dist_pct", "1.0")), 1.0, 0.1)),
+        "strategy_rsi_min": str(_to_float(str(form.get("rsi_min", "35")), 35.0, 0.0)),
+        "strategy_rsi_max": str(_to_float(str(form.get("rsi_max", "65")), 65.0, 0.0)),
+        "strategy_volume_spike_multiplier": str(_to_float(str(form.get("volume_spike_multiplier", "1.3")), 1.3, 0.1)),
+        "strategy_resistance_min_dist_pct": str(_to_float(str(form.get("resistance_min_dist_pct", "1.5")), 1.5, 0.1)),
+        "momentum_volume_enabled": "true" if to_bool("momentum_volume_enabled") else "false",
+        "momentum_volatility_enabled": "true" if to_bool("momentum_volatility_enabled") else "false",
+        "momentum_relative_strength_enabled": "true" if to_bool("momentum_relative_strength_enabled") else "false",
+        "momentum_price_above_ema200_1h_enabled": "true" if to_bool("momentum_price_above_ema200_1h_enabled") else "false",
+    }
+
+    db = SessionLocal()
+    try:
+        for key, value in mapping.items():
+            row = db.query(Setting).filter(Setting.key == key).first()
+            if row:
+                row.value = value
+            else:
+                db.add(Setting(key=key, value=value))
+        db.add(LogEntry(event_type="STRATEGY", symbol="-", message="Strategy rules updated from dashboard"))
+        db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/strategy", status_code=303)
 
 
 @app.post("/settings/save")
@@ -470,3 +578,81 @@ async def statistics_page(request: Request) -> HTMLResponse:
         return templates.TemplateResponse("statistics.html", ctx)
     finally:
         db.close()
+
+
+@app.get("/advisor", response_class=HTMLResponse)
+async def advisor_page(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        snap = portfolio_snapshot(db)
+        stats = statistics_snapshot(db)
+        symbol_rows = db.query(SymbolSnapshot).order_by(SymbolSnapshot.volume_24h.desc()).limit(30).all()
+        total_observations = db.query(MarketObservation).count()
+        shadow_open = db.query(ShadowTrade).filter(ShadowTrade.status == "open").count()
+        shadow_closed = db.query(ShadowTrade).filter(ShadowTrade.status == "closed").count()
+        shadow_pnl = db.query(ShadowTrade).filter(ShadowTrade.status == "closed", ShadowTrade.pnl.isnot(None)).all()
+        shadow_net = sum(float(t.pnl or 0.0) for t in shadow_pnl)
+        entry_logs = db.query(LogEntry).filter(LogEntry.event_type == "ENTRY_DECISION").order_by(desc(LogEntry.id)).limit(400).all()
+        latest_by_symbol: dict[str, str] = {}
+        reason_counter: Counter[str] = Counter()
+        for log in entry_logs:
+            message = log.message or ""
+            reason = _extract_log_field(message, "reason") or "unknown"
+            reason_counter[reason] += 1
+            sym = (log.symbol or "").strip()
+            if sym and sym != "-" and sym not in latest_by_symbol:
+                latest_by_symbol[sym] = message
+
+        global_notes: list[str] = []
+        if stats["total_trades"] < 15:
+            global_notes.append("Sample size is still small (<15 closed trades). Keep collecting paper data before major parameter changes.")
+        if stats["profit_factor"] < 1.0 and stats["total_trades"] > 0:
+            global_notes.append("Profit factor is below 1.0. Strategy quality is not stable yet.")
+        if stats["max_drawdown_pct"] > 5:
+            global_notes.append("Drawdown is elevated. Consider reducing risk per trade or max open trades.")
+        if snap["open_positions"] == 0:
+            global_notes.append("No open positions now. Check latest ENTRY_DECISION reasons for what is blocking entries.")
+        if reason_counter:
+            top_reason, count = reason_counter.most_common(1)[0]
+            global_notes.append(f"Most frequent block reason recently: {top_reason} ({count} times).")
+        if not global_notes:
+            global_notes.append("System behavior is stable. Keep monitoring and compare weekly performance before tuning.")
+
+        suggestions = []
+        for r in symbol_rows:
+            msg = latest_by_symbol.get(r.symbol, "")
+            score = _extract_log_field(msg, "score") or "-"
+            reason = _extract_log_field(msg, "reason") or "-"
+            suggestions.append(
+                {
+                    "symbol": r.symbol,
+                    "signal": r.signal_status,
+                    "trend": r.trend_status,
+                    "score": score,
+                    "reason": reason,
+                    "recommendation": _entry_recommendation(r.signal_status, reason, score),
+                }
+            )
+
+        ctx = _base_context("advisor")
+        ctx.update(
+            {
+                "request": request,
+                "global_notes": global_notes,
+                "suggestions": suggestions,
+                "summary": {
+                    "balance": f"{snap['balance']:.2f} USDT",
+                    "win_rate": f"{stats['win_rate']:.2f}%",
+                    "profit_factor": f"{stats['profit_factor']:.3f}",
+                    "total_trades": stats["total_trades"],
+                    "observations": total_observations,
+                    "shadow_open": shadow_open,
+                    "shadow_closed": shadow_closed,
+                    "shadow_net": f"{shadow_net:+.2f} USDT",
+                },
+            }
+        )
+        return templates.TemplateResponse("advisor.html", ctx)
+    finally:
+        db.close()
+
