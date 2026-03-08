@@ -41,8 +41,11 @@
 
     <main class="content">
       <header class="topbar">
-        <h1>{% block page_title %}Dashboard{% endblock %}</h1>
-        <p>Last update: {{ last_update }}</p>
+        <div>
+          <h1>{% block page_title %}Dashboard{% endblock %}</h1>
+          <p>Last update: {{ last_update }}</p>
+        </div>
+        <button type="button" class="btn ghost refresh-btn" onclick="window.location.reload()">Refresh</button>
       </header>
 
       {% block content %}{% endblock %}

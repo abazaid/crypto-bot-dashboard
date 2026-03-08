@@ -100,3 +100,57 @@ def apply_sqlite_migrations(engine: Engine) -> None:
         if "ai_provider" not in cols:
             conn.execute(text("ALTER TABLE ai_trades ADD COLUMN ai_provider VARCHAR(20) NOT NULL DEFAULT 'openai'"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_ai_provider ON ai_trades(ai_provider)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ai_chat_messages (
+                    id INTEGER PRIMARY KEY,
+                    ai_provider VARCHAR(20) NOT NULL,
+                    role VARCHAR(20) NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_chat_messages_ai_provider ON ai_chat_messages(ai_provider)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_chat_messages_created_at ON ai_chat_messages(created_at)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ai_agent_memories (
+                    id INTEGER PRIMARY KEY,
+                    ai_provider VARCHAR(20) NOT NULL,
+                    memory_type VARCHAR(40) NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_agent_memories_ai_provider ON ai_agent_memories(ai_provider)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_agent_memories_type ON ai_agent_memories(memory_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_agent_memories_created_at ON ai_agent_memories(created_at)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ai_provider_usage (
+                    id INTEGER PRIMARY KEY,
+                    ai_provider VARCHAR(20) NOT NULL,
+                    call_type VARCHAR(30) NOT NULL DEFAULT 'unknown',
+                    model_name VARCHAR(80),
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_provider_usage_ai_provider ON ai_provider_usage(ai_provider)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_provider_usage_call_type ON ai_provider_usage(call_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_provider_usage_created_at ON ai_provider_usage(created_at)"))

@@ -1,8 +1,10 @@
 import json
 import random
-from typing import Dict
+from typing import Any, Dict
 
 import requests
+
+from app.services.ai_usage import normalize_usage
 
 
 def _safe_json_loads(text: str) -> dict:
@@ -69,7 +71,7 @@ def _prompt(symbol_context: dict) -> str:
     )
 
 
-def _call_openai(api_key: str, model: str, symbol_context: dict) -> dict:
+def _call_openai(api_key: str, model: str, symbol_context: dict) -> tuple[dict, dict[str, Any]]:
     resp = requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -87,10 +89,10 @@ def _call_openai(api_key: str, model: str, symbol_context: dict) -> dict:
     resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"]
-    return _safe_json_loads(content)
+    return _safe_json_loads(content), normalize_usage("openai", model, data.get("usage", {}))
 
 
-def _call_claude(api_key: str, model: str, symbol_context: dict) -> dict:
+def _call_claude(api_key: str, model: str, symbol_context: dict) -> tuple[dict, dict[str, Any]]:
     resp = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -113,10 +115,10 @@ def _call_claude(api_key: str, model: str, symbol_context: dict) -> dict:
     for part in data.get("content", []):
         if part.get("type") == "text":
             text += part.get("text", "")
-    return _safe_json_loads(text)
+    return _safe_json_loads(text), normalize_usage("claude", model, data.get("usage", {}))
 
 
-def _call_deepseek(api_key: str, model: str, symbol_context: dict) -> dict:
+def _call_deepseek(api_key: str, model: str, symbol_context: dict) -> tuple[dict, dict[str, Any]]:
     resp = requests.post(
         "https://api.deepseek.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -134,10 +136,75 @@ def _call_deepseek(api_key: str, model: str, symbol_context: dict) -> dict:
     resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"]
-    return _safe_json_loads(content)
+    return _safe_json_loads(content), normalize_usage("deepseek", model, data.get("usage", {}))
+
+
+def _chat_openai(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> tuple[str, dict[str, Any]]:
+    payload_messages = [{"role": "system", "content": system_prompt}]
+    payload_messages.extend(messages)
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "temperature": 0.2, "messages": payload_messages, "max_tokens": 450},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = str(data["choices"][0]["message"]["content"]).strip()
+    return text, normalize_usage("openai", model, data.get("usage", {}))
+
+
+def _chat_claude(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> tuple[str, dict[str, Any]]:
+    claude_messages = []
+    for m in messages:
+        role = "assistant" if m.get("role") == "assistant" else "user"
+        claude_messages.append({"role": role, "content": str(m.get("content", ""))})
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": 500,
+            "temperature": 0.2,
+            "system": system_prompt,
+            "messages": claude_messages,
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = ""
+    for part in data.get("content", []):
+        if part.get("type") == "text":
+            text += part.get("text", "")
+    return text.strip(), normalize_usage("claude", model, data.get("usage", {}))
+
+
+def _chat_deepseek(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> tuple[str, dict[str, Any]]:
+    payload_messages = [{"role": "system", "content": system_prompt}]
+    payload_messages.extend(messages)
+    resp = requests.post(
+        "https://api.deepseek.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "temperature": 0.2, "messages": payload_messages, "max_tokens": 450},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = str(data["choices"][0]["message"]["content"]).strip()
+    return text, normalize_usage("deepseek", model, data.get("usage", {}))
 
 
 def propose_strategy(provider: str, symbol_context: Dict[str, float | str], cfg: Dict[str, str]) -> dict:
+    strategy, _ = propose_strategy_with_usage(provider, symbol_context, cfg)
+    return strategy
+
+
+def propose_strategy_with_usage(provider: str, symbol_context: Dict[str, float | str], cfg: Dict[str, str]) -> tuple[dict, dict[str, Any] | None]:
     provider = provider.lower().strip()
     seed = abs(hash(f"{provider}:{symbol_context.get('symbol','-')}:{symbol_context.get('score',0)}")) % 10_000_000
     fallback = _fallback_strategy(seed=seed)
@@ -147,30 +214,64 @@ def propose_strategy(provider: str, symbol_context: Dict[str, float | str], cfg:
             model = cfg.get("OPENAI_MODEL", "gpt-4o-mini")
             if not api_key:
                 fallback["strategy_source"] = "fallback_no_api_key"
-                return fallback
-            out = _normalize_strategy(_call_openai(api_key, model, symbol_context))
+                return fallback, None
+            raw, usage = _call_openai(api_key, model, symbol_context)
+            out = _normalize_strategy(raw)
             out["strategy_source"] = "llm_openai"
-            return out
+            return out, usage
         if provider == "claude":
             api_key = cfg.get("ANTHROPIC_API_KEY", "")
             model = cfg.get("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
             if not api_key:
                 fallback["strategy_source"] = "fallback_no_api_key"
-                return fallback
-            out = _normalize_strategy(_call_claude(api_key, model, symbol_context))
+                return fallback, None
+            raw, usage = _call_claude(api_key, model, symbol_context)
+            out = _normalize_strategy(raw)
             out["strategy_source"] = "llm_claude"
-            return out
+            return out, usage
         if provider == "deepseek":
             api_key = cfg.get("DEEPSEEK_API_KEY", "")
             model = cfg.get("DEEPSEEK_MODEL", "deepseek-chat")
             if not api_key:
                 fallback["strategy_source"] = "fallback_no_api_key"
-                return fallback
-            out = _normalize_strategy(_call_deepseek(api_key, model, symbol_context))
+                return fallback, None
+            raw, usage = _call_deepseek(api_key, model, symbol_context)
+            out = _normalize_strategy(raw)
             out["strategy_source"] = "llm_deepseek"
-            return out
+            return out, usage
     except Exception:
         fallback["strategy_source"] = "fallback_on_error"
-        return fallback
+        return fallback, None
     fallback["strategy_source"] = "fallback_unknown_provider"
-    return fallback
+    return fallback, None
+
+
+def chat_with_provider(provider: str, system_prompt: str, messages: list[dict], cfg: Dict[str, str]) -> str:
+    text, _ = chat_with_provider_with_usage(provider, system_prompt, messages, cfg)
+    return text
+
+
+def chat_with_provider_with_usage(provider: str, system_prompt: str, messages: list[dict], cfg: Dict[str, str]) -> tuple[str, dict[str, Any] | None]:
+    provider = provider.lower().strip()
+    try:
+        if provider == "openai":
+            api_key = cfg.get("OPENAI_API_KEY", "")
+            model = cfg.get("OPENAI_MODEL", "gpt-4o-mini")
+            if not api_key:
+                return "OpenAI API key is missing. Add OPENAI_API_KEY to enable model chat.", None
+            return _chat_openai(api_key, model, system_prompt, messages)
+        if provider == "claude":
+            api_key = cfg.get("ANTHROPIC_API_KEY", "")
+            model = cfg.get("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+            if not api_key:
+                return "Anthropic API key is missing. Add ANTHROPIC_API_KEY to enable model chat.", None
+            return _chat_claude(api_key, model, system_prompt, messages)
+        if provider == "deepseek":
+            api_key = cfg.get("DEEPSEEK_API_KEY", "")
+            model = cfg.get("DEEPSEEK_MODEL", "deepseek-chat")
+            if not api_key:
+                return "DeepSeek API key is missing. Add DEEPSEEK_API_KEY to enable model chat.", None
+            return _chat_deepseek(api_key, model, system_prompt, messages)
+    except Exception as exc:
+        return f"Model chat failed: {exc}", None
+    return "Unsupported provider for chat.", None

@@ -49,6 +49,9 @@
           <th>Notional</th>
           <th>PnL %</th>
           <th>PnL USDT</th>
+          <th>TP Target</th>
+          <th>SL</th>
+          <th>Trailing</th>
           <th>Strategy ID</th>
         </tr>
       </thead>
@@ -62,6 +65,9 @@
           <td>{{ t.notional }}</td>
           <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
           <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
+          <td>{{ t.tp_price }}</td>
+          <td>{{ t.sl_price }}</td>
+          <td>{{ t.trailing_stop_price if t.trailing_active else "Not Active" }}</td>
           <td>{{ t.strategy_id }}</td>
         </tr>
         {% endfor %}

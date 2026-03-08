@@ -18,8 +18,10 @@ from sqlalchemy.exc import OperationalError
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.migrations import apply_sqlite_migrations
-from app.models import AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
+from app.models import AIAgentMemory, AIChatMessage, AIProviderUsage, AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.paper_engine import init_defaults, portfolio_snapshot, run_cycle, statistics_snapshot
+from app.services.ai_providers import chat_with_provider_with_usage
+from app.services.ai_usage import record_usage
 from app.services.telegram_alerts import telegram_test
 
 app = FastAPI(title="Crypto Bot Dashboard")
@@ -104,6 +106,23 @@ def _provider_api_connected(provider: str) -> bool:
     if p == "deepseek":
         return bool(os.getenv("DEEPSEEK_API_KEY", "").strip())
     return True
+
+
+def _provider_env_cfg() -> dict:
+    return {
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+        "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+        "CLAUDE_MODEL": os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
+        "DEEPSEEK_API_KEY": os.getenv("DEEPSEEK_API_KEY", ""),
+        "DEEPSEEK_MODEL": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+    }
+
+
+def _local_day_start_utc_naive() -> datetime:
+    now_local = datetime.utcnow().replace(tzinfo=UTC_TZ).astimezone(APP_TZ)
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_local.astimezone(UTC_TZ).replace(tzinfo=None)
 
 
 @app.on_event("startup")
@@ -755,6 +774,10 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
             "notional": f"{t.notional_usdt:.2f} USDT",
             "pnl_pct": ((float(prices.get(t.symbol, t.entry_price)) - t.entry_price) / t.entry_price * 100) if t.entry_price else 0.0,
             "pnl_usdt": ((float(prices.get(t.symbol, t.entry_price)) - t.entry_price) * t.quantity) if t.quantity else 0.0,
+            "tp_price": f"{float(t.tp_price or 0.0):.6f}",
+            "sl_price": f"{float(t.sl_price or 0.0):.6f}",
+            "trailing_active": bool(t.trailing_active),
+            "trailing_stop_price": f"{float(t.trailing_stop_price or 0.0):.6f}" if t.trailing_stop_price else "-",
             "strategy_id": t.strategy_id,
         }
         for t in open_rows
@@ -799,6 +822,96 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
             }
         )
     recommendations.sort(key=lambda x: float(x["net_pnl"]), reverse=True)
+
+    usage_rows = db.query(AIProviderUsage).filter(AIProviderUsage.ai_provider == p).all()
+    daily_start = _local_day_start_utc_naive()
+    usage_daily = [u for u in usage_rows if u.created_at >= daily_start]
+    daily_tokens = sum(int(u.total_tokens or 0) for u in usage_daily)
+    daily_cost = sum(float(u.estimated_cost_usd or 0.0) for u in usage_daily)
+    total_tokens = sum(int(u.total_tokens or 0) for u in usage_rows)
+    total_cost = sum(float(u.estimated_cost_usd or 0.0) for u in usage_rows)
+
+    brain = {
+        "focus": "Monitoring momentum candidates and risk-adjusted entries.",
+        "entry_logic": "Trend + score-based confirmation from model-generated config.",
+        "exit_logic": "SL/TP/Trailing/Time Stop driven by active strategy config.",
+        "active_strategies": list({t.strategy_id for t in open_rows if t.strategy_id})[:4],
+        "recent_activity": [],
+    }
+    recent_logs = db.query(LogEntry).order_by(desc(LogEntry.id)).limit(300).all()
+    provider_logs = []
+    for lg in recent_logs:
+        msg = (lg.message or "").lower()
+        if msg.startswith(f"{p} ") or f"{p} scan" in msg or f"{p} opened" in msg or f"{p} closed" in msg:
+            provider_logs.append(lg)
+        if len(provider_logs) >= 8:
+            break
+    if provider_logs:
+        brain["recent_activity"] = [
+            f"{_as_local(l.timestamp).strftime('%H:%M:%S')} | {l.event_type} | {l.message}" for l in provider_logs
+        ]
+
+    memory_rows = (
+        db.query(AIAgentMemory)
+        .filter(AIAgentMemory.ai_provider == p)
+        .order_by(desc(AIAgentMemory.id))
+        .limit(20)
+        .all()
+    )
+    memory_rows.reverse()
+    memory_feed = []
+    for m in memory_rows:
+        memory_feed.append(
+            {
+                "time": _as_local(m.created_at).strftime("%H:%M:%S"),
+                "type": m.memory_type,
+                "content": m.content,
+            }
+        )
+    brain["memory_feed"] = memory_feed
+
+    latest_plan = next((m for m in reversed(memory_rows) if m.memory_type == "plan"), None)
+    if latest_plan:
+        try:
+            plan_json = json.loads(latest_plan.content)
+            nxt = plan_json.get("next_action")
+            if nxt:
+                brain["focus"] = f"{brain['focus']} Next: {nxt}"
+        except Exception:
+            pass
+
+    sample_trade = open_rows[0] if open_rows else (closed_rows[0] if closed_rows else None)
+    if sample_trade and sample_trade.strategy_json:
+        try:
+            cfg = json.loads(sample_trade.strategy_json)
+            brain["entry_logic"] = (
+                f"score>={cfg.get('score_threshold', 3)}, RSI {cfg.get('rsi_min', 35)}-{cfg.get('rsi_max', 65)}, "
+                f"volSpike x{cfg.get('volume_spike_multiplier', 1.3)}, resistance>={cfg.get('resistance_min_dist_pct', 1.5)}%"
+            )
+            brain["exit_logic"] = (
+                f"TP {float(cfg.get('tp_pct', 0.02))*100:.2f}% | SL {float(cfg.get('sl_pct', 0.012))*100:.2f}% | "
+                f"Trailing {float(cfg.get('trailing_stop_pct', 0.008))*100:.2f}% | TimeStop {cfg.get('time_stop_minutes', 120)}m"
+            )
+        except Exception:
+            pass
+
+    chat_rows = (
+        db.query(AIChatMessage)
+        .filter(AIChatMessage.ai_provider == p)
+        .order_by(AIChatMessage.id.desc())
+        .limit(80)
+        .all()
+    )
+    chat_rows.reverse()
+    chat_history = [
+        {
+            "role": r.role,
+            "message": r.message,
+            "time": _as_local(r.created_at).strftime("%H:%M"),
+        }
+        for r in chat_rows
+    ]
+
     api_connected = _provider_api_connected(p)
     return {
         "provider": p,
@@ -810,10 +923,16 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
             "closed_count": total_closed,
             "win_rate": f"{win_rate:.2f}%",
             "net_pnl": f"{net_pnl:+.4f} USDT",
+            "daily_tokens": f"{daily_tokens:,}",
+            "daily_cost": f"${daily_cost:.4f}",
+            "total_tokens": f"{total_tokens:,}",
+            "total_cost": f"${total_cost:.4f}",
         },
         "open_trades": open_data,
         "closed_trades": closed_data,
         "recommendations": recommendations[:12],
+        "brain": brain,
+        "chat_history": chat_history,
     }
 
 
@@ -881,9 +1000,58 @@ async def ai_trading_provider(request: Request, provider: str) -> HTMLResponse:
                 "open_trades": data["open_trades"],
                 "closed_trades": data["closed_trades"],
                 "recommendations": data["recommendations"],
+                "brain": data["brain"],
+                "chat_history": data["chat_history"],
             }
         )
         return templates.TemplateResponse("ai_trading_provider.html", ctx)
     finally:
         db.close()
+
+
+@app.post("/ai-trading/{provider}/chat")
+async def ai_trading_provider_chat(request: Request, provider: str) -> RedirectResponse:
+    p = provider.lower().strip()
+    if p not in {"openai", "claude", "deepseek"}:
+        return RedirectResponse("/ai-hub", status_code=303)
+
+    form = await request.form()
+    user_msg = str(form.get("message", "")).strip()
+    if not user_msg:
+        return RedirectResponse(f"/ai-trading/{p}", status_code=303)
+
+    db = SessionLocal()
+    try:
+        user_msg = user_msg[:2000]
+        db.add(AIChatMessage(ai_provider=p, role="user", message=user_msg))
+        db.flush()
+
+        data = _ai_provider_dashboard(db, p)
+        system_prompt = (
+            f"You are the trading agent for provider={p}. "
+            "Be concise, practical, and transparent. "
+            "Always explain what you are currently doing, your planned next action, "
+            "entry logic, exit logic, and risk controls. Do not claim guaranteed profit.\n"
+            f"Current summary: {json.dumps(data['summary'], ensure_ascii=True)}\n"
+            f"Current brain: {json.dumps(data['brain'], ensure_ascii=True)}"
+        )
+
+        history_rows = (
+            db.query(AIChatMessage)
+            .filter(AIChatMessage.ai_provider == p)
+            .order_by(AIChatMessage.id.desc())
+            .limit(20)
+            .all()
+        )
+        history_rows.reverse()
+        messages = [{"role": ("assistant" if h.role == "assistant" else "user"), "content": h.message} for h in history_rows]
+
+        reply, usage = chat_with_provider_with_usage(p, system_prompt, messages, _provider_env_cfg())
+        record_usage(db, p, "chat", usage)
+        db.add(AIChatMessage(ai_provider=p, role="assistant", message=reply[:4000]))
+        db.commit()
+    finally:
+        db.close()
+
+    return RedirectResponse(f"/ai-trading/{p}", status_code=303)
 

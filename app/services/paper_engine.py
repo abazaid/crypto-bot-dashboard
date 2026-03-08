@@ -9,7 +9,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
+from app.models import AIAgentMemory, AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.binance_public import get_24h_tickers, get_book_tickers, get_exchange_info, get_klines, get_prices
 from app.services.strategy import (
     atr_from_klines,
@@ -21,7 +21,8 @@ from app.services.strategy import (
     relative_strength_ok,
     trend_pullback_signal_with_checks,
 )
-from app.services.ai_providers import propose_strategy
+from app.services.ai_providers import propose_strategy_with_usage
+from app.services.ai_usage import record_usage
 from app.services.telegram_alerts import send_telegram_message
 
 EXCLUDED_SYMBOLS = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "DAIUSDT"}
@@ -301,6 +302,24 @@ def _set_ai_provider_balance(db: Session, provider: str, value: float) -> None:
         _set_setting(db, "ai_balance_usdt", safe_value)
 
 
+def _remember_ai(db: Session, provider: str, memory_type: str, payload: dict | str) -> None:
+    content = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=True)
+    db.add(AIAgentMemory(ai_provider=provider, memory_type=memory_type, content=str(content)[:8000]))
+    total = db.query(AIAgentMemory).filter(AIAgentMemory.ai_provider == provider).count()
+    keep_limit = 5000
+    if total > keep_limit:
+        to_delete = total - keep_limit
+        old_rows = (
+            db.query(AIAgentMemory)
+            .filter(AIAgentMemory.ai_provider == provider)
+            .order_by(AIAgentMemory.id.asc())
+            .limit(to_delete)
+            .all()
+        )
+        for row in old_rows:
+            db.delete(row)
+
+
 def _ai_provider_env(provider: str) -> dict:
     return {
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
@@ -510,6 +529,27 @@ def _scan_symbols_for_ai_provider(db: Session, provider: str) -> List[dict]:
             f"max_symbols={max_symbols} min_vol={min_quote_volume:.0f} max_spread={max_spread_pct:.2f}%"
         ),
     )
+    top = selected[:5]
+    _remember_ai(
+        db,
+        provider,
+        "scan_summary",
+        {
+            "selected": len(selected),
+            "max_symbols": max_symbols,
+            "min_quote_volume": min_quote_volume,
+            "max_spread_pct": max_spread_pct,
+            "top_symbols": [
+                {
+                    "symbol": t["symbol"],
+                    "score": round(float(t.get("score", 0.0)), 4),
+                    "vol24h": round(float(t.get("volume_24h", 0.0)), 2),
+                    "spread": round(float(t.get("spread_pct", 0.0)), 4),
+                }
+                for t in top
+            ],
+        },
+    )
     return selected
 
 
@@ -695,6 +735,19 @@ def _manage_ai_positions(db: Session, provider: str) -> None:
             f"{provider} closed reason={reason} pnl_pct={pnl_pct:+.2f}% pnl_usdt={pnl_value:+.4f}",
             t.symbol,
         )
+        _remember_ai(
+            db,
+            provider,
+            "exit",
+            {
+                "symbol": t.symbol,
+                "reason": reason,
+                "entry_price": round(float(t.entry_price), 8),
+                "exit_price": round(float(price), 8),
+                "pnl_pct": round(float(pnl_pct), 4),
+                "pnl_usdt": round(float(pnl_value), 6),
+            },
+        )
 
     _set_ai_provider_balance(db, provider, cash)
 
@@ -706,11 +759,23 @@ def _open_ai_trades(db: Session, provider: str) -> None:
     env_cfg = _ai_provider_env(provider)
     if provider in {"openai", "claude", "deepseek"} and not _provider_has_api_key(provider, env_cfg):
         _notify(db, "AI_TRADE", f"{provider} skipped: missing API key")
+        _remember_ai(db, provider, "guard", {"status": "skipped", "reason": "missing_api_key"})
         return
     day_pnl = _ai_provider_daily_realized_pnl(db, provider)
     daily_loss_limit_pct = float(cfg_p.get("daily_loss_limit_pct", 3.0))
     if day_pnl <= -(cfg_p["balance"] * (daily_loss_limit_pct / 100.0)):
         _notify(db, "AI_RISK", f"{provider} paused for day: daily loss limit reached ({day_pnl:+.4f} USDT)")
+        _remember_ai(
+            db,
+            provider,
+            "guard",
+            {
+                "status": "blocked",
+                "reason": "daily_loss_limit",
+                "day_pnl": round(day_pnl, 4),
+                "limit_pct": daily_loss_limit_pct,
+            },
+        )
         return
 
     ai_balance = cfg_p["balance"]
@@ -731,13 +796,40 @@ def _open_ai_trades(db: Session, provider: str) -> None:
     )
     if opened_today >= max_trades_per_day:
         _notify(db, "AI_RISK", f"{provider} paused for day: max trades reached ({opened_today}/{max_trades_per_day})")
+        _remember_ai(
+            db,
+            provider,
+            "guard",
+            {
+                "status": "blocked",
+                "reason": "max_trades_per_day",
+                "opened_today": opened_today,
+                "max_trades_per_day": max_trades_per_day,
+            },
+        )
         return
     ranked_symbols = _scan_symbols_for_ai_provider(db, provider)
 
     pool = ranked_symbols[: min(len(ranked_symbols), 80)]
     if not pool:
+        _remember_ai(db, provider, "plan", {"status": "idle", "reason": "empty_scan_pool"})
         return
     learning = _provider_learning_context(db, provider)
+    _remember_ai(
+        db,
+        provider,
+        "plan",
+        {
+            "status": "active",
+            "balance": round(ai_balance, 4),
+            "open_count": open_count,
+            "max_open": max_open,
+            "trials": trials,
+            "pool_size": len(pool),
+            "learning": learning,
+            "next_action": "evaluate_candidates_and_open_if_strategy_ready",
+        },
+    )
     random.shuffle(pool)
     attempts = 0
     for item in pool:
@@ -759,14 +851,25 @@ def _open_ai_trades(db: Session, provider: str) -> None:
             "vol_exp": round(float(item.get("recent_volume_expansion", 0.0)), 4),
             "learning": learning,
         }
-        cfg = propose_strategy(
+        cfg, usage = propose_strategy_with_usage(
             provider,
             ctx,
             env_cfg,
         )
+        record_usage(db, provider, "strategy", usage)
         cfg = _sanitize_ai_strategy(cfg)
         ready, _, checks = trend_pullback_signal_with_checks(item.get("k5") or [], item.get("k15") or [], config=cfg)
         if not ready:
+            _remember_ai(
+                db,
+                provider,
+                "entry_reject",
+                {
+                    "symbol": symbol,
+                    "reason": "strategy_not_ready",
+                    "score": f"{checks.get('score_count', 0)}/{checks.get('score_threshold', 3)}",
+                },
+            )
             continue
 
         tp_pct = float(cfg.get("tp_pct", 0.02))
@@ -814,6 +917,20 @@ def _open_ai_trades(db: Session, provider: str) -> None:
                 f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)}"
             ),
             symbol,
+        )
+        _remember_ai(
+            db,
+            provider,
+            "entry_accept",
+            {
+                "symbol": symbol,
+                "entry_price": round(price, 8),
+                "notional": round(notional, 4),
+                "strategy_id": trade.strategy_id,
+                "source": cfg.get("strategy_source", "unknown"),
+                "score": f"{checks.get('score_count', 0)}/{checks.get('score_threshold', 3)}",
+                "next_action": "monitor_open_trade_for_tp_sl_trailing_timestop",
+            },
         )
 
     _set_ai_provider_balance(db, provider, ai_balance)

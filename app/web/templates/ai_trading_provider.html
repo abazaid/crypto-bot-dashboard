@@ -26,6 +26,16 @@
     <h3>{{ summary.open_count }}</h3>
   </article>
   <article class="card">
+    <p>Daily Tokens</p>
+    <h3>{{ summary.daily_tokens }}</h3>
+    <p>Daily Cost: {{ summary.daily_cost }}</p>
+  </article>
+  <article class="card">
+    <p>Total Tokens</p>
+    <h3>{{ summary.total_tokens }}</h3>
+    <p>Total Cost: {{ summary.total_cost }}</p>
+  </article>
+  <article class="card">
     <p>Closed Trades</p>
     <h3>{{ summary.closed_count }}</h3>
   </article>
@@ -37,6 +47,53 @@
     <p>Net PnL</p>
     <h3 class="{% if '-' in summary.net_pnl %}down{% else %}up{% endif %}">{{ summary.net_pnl }}</h3>
   </article>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Model Brain</h2>
+    <span>What this model is doing now</span>
+  </div>
+  <div class="advisor-notes">
+    <div class="log-item"><p><strong>Current Focus:</strong> {{ brain.focus }}</p></div>
+    <div class="log-item"><p><strong>Entry Logic:</strong> {{ brain.entry_logic }}</p></div>
+    <div class="log-item"><p><strong>Exit Logic:</strong> {{ brain.exit_logic }}</p></div>
+    <div class="log-item"><p><strong>Active Strategies:</strong> {{ brain.active_strategies|join(', ') if brain.active_strategies else '-' }}</p></div>
+  </div>
+  <div class="table-wrap" style="margin-top:10px;">
+    <table>
+      <thead>
+        <tr>
+          <th>Recent Activity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in brain.recent_activity %}
+        <tr><td>{{ row }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="table-wrap" style="margin-top:10px;">
+    <table>
+      <thead>
+        <tr>
+          <th>Memory Time</th>
+          <th>Memory Type</th>
+          <th>Saved Memory</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in brain.memory_feed %}
+        <tr>
+          <td>{{ m.time }}</td>
+          <td>{{ m.type }}</td>
+          <td>{{ m.content }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
 
 <section class="panel">
@@ -55,6 +112,9 @@
           <th>Notional</th>
           <th>PnL %</th>
           <th>PnL USDT</th>
+          <th>TP Target</th>
+          <th>SL</th>
+          <th>Trailing</th>
           <th>Strategy ID</th>
         </tr>
       </thead>
@@ -68,6 +128,9 @@
           <td>{{ t.notional }}</td>
           <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
           <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
+          <td>{{ t.tp_price }}</td>
+          <td>{{ t.sl_price }}</td>
+          <td>{{ t.trailing_stop_price if t.trailing_active else "Not Active" }}</td>
           <td>{{ t.strategy_id }}</td>
         </tr>
         {% endfor %}
@@ -113,6 +176,25 @@
       </tbody>
     </table>
   </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Model Chat</h2>
+    <span>Saved per model</span>
+  </div>
+  <div class="chat-wrap">
+    {% for m in chat_history %}
+    <div class="chat-msg {{ 'assistant' if m.role == 'assistant' else 'user' }}">
+      <div class="chat-meta">{{ m.time }} · {{ m.role }}</div>
+      <div class="chat-text">{{ m.message }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <form method="post" action="/ai-trading/{{ provider }}/chat" class="chat-form">
+    <textarea name="message" rows="3" placeholder="Ask the model: what are you doing now? why this entry? what's next?"></textarea>
+    <button class="btn" type="submit">Send</button>
+  </form>
 </section>
 
 <section class="panel">

@@ -112,6 +112,10 @@ body {
 
 .topbar {
   margin-bottom: 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .topbar h1 {
@@ -122,6 +126,10 @@ body {
 .topbar p {
   margin: 8px 0 0;
   color: var(--muted);
+}
+
+.refresh-btn {
+  margin-top: 2px;
 }
 
 .grid.cards {
@@ -350,6 +358,60 @@ th {
   white-space: nowrap;
 }
 
+.chat-wrap {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.chat-msg {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.chat-msg.user {
+  border-color: rgba(89, 183, 255, 0.5);
+}
+
+.chat-msg.assistant {
+  border-color: rgba(45, 212, 168, 0.4);
+}
+
+.chat-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.chat-text {
+  white-space: pre-wrap;
+  line-height: 1.35;
+}
+
+.chat-form {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.chat-form textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 70px;
+  background: #0b1428;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
 @media (max-width: 960px) {
   .layout {
     grid-template-columns: 1fr;
@@ -384,6 +446,10 @@ th {
 
   .topbar h1 {
     font-size: 22px;
+  }
+
+  .topbar {
+    align-items: center;
   }
 
   th,
@@ -435,6 +501,15 @@ th {
     font-size: 13px;
   }
 
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .refresh-btn {
+    width: 100%;
+  }
+
   .panel {
     padding: 12px;
     margin-top: 10px;
@@ -482,5 +557,9 @@ th {
 
   .advisor-table td.recommendation {
     min-width: 240px;
+  }
+
+  .chat-form {
+    flex-direction: column;
   }
 }
