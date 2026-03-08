@@ -3,7 +3,7 @@
 {% block page_title %}AI Trading {{ provider|upper }} Lab{% endblock %}
 {% block content %}
 <section class="actions">
-  <a href="/ai-trading" class="btn ghost">Back to AI Hub</a>
+  <a href="/ai-hub" class="btn ghost">Back to AI Hub</a>
 </section>
 
 <section class="grid cards">
@@ -14,6 +14,12 @@
   <article class="card">
     <p>AI Balance</p>
     <h3>{{ summary.balance }}</h3>
+  </article>
+  <article class="card">
+    <p>API Status</p>
+    <h3 class="{% if summary.api_connected %}up{% else %}down{% endif %}">
+      {{ "Connected" if summary.api_connected else "Not Connected" }}
+    </h3>
   </article>
   <article class="card">
     <p>Open Trades</p>
@@ -45,7 +51,10 @@
           <th>Symbol</th>
           <th>Entry Time</th>
           <th>Entry Price</th>
+          <th>Current Price</th>
           <th>Notional</th>
+          <th>PnL %</th>
+          <th>PnL USDT</th>
           <th>Strategy ID</th>
         </tr>
       </thead>
@@ -55,7 +64,10 @@
           <td>{{ t.symbol }}</td>
           <td>{{ t.entry_time }}</td>
           <td>{{ t.entry_price }}</td>
+          <td>{{ t.current_price }}</td>
           <td>{{ t.notional }}</td>
+          <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
+          <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
           <td>{{ t.strategy_id }}</td>
         </tr>
         {% endfor %}
@@ -76,6 +88,8 @@
           <th>Symbol</th>
           <th>Entry</th>
           <th>Exit</th>
+          <th>Entry Price</th>
+          <th>Exit Price</th>
           <th>PnL %</th>
           <th>PnL USDT</th>
           <th>Exit Reason</th>
@@ -88,6 +102,8 @@
           <td>{{ t.symbol }}</td>
           <td>{{ t.entry_time }}</td>
           <td>{{ t.exit_time }}</td>
+          <td>{{ t.entry_price }}</td>
+          <td>{{ t.exit_price }}</td>
           <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
           <td class="{% if '-' in t.pnl_usdt %}down{% else %}up{% endif %}">{{ t.pnl_usdt }}</td>
           <td>{{ t.exit_reason }}</td>

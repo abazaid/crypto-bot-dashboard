@@ -2,6 +2,7 @@ import time
 import threading
 import re
 import json
+import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -92,6 +93,17 @@ def _entry_recommendation(signal: str, reason: str, score: str) -> str:
     if signal_l == "blocked":
         return "Core conditions blocked for now."
     return "No action yet. Continue monitoring."
+
+
+def _provider_api_connected(provider: str) -> bool:
+    p = provider.lower().strip()
+    if p == "openai":
+        return bool(os.getenv("OPENAI_API_KEY", "").strip())
+    if p == "claude":
+        return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
+    if p == "deepseek":
+        return bool(os.getenv("DEEPSEEK_API_KEY", "").strip())
+    return True
 
 
 @app.on_event("startup")
@@ -731,13 +743,18 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
     wins = [t for t in closed_rows if (t.pnl or 0.0) > 0]
     net_pnl = sum(float(t.pnl or 0.0) for t in closed_rows)
     win_rate = (len(wins) / total_closed * 100) if total_closed else 0.0
+    from app.services.binance_public import get_prices
+    prices = get_prices([t.symbol for t in open_rows]) if open_rows else {}
 
     open_data = [
         {
             "symbol": t.symbol,
             "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
             "entry_price": f"{t.entry_price:.6f}",
+            "current_price": f"{float(prices.get(t.symbol, t.entry_price)):.6f}",
             "notional": f"{t.notional_usdt:.2f} USDT",
+            "pnl_pct": ((float(prices.get(t.symbol, t.entry_price)) - t.entry_price) / t.entry_price * 100) if t.entry_price else 0.0,
+            "pnl_usdt": ((float(prices.get(t.symbol, t.entry_price)) - t.entry_price) * t.quantity) if t.quantity else 0.0,
             "strategy_id": t.strategy_id,
         }
         for t in open_rows
@@ -747,6 +764,8 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
             "symbol": t.symbol,
             "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
             "exit_time": _as_local(t.exit_time).strftime("%Y-%m-%d %H:%M") if t.exit_time else "-",
+            "entry_price": f"{t.entry_price:.6f}",
+            "exit_price": f"{float(t.exit_price or 0.0):.6f}",
             "pnl_pct": float(t.pnl_pct or 0.0),
             "pnl_usdt": f"{float(t.pnl or 0.0):+.4f}",
             "exit_reason": t.exit_reason or "-",
@@ -780,10 +799,12 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
             }
         )
     recommendations.sort(key=lambda x: float(x["net_pnl"]), reverse=True)
+    api_connected = _provider_api_connected(p)
     return {
         "provider": p,
         "summary": {
             "enabled": enabled,
+            "api_connected": api_connected,
             "balance": f"{balance:.2f} USDT",
             "open_count": len(open_rows),
             "closed_count": total_closed,
@@ -797,6 +818,26 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
 
 
 @app.get("/ai-trading", response_class=HTMLResponse)
+async def ai_trading_classic(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        data = _ai_provider_dashboard(db, "classic")
+        ctx = _base_context("ai_trading")
+        ctx.update(
+            {
+                "request": request,
+                "summary": data["summary"],
+                "open_trades": data["open_trades"],
+                "closed_trades": data["closed_trades"],
+                "recommendations": data["recommendations"],
+            }
+        )
+        return templates.TemplateResponse("ai_trading.html", ctx)
+    finally:
+        db.close()
+
+
+@app.get("/ai-hub", response_class=HTMLResponse)
 async def ai_trading_hub(request: Request) -> HTMLResponse:
     db = SessionLocal()
     try:
@@ -808,6 +849,7 @@ async def ai_trading_hub(request: Request) -> HTMLResponse:
                     "id": p,
                     "title": p.capitalize(),
                     "enabled": data["summary"]["enabled"],
+                    "api_connected": data["summary"]["api_connected"],
                     "balance": data["summary"]["balance"],
                     "open_count": data["summary"]["open_count"],
                     "closed_count": data["summary"]["closed_count"],
@@ -826,7 +868,7 @@ async def ai_trading_hub(request: Request) -> HTMLResponse:
 async def ai_trading_provider(request: Request, provider: str) -> HTMLResponse:
     p = provider.lower().strip()
     if p not in {"openai", "claude", "deepseek"}:
-        return RedirectResponse("/ai-trading", status_code=303)
+        return RedirectResponse("/ai-hub", status_code=303)
     db = SessionLocal()
     try:
         data = _ai_provider_dashboard(db, p)

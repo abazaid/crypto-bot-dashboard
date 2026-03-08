@@ -54,7 +54,9 @@ def _normalize_strategy(cfg: dict) -> dict:
 
 def _prompt(symbol_context: dict) -> str:
     return (
+        "You are a senior crypto trader focused on capital protection first, then returns.\n"
         "You are building a PAPER crypto trading strategy config for one symbol.\n"
+        "Prefer robust, risk-aware settings and avoid overfitting/noise-chasing.\n"
         "Return ONLY JSON with keys:\n"
         "score_threshold, pullback_max_dist_pct, rsi_min, rsi_max, volume_spike_multiplier,\n"
         "resistance_min_dist_pct, price_above_ema50_enabled, tp_pct, sl_pct,\n"
@@ -144,20 +146,31 @@ def propose_strategy(provider: str, symbol_context: Dict[str, float | str], cfg:
             api_key = cfg.get("OPENAI_API_KEY", "")
             model = cfg.get("OPENAI_MODEL", "gpt-4o-mini")
             if not api_key:
+                fallback["strategy_source"] = "fallback_no_api_key"
                 return fallback
-            return _normalize_strategy(_call_openai(api_key, model, symbol_context))
+            out = _normalize_strategy(_call_openai(api_key, model, symbol_context))
+            out["strategy_source"] = "llm_openai"
+            return out
         if provider == "claude":
             api_key = cfg.get("ANTHROPIC_API_KEY", "")
             model = cfg.get("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
             if not api_key:
+                fallback["strategy_source"] = "fallback_no_api_key"
                 return fallback
-            return _normalize_strategy(_call_claude(api_key, model, symbol_context))
+            out = _normalize_strategy(_call_claude(api_key, model, symbol_context))
+            out["strategy_source"] = "llm_claude"
+            return out
         if provider == "deepseek":
             api_key = cfg.get("DEEPSEEK_API_KEY", "")
             model = cfg.get("DEEPSEEK_MODEL", "deepseek-chat")
             if not api_key:
+                fallback["strategy_source"] = "fallback_no_api_key"
                 return fallback
-            return _normalize_strategy(_call_deepseek(api_key, model, symbol_context))
+            out = _normalize_strategy(_call_deepseek(api_key, model, symbol_context))
+            out["strategy_source"] = "llm_deepseek"
+            return out
     except Exception:
+        fallback["strategy_source"] = "fallback_on_error"
         return fallback
+    fallback["strategy_source"] = "fallback_unknown_provider"
     return fallback

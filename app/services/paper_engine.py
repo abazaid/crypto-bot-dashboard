@@ -156,24 +156,77 @@ def init_defaults(db: Session) -> None:
         "ai_entry_usdt": "30",
         "ai_max_open": "15",
         "ai_trials_per_cycle": "20",
+        "ai_classic_enabled": "true",
+        "ai_classic_balance_usdt": "500",
+        "ai_classic_entry_usdt": "30",
+        "ai_classic_max_open": "15",
+        "ai_classic_trials_per_cycle": "20",
+        "ai_classic_scan_symbols": "80",
+        "ai_classic_min_quote_volume": "10000000",
+        "ai_classic_max_spread_pct": "0.20",
+        "ai_classic_daily_loss_limit_pct": "3.0",
+        "ai_classic_max_trades_per_day": "20",
+        "ai_classic_max_risk_per_trade_pct": "1.0",
         "ai_openai_enabled": "true",
         "ai_openai_balance_usdt": "500",
         "ai_openai_entry_usdt": "30",
         "ai_openai_max_open": "10",
         "ai_openai_trials_per_cycle": "20",
+        "ai_openai_scan_symbols": "80",
+        "ai_openai_min_quote_volume": "10000000",
+        "ai_openai_max_spread_pct": "0.20",
+        "ai_openai_daily_loss_limit_pct": "3.0",
+        "ai_openai_max_trades_per_day": "20",
+        "ai_openai_max_risk_per_trade_pct": "1.0",
         "ai_claude_enabled": "true",
         "ai_claude_balance_usdt": "500",
         "ai_claude_entry_usdt": "30",
         "ai_claude_max_open": "10",
         "ai_claude_trials_per_cycle": "20",
+        "ai_claude_scan_symbols": "80",
+        "ai_claude_min_quote_volume": "10000000",
+        "ai_claude_max_spread_pct": "0.20",
+        "ai_claude_daily_loss_limit_pct": "3.0",
+        "ai_claude_max_trades_per_day": "20",
+        "ai_claude_max_risk_per_trade_pct": "1.0",
         "ai_deepseek_enabled": "true",
         "ai_deepseek_balance_usdt": "500",
         "ai_deepseek_entry_usdt": "30",
         "ai_deepseek_max_open": "10",
         "ai_deepseek_trials_per_cycle": "20",
+        "ai_deepseek_scan_symbols": "80",
+        "ai_deepseek_min_quote_volume": "10000000",
+        "ai_deepseek_max_spread_pct": "0.20",
+        "ai_deepseek_daily_loss_limit_pct": "3.0",
+        "ai_deepseek_max_trades_per_day": "20",
+        "ai_deepseek_max_risk_per_trade_pct": "1.0",
     }
     for key, default in defaults.items():
         _get_setting(db, key, default)
+
+    # Backward compatibility: keep old generic AI settings mirrored to classic lab.
+    legacy_to_classic = {
+        "ai_balance_usdt": "ai_classic_balance_usdt",
+        "ai_entry_usdt": "ai_classic_entry_usdt",
+        "ai_max_open": "ai_classic_max_open",
+        "ai_trials_per_cycle": "ai_classic_trials_per_cycle",
+        "ai_trading_enabled": "ai_classic_enabled",
+    }
+    for legacy_key, classic_key in legacy_to_classic.items():
+        legacy_row = db.query(Setting).filter(Setting.key == legacy_key).first()
+        classic_row = db.query(Setting).filter(Setting.key == classic_key).first()
+        if legacy_row and classic_row and classic_row.value == defaults[classic_key]:
+            classic_row.value = legacy_row.value
+
+    # One-time split: move historical single-lab rows to classic provider.
+    split_row = db.query(Setting).filter(Setting.key == "ai_provider_split_done").first()
+    if not split_row or split_row.value != "true":
+        db.query(AITrade).filter(AITrade.ai_provider == "openai").update({"ai_provider": "classic"}, synchronize_session=False)
+        if split_row:
+            split_row.value = "true"
+        else:
+            db.add(Setting(key="ai_provider_split_done", value="true"))
+        _log(db, "AI_TRADE", "Migrated legacy AI trades to classic provider")
 
     # Upgrade old defaults to enhanced profile only if values are still legacy.
     upgrades = {
@@ -217,18 +270,247 @@ def _strategy_config(db: Session) -> dict:
 
 def _ai_provider_cfg(db: Session, provider: str) -> dict:
     p = provider.lower().strip()
+    if p == "classic":
+        return {
+            "enabled": _get_bool(db, "ai_classic_enabled", _get_bool(db, "ai_trading_enabled", True)),
+            "balance": _get_float(db, "ai_classic_balance_usdt", _get_float(db, "ai_balance_usdt", 500.0)),
+            "entry_usdt": _get_float(db, "ai_classic_entry_usdt", _get_float(db, "ai_entry_usdt", 30.0)),
+            "max_open": _get_int(db, "ai_classic_max_open", _get_int(db, "ai_max_open", 15)),
+            "trials_per_cycle": _get_int(db, "ai_classic_trials_per_cycle", _get_int(db, "ai_trials_per_cycle", 20)),
+            "daily_loss_limit_pct": _get_float(db, "ai_classic_daily_loss_limit_pct", 3.0),
+            "max_trades_per_day": _get_int(db, "ai_classic_max_trades_per_day", 20),
+            "max_risk_per_trade_pct": _get_float(db, "ai_classic_max_risk_per_trade_pct", 1.0),
+        }
     return {
         "enabled": _get_bool(db, f"ai_{p}_enabled", True),
         "balance": _get_float(db, f"ai_{p}_balance_usdt", 500.0),
         "entry_usdt": _get_float(db, f"ai_{p}_entry_usdt", 30.0),
         "max_open": _get_int(db, f"ai_{p}_max_open", 10),
         "trials_per_cycle": _get_int(db, f"ai_{p}_trials_per_cycle", 20),
+        "daily_loss_limit_pct": _get_float(db, f"ai_{p}_daily_loss_limit_pct", 3.0),
+        "max_trades_per_day": _get_int(db, f"ai_{p}_max_trades_per_day", 20),
+        "max_risk_per_trade_pct": _get_float(db, f"ai_{p}_max_risk_per_trade_pct", 1.0),
     }
 
 
 def _set_ai_provider_balance(db: Session, provider: str, value: float) -> None:
     p = provider.lower().strip()
-    _set_setting(db, f"ai_{p}_balance_usdt", f"{max(0.0, value):.8f}")
+    safe_value = f"{max(0.0, value):.8f}"
+    _set_setting(db, f"ai_{p}_balance_usdt", safe_value)
+    if p == "classic":
+        _set_setting(db, "ai_balance_usdt", safe_value)
+
+
+def _ai_provider_env(provider: str) -> dict:
+    return {
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+        "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+        "CLAUDE_MODEL": os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
+        "DEEPSEEK_API_KEY": os.getenv("DEEPSEEK_API_KEY", ""),
+        "DEEPSEEK_MODEL": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+    }
+
+
+def _provider_has_api_key(provider: str, env_cfg: dict) -> bool:
+    p = provider.lower().strip()
+    if p == "openai":
+        return bool(env_cfg.get("OPENAI_API_KEY"))
+    if p == "claude":
+        return bool(env_cfg.get("ANTHROPIC_API_KEY"))
+    if p == "deepseek":
+        return bool(env_cfg.get("DEEPSEEK_API_KEY"))
+    return True
+
+
+def _provider_learning_context(db: Session, provider: str) -> dict:
+    closed = (
+        db.query(AITrade)
+        .filter(AITrade.status == "closed", AITrade.ai_provider == provider)
+        .order_by(desc(AITrade.exit_time))
+        .limit(120)
+        .all()
+    )
+    if not closed:
+        return {"closed_count": 0, "win_rate": 0.0, "net_pnl": 0.0, "top_strategies": []}
+
+    wins = [t for t in closed if float(t.pnl or 0.0) > 0]
+    win_rate = (len(wins) / len(closed)) * 100
+    net_pnl = sum(float(t.pnl or 0.0) for t in closed)
+
+    by_strategy: dict[str, dict] = {}
+    for t in closed:
+        sid = t.strategy_id or "-"
+        row = by_strategy.setdefault(sid, {"count": 0, "wins": 0, "net": 0.0})
+        row["count"] += 1
+        pnl_v = float(t.pnl or 0.0)
+        row["net"] += pnl_v
+        if pnl_v > 0:
+            row["wins"] += 1
+
+    ranked = []
+    for sid, row in by_strategy.items():
+        if row["count"] < 3:
+            continue
+        ranked.append(
+            {
+                "strategy_id": sid,
+                "trades": row["count"],
+                "win_rate": round((row["wins"] / row["count"]) * 100, 2),
+                "net_pnl": round(row["net"], 4),
+            }
+        )
+    ranked.sort(key=lambda x: x["net_pnl"], reverse=True)
+
+    return {
+        "closed_count": len(closed),
+        "win_rate": round(win_rate, 2),
+        "net_pnl": round(net_pnl, 4),
+        "top_strategies": ranked[:5],
+    }
+
+
+def _ai_provider_day_start_utc() -> datetime:
+    return _ksa_day_start_utc()
+
+
+def _ai_provider_daily_realized_pnl(db: Session, provider: str) -> float:
+    day_start = _ai_provider_day_start_utc()
+    rows = (
+        db.query(AITrade)
+        .filter(AITrade.status == "closed", AITrade.ai_provider == provider, AITrade.exit_time >= day_start)
+        .all()
+    )
+    return sum(float(t.pnl or 0.0) for t in rows)
+
+
+def _sanitize_ai_strategy(cfg: dict) -> dict:
+    out = dict(cfg or {})
+    out["score_threshold"] = max(2, min(4, int(float(out.get("score_threshold", 3)))))
+    out["pullback_max_dist_pct"] = max(0.5, min(2.0, float(out.get("pullback_max_dist_pct", 1.2))))
+    out["rsi_min"] = max(20.0, min(45.0, float(out.get("rsi_min", 35.0))))
+    out["rsi_max"] = max(55.0, min(80.0, float(out.get("rsi_max", 65.0))))
+    if out["rsi_max"] <= out["rsi_min"] + 8:
+        out["rsi_max"] = out["rsi_min"] + 8
+    out["volume_spike_multiplier"] = max(1.0, min(2.5, float(out.get("volume_spike_multiplier", 1.3))))
+    out["resistance_min_dist_pct"] = max(0.5, min(3.5, float(out.get("resistance_min_dist_pct", 1.5))))
+    out["tp_pct"] = max(0.01, min(0.06, float(out.get("tp_pct", 0.03))))
+    out["sl_pct"] = max(0.005, min(0.03, float(out.get("sl_pct", 0.012))))
+    out["trailing_stop_pct"] = max(0.003, min(0.02, float(out.get("trailing_stop_pct", 0.01))))
+    out["time_stop_minutes"] = max(30, min(360, int(float(out.get("time_stop_minutes", 120)))))
+    out["use_score_system"] = True
+    out["trend_enabled"] = True
+    out["pullback_enabled"] = True
+    out["rsi_enabled"] = True
+    out["volume_spike_enabled"] = True
+    out["resistance_enabled"] = True
+    out["price_above_ema50_enabled"] = bool(out.get("price_above_ema50_enabled", True))
+    return out
+
+
+def _scan_symbols_for_ai_provider(db: Session, provider: str) -> List[dict]:
+    p = provider.lower().strip()
+    max_symbols = max(5, _get_int(db, f"ai_{p}_scan_symbols", 80))
+    min_quote_volume = max(_get_float(db, f"ai_{p}_min_quote_volume", 10_000_000.0), SAFETY_MIN_24H_VOLUME)
+    max_spread_pct = min(_get_float(db, f"ai_{p}_max_spread_pct", 0.20), SAFETY_MAX_SPREAD_PCT)
+
+    t24 = get_24h_tickers()
+    books = get_book_tickers()
+    book_map: Dict[str, dict] = {b["symbol"]: b for b in books}
+
+    candidates = []
+    for t in t24:
+        symbol = t["symbol"]
+        if not symbol.endswith("USDT") or symbol in EXCLUDED_SYMBOLS:
+            continue
+        quote_vol = float(t.get("quoteVolume", 0.0))
+        if quote_vol < min_quote_volume:
+            continue
+        book = book_map.get(symbol)
+        if not book:
+            continue
+        bid = float(book.get("bidPrice", 0.0))
+        ask = float(book.get("askPrice", 0.0))
+        last = float(t.get("lastPrice", 0.0))
+        if bid <= 0 or ask <= 0 or last <= 0:
+            continue
+        spread_pct = ((ask - bid) / last) * 100
+        if spread_pct > max_spread_pct:
+            continue
+        candidates.append({"symbol": symbol, "volume_24h": quote_vol, "spread_pct": spread_pct, "last_price": last})
+
+    if not candidates:
+        return []
+
+    btc_k15 = get_klines("BTCUSDT", "15m", 60)
+    btc_closes_15m = [float(k[4]) for k in btc_k15]
+    btc_change_15m = percent_change(btc_closes_15m, 1)
+
+    ranked: List[dict] = []
+    for item in candidates:
+        symbol = item["symbol"]
+        try:
+            k5 = get_klines(symbol, "5m", 260)
+            k15 = get_klines(symbol, "15m", 260)
+            quote_volumes_5m = [float(k[7]) for k in k5]
+            closes_5m = [float(k[4]) for k in k5]
+            closes_15m = [float(k[4]) for k in k15]
+            if len(quote_volumes_5m) < 50 or len(closes_15m) < 10:
+                continue
+            atr14 = atr_from_klines(k15, 14)
+            last_price = max(float(item["last_price"]), 1e-9)
+            atr_ratio = atr14 / last_price
+            if atr_ratio < SAFETY_MIN_ATR_RATIO:
+                continue
+
+            volume_1h = sum(quote_volumes_5m[-12:])
+            volume_24h = max(item["volume_24h"], 1.0)
+            vol_ratio_1h_24h = volume_1h / volume_24h
+            vol_last_5 = sum(quote_volumes_5m[-5:])
+            avg_vol_last_50 = max(mean(quote_volumes_5m[-50:]), 1.0)
+            recent_volume_expansion = vol_last_5 / avg_vol_last_50
+            dynamic_volume_score = vol_ratio_1h_24h + recent_volume_expansion
+
+            coin_change_15m = percent_change(closes_15m, 1)
+            relative_strength = coin_change_15m - btc_change_15m
+            short_term_momentum = percent_change(closes_5m, 3)
+            current_bb = bb_width(closes_5m[-30:], 20)
+            base_bb = min(
+                bb_width(closes_5m[i - 20 : i], 20)
+                for i in range(25, len(closes_5m))
+                if len(closes_5m[i - 20 : i]) >= 20
+            )
+            volatility_expansion = (current_bb / base_bb) if base_bb > 0 else 0.0
+            final_score = dynamic_volume_score + (relative_strength * 0.8) + (short_term_momentum * 0.4) + (volatility_expansion * 0.6)
+            ranked.append(
+                {
+                    **item,
+                    "score": final_score,
+                    "dynamic_volume_score": dynamic_volume_score,
+                    "vol_ratio_1h_24h": vol_ratio_1h_24h,
+                    "recent_volume_expansion": recent_volume_expansion,
+                    "relative_strength": relative_strength,
+                    "short_term_momentum": short_term_momentum,
+                    "volatility_expansion": volatility_expansion,
+                    "atr_ratio": atr_ratio,
+                    "k5": k5,
+                    "k15": k15,
+                }
+            )
+        except Exception:
+            continue
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    selected = ranked[:max_symbols]
+    _notify(
+        db,
+        "AI_SCAN",
+        (
+            f"{provider} scan selected={len(selected)} "
+            f"max_symbols={max_symbols} min_vol={min_quote_volume:.0f} max_spread={max_spread_pct:.2f}%"
+        ),
+    )
+    return selected
 
 
 def _ai_strategy_id(cfg: dict) -> str:
@@ -417,10 +699,20 @@ def _manage_ai_positions(db: Session, provider: str) -> None:
     _set_ai_provider_balance(db, provider, cash)
 
 
-def _open_ai_trades(db: Session, ranked_symbols: List[dict], provider: str) -> None:
+def _open_ai_trades(db: Session, provider: str) -> None:
     cfg_p = _ai_provider_cfg(db, provider)
     if not cfg_p["enabled"]:
         return
+    env_cfg = _ai_provider_env(provider)
+    if provider in {"openai", "claude", "deepseek"} and not _provider_has_api_key(provider, env_cfg):
+        _notify(db, "AI_TRADE", f"{provider} skipped: missing API key")
+        return
+    day_pnl = _ai_provider_daily_realized_pnl(db, provider)
+    daily_loss_limit_pct = float(cfg_p.get("daily_loss_limit_pct", 3.0))
+    if day_pnl <= -(cfg_p["balance"] * (daily_loss_limit_pct / 100.0)):
+        _notify(db, "AI_RISK", f"{provider} paused for day: daily loss limit reached ({day_pnl:+.4f} USDT)")
+        return
+
     ai_balance = cfg_p["balance"]
     if ai_balance < 20:
         return
@@ -430,10 +722,22 @@ def _open_ai_trades(db: Session, ranked_symbols: List[dict], provider: str) -> N
         return
     entry_notional = float(cfg_p["entry_usdt"])
     trials = int(cfg_p["trials_per_cycle"])
+    max_trades_per_day = int(cfg_p.get("max_trades_per_day", 20))
+    day_start = _ai_provider_day_start_utc()
+    opened_today = (
+        db.query(AITrade)
+        .filter(AITrade.ai_provider == provider, AITrade.entry_time >= day_start)
+        .count()
+    )
+    if opened_today >= max_trades_per_day:
+        _notify(db, "AI_RISK", f"{provider} paused for day: max trades reached ({opened_today}/{max_trades_per_day})")
+        return
+    ranked_symbols = _scan_symbols_for_ai_provider(db, provider)
 
     pool = ranked_symbols[: min(len(ranked_symbols), 80)]
     if not pool:
         return
+    learning = _provider_learning_context(db, provider)
     random.shuffle(pool)
     attempts = 0
     for item in pool:
@@ -453,26 +757,23 @@ def _open_ai_trades(db: Session, ranked_symbols: List[dict], provider: str) -> N
             "spread_pct": round(float(item.get("spread_pct", 0.0)), 4),
             "relative_strength": round(float(item.get("relative_strength", 0.0)), 4),
             "vol_exp": round(float(item.get("recent_volume_expansion", 0.0)), 4),
+            "learning": learning,
         }
         cfg = propose_strategy(
             provider,
             ctx,
-            {
-                "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
-                "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-                "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
-                "CLAUDE_MODEL": os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
-                "DEEPSEEK_API_KEY": os.getenv("DEEPSEEK_API_KEY", ""),
-                "DEEPSEEK_MODEL": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-            },
+            env_cfg,
         )
+        cfg = _sanitize_ai_strategy(cfg)
         ready, _, checks = trend_pullback_signal_with_checks(item.get("k5") or [], item.get("k15") or [], config=cfg)
         if not ready:
             continue
 
         tp_pct = float(cfg.get("tp_pct", 0.02))
         sl_pct = float(cfg.get("sl_pct", 0.012))
-        notional = min(entry_notional, ai_balance * 0.25)
+        max_risk_pct = max(0.1, float(cfg_p.get("max_risk_per_trade_pct", 1.0)))
+        risk_notional_cap = ai_balance * (max_risk_pct / 100.0) / max(sl_pct, 0.001)
+        notional = min(entry_notional, ai_balance * 0.25, risk_notional_cap)
         if notional < 10:
             continue
         qty = notional / price
@@ -493,6 +794,7 @@ def _open_ai_trades(db: Session, ranked_symbols: List[dict], provider: str) -> N
             strategy_json=json.dumps(
                 {
                     **cfg,
+                    "provider_source": cfg.get("strategy_source", "unknown"),
                     "score_count": checks.get("score_count", 0),
                     "score_threshold": checks.get("score_threshold", 3),
                 }
@@ -507,7 +809,9 @@ def _open_ai_trades(db: Session, ranked_symbols: List[dict], provider: str) -> N
             "AI_TRADE",
             (
                 f"{provider} opened strategy={trade.strategy_id} symbol={symbol} "
-                f"entry={price:.6f} notional={notional:.2f} score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)}"
+                f"entry={price:.6f} notional={notional:.2f} risk_cap={max_risk_pct:.2f}% "
+                f"source={cfg.get('strategy_source', 'unknown')} "
+                f"score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)}"
             ),
             symbol,
         )
@@ -1104,7 +1408,7 @@ def run_cycle(db: Session) -> None:
 
     _manage_open_positions(db)
     _manage_shadow_positions(db)
-    for provider in ("openai", "claude", "deepseek"):
+    for provider in ("classic", "openai", "claude", "deepseek"):
         _manage_ai_positions(db, provider)
     blocked_by_daily_loss = _daily_loss_triggered(db)
     if blocked_by_daily_loss:
@@ -1152,8 +1456,8 @@ def run_cycle(db: Session) -> None:
             )
         watchlist = _build_priority_watchlist(db, ranked_symbols, strategy_cfg)
         _notify(db, "SCAN", f"watchlist_size={len(watchlist)}")
-        for provider in ("openai", "claude", "deepseek"):
-            _open_ai_trades(db, ranked_symbols, provider)
+        for provider in ("classic", "openai", "claude", "deepseek"):
+            _open_ai_trades(db, provider)
     except Exception as exc:
         _notify(db, "ERROR", f"Scanner failed: {exc}", telegram=True)
         db.commit()
