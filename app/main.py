@@ -708,89 +708,140 @@ async def advisor_page(request: Request) -> HTMLResponse:
         db.close()
 
 
+def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
+    p = provider.lower().strip()
+    settings_map = {s.key: s.value for s in db.query(Setting).all()}
+    enabled = settings_map.get(f"ai_{p}_enabled", "true").lower() == "true"
+    balance = float(settings_map.get(f"ai_{p}_balance_usdt", "500"))
+    open_rows = (
+        db.query(AITrade)
+        .filter(AITrade.status == "open", AITrade.ai_provider == p)
+        .order_by(AITrade.entry_time.desc())
+        .all()
+    )
+    closed_rows = (
+        db.query(AITrade)
+        .filter(AITrade.status == "closed", AITrade.ai_provider == p)
+        .order_by(AITrade.exit_time.desc())
+        .limit(120)
+        .all()
+    )
+
+    total_closed = len(closed_rows)
+    wins = [t for t in closed_rows if (t.pnl or 0.0) > 0]
+    net_pnl = sum(float(t.pnl or 0.0) for t in closed_rows)
+    win_rate = (len(wins) / total_closed * 100) if total_closed else 0.0
+
+    open_data = [
+        {
+            "symbol": t.symbol,
+            "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
+            "entry_price": f"{t.entry_price:.6f}",
+            "notional": f"{t.notional_usdt:.2f} USDT",
+            "strategy_id": t.strategy_id,
+        }
+        for t in open_rows
+    ]
+    closed_data = [
+        {
+            "symbol": t.symbol,
+            "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
+            "exit_time": _as_local(t.exit_time).strftime("%Y-%m-%d %H:%M") if t.exit_time else "-",
+            "pnl_pct": float(t.pnl_pct or 0.0),
+            "pnl_usdt": f"{float(t.pnl or 0.0):+.4f}",
+            "exit_reason": t.exit_reason or "-",
+            "strategy_id": t.strategy_id,
+        }
+        for t in closed_rows
+    ]
+
+    by_strategy: dict[str, dict] = {}
+    for t in closed_rows:
+        sid = t.strategy_id or "-"
+        row = by_strategy.setdefault(sid, {"count": 0, "wins": 0, "net": 0.0})
+        row["count"] += 1
+        pnl_v = float(t.pnl or 0.0)
+        row["net"] += pnl_v
+        if pnl_v > 0:
+            row["wins"] += 1
+    recommendations = []
+    for sid, row in by_strategy.items():
+        if row["count"] < 3:
+            continue
+        wr = (row["wins"] / row["count"]) * 100
+        verdict = "Consider testing in main strategy" if row["net"] > 0 and wr >= 55 else "Keep in AI lab only"
+        recommendations.append(
+            {
+                "strategy_id": sid,
+                "trades": row["count"],
+                "win_rate": f"{wr:.1f}%",
+                "net_pnl": f"{row['net']:+.4f}",
+                "verdict": verdict,
+            }
+        )
+    recommendations.sort(key=lambda x: float(x["net_pnl"]), reverse=True)
+    return {
+        "provider": p,
+        "summary": {
+            "enabled": enabled,
+            "balance": f"{balance:.2f} USDT",
+            "open_count": len(open_rows),
+            "closed_count": total_closed,
+            "win_rate": f"{win_rate:.2f}%",
+            "net_pnl": f"{net_pnl:+.4f} USDT",
+        },
+        "open_trades": open_data,
+        "closed_trades": closed_data,
+        "recommendations": recommendations[:12],
+    }
+
+
 @app.get("/ai-trading", response_class=HTMLResponse)
-async def ai_trading_page(request: Request) -> HTMLResponse:
+async def ai_trading_hub(request: Request) -> HTMLResponse:
     db = SessionLocal()
     try:
-        settings_map = {s.key: s.value for s in db.query(Setting).all()}
-        ai_enabled = settings_map.get("ai_trading_enabled", "true").lower() == "true"
-        ai_balance = float(settings_map.get("ai_balance_usdt", "500"))
-        open_rows = db.query(AITrade).filter(AITrade.status == "open").order_by(AITrade.entry_time.desc()).all()
-        closed_rows = db.query(AITrade).filter(AITrade.status == "closed").order_by(AITrade.exit_time.desc()).limit(120).all()
-
-        total_closed = len(closed_rows)
-        wins = [t for t in closed_rows if (t.pnl or 0.0) > 0]
-        losses = [t for t in closed_rows if (t.pnl or 0.0) <= 0]
-        net_pnl = sum(float(t.pnl or 0.0) for t in closed_rows)
-        win_rate = (len(wins) / total_closed * 100) if total_closed else 0.0
-
-        open_data = [
-            {
-                "symbol": t.symbol,
-                "entry_time": _as_local(t.entry_time).strftime("%H:%M"),
-                "entry_price": f"{t.entry_price:.6f}",
-                "notional": f"{t.notional_usdt:.2f} USDT",
-                "strategy_id": t.strategy_id,
-            }
-            for t in open_rows
-        ]
-        closed_data = [
-            {
-                "symbol": t.symbol,
-                "entry_time": _as_local(t.entry_time).strftime("%H:%M"),
-                "exit_time": _as_local(t.exit_time).strftime("%H:%M") if t.exit_time else "-",
-                "pnl_pct": float(t.pnl_pct or 0.0),
-                "pnl_usdt": f"{float(t.pnl or 0.0):+.4f}",
-                "exit_reason": t.exit_reason or "-",
-                "strategy_id": t.strategy_id,
-            }
-            for t in closed_rows
-        ]
-
-        by_strategy: dict[str, dict] = {}
-        for t in closed_rows:
-            sid = t.strategy_id or "-"
-            row = by_strategy.setdefault(sid, {"count": 0, "wins": 0, "net": 0.0})
-            row["count"] += 1
-            pnl_v = float(t.pnl or 0.0)
-            row["net"] += pnl_v
-            if pnl_v > 0:
-                row["wins"] += 1
-        recommendations = []
-        for sid, row in by_strategy.items():
-            if row["count"] < 3:
-                continue
-            wr = (row["wins"] / row["count"]) * 100
-            verdict = "Consider testing in main strategy" if row["net"] > 0 and wr >= 55 else "Keep in AI lab only"
-            recommendations.append(
+        providers = []
+        for p in ("openai", "claude", "deepseek"):
+            data = _ai_provider_dashboard(db, p)
+            providers.append(
                 {
-                    "strategy_id": sid,
-                    "trades": row["count"],
-                    "win_rate": f"{wr:.1f}%",
-                    "net_pnl": f"{row['net']:+.4f}",
-                    "verdict": verdict,
+                    "id": p,
+                    "title": p.capitalize(),
+                    "enabled": data["summary"]["enabled"],
+                    "balance": data["summary"]["balance"],
+                    "open_count": data["summary"]["open_count"],
+                    "closed_count": data["summary"]["closed_count"],
+                    "win_rate": data["summary"]["win_rate"],
+                    "net_pnl": data["summary"]["net_pnl"],
                 }
             )
-        recommendations.sort(key=lambda x: float(x["net_pnl"]), reverse=True)
+        ctx = _base_context("ai_trading")
+        ctx.update({"request": request, "providers": providers})
+        return templates.TemplateResponse("ai_trading_hub.html", ctx)
+    finally:
+        db.close()
 
+
+@app.get("/ai-trading/{provider}", response_class=HTMLResponse)
+async def ai_trading_provider(request: Request, provider: str) -> HTMLResponse:
+    p = provider.lower().strip()
+    if p not in {"openai", "claude", "deepseek"}:
+        return RedirectResponse("/ai-trading", status_code=303)
+    db = SessionLocal()
+    try:
+        data = _ai_provider_dashboard(db, p)
         ctx = _base_context("ai_trading")
         ctx.update(
             {
                 "request": request,
-                "summary": {
-                    "enabled": ai_enabled,
-                    "balance": f"{ai_balance:.2f} USDT",
-                    "open_count": len(open_rows),
-                    "closed_count": total_closed,
-                    "win_rate": f"{win_rate:.2f}%",
-                    "net_pnl": f"{net_pnl:+.4f} USDT",
-                },
-                "open_trades": open_data,
-                "closed_trades": closed_data,
-                "recommendations": recommendations[:12],
+                "provider": p,
+                "summary": data["summary"],
+                "open_trades": data["open_trades"],
+                "closed_trades": data["closed_trades"],
+                "recommendations": data["recommendations"],
             }
         )
-        return templates.TemplateResponse("ai_trading.html", ctx)
+        return templates.TemplateResponse("ai_trading_provider.html", ctx)
     finally:
         db.close()
 

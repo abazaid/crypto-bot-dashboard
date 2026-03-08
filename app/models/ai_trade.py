@@ -10,6 +10,7 @@ class AITrade(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(20), index=True, nullable=False)
+    ai_provider = Column(String(20), index=True, nullable=False, default="openai")
     status = Column(String(20), index=True, nullable=False, default="open")
     entry_time = Column(DateTime, default=datetime.utcnow, nullable=False)
     exit_time = Column(DateTime, nullable=True)

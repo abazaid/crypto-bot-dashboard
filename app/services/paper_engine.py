@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import random
 from statistics import mean, pstdev
 from typing import Dict, List
@@ -20,6 +21,7 @@ from app.services.strategy import (
     relative_strength_ok,
     trend_pullback_signal_with_checks,
 )
+from app.services.ai_providers import propose_strategy
 from app.services.telegram_alerts import send_telegram_message
 
 EXCLUDED_SYMBOLS = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "DAIUSDT"}
@@ -154,6 +156,21 @@ def init_defaults(db: Session) -> None:
         "ai_entry_usdt": "30",
         "ai_max_open": "15",
         "ai_trials_per_cycle": "20",
+        "ai_openai_enabled": "true",
+        "ai_openai_balance_usdt": "500",
+        "ai_openai_entry_usdt": "30",
+        "ai_openai_max_open": "10",
+        "ai_openai_trials_per_cycle": "20",
+        "ai_claude_enabled": "true",
+        "ai_claude_balance_usdt": "500",
+        "ai_claude_entry_usdt": "30",
+        "ai_claude_max_open": "10",
+        "ai_claude_trials_per_cycle": "20",
+        "ai_deepseek_enabled": "true",
+        "ai_deepseek_balance_usdt": "500",
+        "ai_deepseek_entry_usdt": "30",
+        "ai_deepseek_max_open": "10",
+        "ai_deepseek_trials_per_cycle": "20",
     }
     for key, default in defaults.items():
         _get_setting(db, key, default)
@@ -198,33 +215,20 @@ def _strategy_config(db: Session) -> dict:
     }
 
 
-def _ai_balance(db: Session) -> float:
-    return _get_float(db, "ai_balance_usdt", 500.0)
-
-
-def _set_ai_balance(db: Session, value: float) -> None:
-    _set_setting(db, "ai_balance_usdt", f"{max(0.0, value):.8f}")
-
-
-def _ai_random_strategy() -> dict:
-    cfg = {
-        "use_score_system": True,
-        "score_threshold": random.randint(2, 4),
-        "trend_enabled": True,
-        "pullback_enabled": True,
-        "rsi_enabled": True,
-        "volume_spike_enabled": True,
-        "resistance_enabled": True,
-        "price_above_ema50_enabled": random.choice([True, False]),
-        "pullback_max_dist_pct": round(random.uniform(0.5, 1.8), 2),
-        "rsi_min": round(random.uniform(28, 42), 1),
-        "rsi_max": round(random.uniform(58, 72), 1),
-        "volume_spike_multiplier": round(random.uniform(1.1, 2.2), 2),
-        "resistance_min_dist_pct": round(random.uniform(0.8, 3.0), 2),
+def _ai_provider_cfg(db: Session, provider: str) -> dict:
+    p = provider.lower().strip()
+    return {
+        "enabled": _get_bool(db, f"ai_{p}_enabled", True),
+        "balance": _get_float(db, f"ai_{p}_balance_usdt", 500.0),
+        "entry_usdt": _get_float(db, f"ai_{p}_entry_usdt", 30.0),
+        "max_open": _get_int(db, f"ai_{p}_max_open", 10),
+        "trials_per_cycle": _get_int(db, f"ai_{p}_trials_per_cycle", 20),
     }
-    if cfg["rsi_max"] <= cfg["rsi_min"] + 8:
-        cfg["rsi_max"] = cfg["rsi_min"] + 8
-    return cfg
+
+
+def _set_ai_provider_balance(db: Session, provider: str, value: float) -> None:
+    p = provider.lower().strip()
+    _set_setting(db, f"ai_{p}_balance_usdt", f"{max(0.0, value):.8f}")
 
 
 def _ai_strategy_id(cfg: dict) -> str:
@@ -346,10 +350,11 @@ def _open_shadow_trades(db: Session, watchlist: List[dict]) -> None:
         _notify(db, "SHADOW", f"opened notional={notional:.2f} entry={price:.6f} qty={qty:.6f}", symbol)
 
 
-def _manage_ai_positions(db: Session) -> None:
-    if not _get_bool(db, "ai_trading_enabled", True):
+def _manage_ai_positions(db: Session, provider: str) -> None:
+    cfg_p = _ai_provider_cfg(db, provider)
+    if not cfg_p["enabled"]:
         return
-    open_ai = db.query(AITrade).filter(AITrade.status == "open").all()
+    open_ai = db.query(AITrade).filter(AITrade.status == "open", AITrade.ai_provider == provider).all()
     if not open_ai:
         return
     try:
@@ -359,7 +364,7 @@ def _manage_ai_positions(db: Session) -> None:
         return
 
     fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
-    cash = _ai_balance(db)
+    cash = cfg_p["balance"]
     for t in open_ai:
         price = prices.get(t.symbol)
         if price is None:
@@ -402,23 +407,29 @@ def _manage_ai_positions(db: Session) -> None:
         t.pnl = pnl_value
         t.pnl_pct = pnl_pct
         t.exit_reason = reason
-        _notify(db, "AI_TRADE", f"closed reason={reason} pnl_pct={pnl_pct:+.2f}% pnl_usdt={pnl_value:+.4f}", t.symbol)
+        _notify(
+            db,
+            "AI_TRADE",
+            f"{provider} closed reason={reason} pnl_pct={pnl_pct:+.2f}% pnl_usdt={pnl_value:+.4f}",
+            t.symbol,
+        )
 
-    _set_ai_balance(db, cash)
+    _set_ai_provider_balance(db, provider, cash)
 
 
-def _open_ai_trades(db: Session, ranked_symbols: List[dict]) -> None:
-    if not _get_bool(db, "ai_trading_enabled", True):
+def _open_ai_trades(db: Session, ranked_symbols: List[dict], provider: str) -> None:
+    cfg_p = _ai_provider_cfg(db, provider)
+    if not cfg_p["enabled"]:
         return
-    ai_balance = _ai_balance(db)
+    ai_balance = cfg_p["balance"]
     if ai_balance < 20:
         return
-    max_open = _get_int(db, "ai_max_open", 15)
-    open_count = db.query(AITrade).filter(AITrade.status == "open").count()
+    max_open = int(cfg_p["max_open"])
+    open_count = db.query(AITrade).filter(AITrade.status == "open", AITrade.ai_provider == provider).count()
     if open_count >= max_open:
         return
-    entry_notional = _get_float(db, "ai_entry_usdt", 30.0)
-    trials = _get_int(db, "ai_trials_per_cycle", 20)
+    entry_notional = float(cfg_p["entry_usdt"])
+    trials = int(cfg_p["trials_per_cycle"])
 
     pool = ranked_symbols[: min(len(ranked_symbols), 80)]
     if not pool:
@@ -430,26 +441,44 @@ def _open_ai_trades(db: Session, ranked_symbols: List[dict]) -> None:
             break
         attempts += 1
         symbol = item["symbol"]
-        if db.query(AITrade).filter(AITrade.status == "open", AITrade.symbol == symbol).first():
+        if db.query(AITrade).filter(AITrade.status == "open", AITrade.symbol == symbol, AITrade.ai_provider == provider).first():
             continue
         price = float(item.get("last_price", 0.0))
         if price <= 0:
             continue
-        cfg = _ai_random_strategy()
-        cfg["time_stop_minutes"] = random.randint(45, 240)
-        cfg["trailing_stop_pct"] = round(random.uniform(0.004, 0.012), 4)
+        ctx = {
+            "symbol": symbol,
+            "score": round(float(item.get("score", 0.0)), 4),
+            "vol24h": round(float(item.get("volume_24h", 0.0)), 2),
+            "spread_pct": round(float(item.get("spread_pct", 0.0)), 4),
+            "relative_strength": round(float(item.get("relative_strength", 0.0)), 4),
+            "vol_exp": round(float(item.get("recent_volume_expansion", 0.0)), 4),
+        }
+        cfg = propose_strategy(
+            provider,
+            ctx,
+            {
+                "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+                "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+                "CLAUDE_MODEL": os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
+                "DEEPSEEK_API_KEY": os.getenv("DEEPSEEK_API_KEY", ""),
+                "DEEPSEEK_MODEL": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            },
+        )
         ready, _, checks = trend_pullback_signal_with_checks(item.get("k5") or [], item.get("k15") or [], config=cfg)
         if not ready:
             continue
 
-        tp_pct = random.uniform(0.012, 0.045)
-        sl_pct = random.uniform(0.006, 0.02)
+        tp_pct = float(cfg.get("tp_pct", 0.02))
+        sl_pct = float(cfg.get("sl_pct", 0.012))
         notional = min(entry_notional, ai_balance * 0.25)
         if notional < 10:
             continue
         qty = notional / price
         trade = AITrade(
             symbol=symbol,
+            ai_provider=provider,
             status="open",
             entry_time=datetime.utcnow(),
             entry_price=price,
@@ -464,8 +493,6 @@ def _open_ai_trades(db: Session, ranked_symbols: List[dict]) -> None:
             strategy_json=json.dumps(
                 {
                     **cfg,
-                    "tp_pct": round(tp_pct, 4),
-                    "sl_pct": round(sl_pct, 4),
                     "score_count": checks.get("score_count", 0),
                     "score_threshold": checks.get("score_threshold", 3),
                 }
@@ -479,13 +506,13 @@ def _open_ai_trades(db: Session, ranked_symbols: List[dict]) -> None:
             db,
             "AI_TRADE",
             (
-                f"opened strategy={trade.strategy_id} symbol={symbol} "
+                f"{provider} opened strategy={trade.strategy_id} symbol={symbol} "
                 f"entry={price:.6f} notional={notional:.2f} score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)}"
             ),
             symbol,
         )
 
-    _set_ai_balance(db, ai_balance)
+    _set_ai_provider_balance(db, provider, ai_balance)
 
 
 def _mode_is_paused(db: Session) -> bool:
@@ -1077,7 +1104,8 @@ def run_cycle(db: Session) -> None:
 
     _manage_open_positions(db)
     _manage_shadow_positions(db)
-    _manage_ai_positions(db)
+    for provider in ("openai", "claude", "deepseek"):
+        _manage_ai_positions(db, provider)
     blocked_by_daily_loss = _daily_loss_triggered(db)
     if blocked_by_daily_loss:
         _notify(db, "ENTRY_DECISION", "rejected reason=daily_loss_limit_reached", "-")
@@ -1124,7 +1152,8 @@ def run_cycle(db: Session) -> None:
             )
         watchlist = _build_priority_watchlist(db, ranked_symbols, strategy_cfg)
         _notify(db, "SCAN", f"watchlist_size={len(watchlist)}")
-        _open_ai_trades(db, ranked_symbols)
+        for provider in ("openai", "claude", "deepseek"):
+            _open_ai_trades(db, ranked_symbols, provider)
     except Exception as exc:
         _notify(db, "ERROR", f"Scanner failed: {exc}", telegram=True)
         db.commit()

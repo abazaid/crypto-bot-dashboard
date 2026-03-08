@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}AI Trading | Crypto Bot{% endblock %}
+{% block page_title %}AI Trading Hub{% endblock %}
+{% block content %}
+<section class="grid cards">
+  {% for p in providers %}
+  <article class="card">
+    <p>{{ p.title }}</p>
+    <h3>{{ "ON" if p.enabled else "OFF" }}</h3>
+    <p>Balance: {{ p.balance }}</p>
+    <p>Open: {{ p.open_count }} | Closed: {{ p.closed_count }}</p>
+    <p>Win Rate: {{ p.win_rate }}</p>
+    <p class="{% if '-' in p.net_pnl %}down{% else %}up{% endif %}">Net: {{ p.net_pnl }}</p>
+    <div class="actions">
+      <a href="/ai-trading/{{ p.id }}" class="btn ghost">Open {{ p.title }} Dashboard</a>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

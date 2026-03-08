@@ -96,3 +96,7 @@ def apply_sqlite_migrations(engine: Engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_symbol ON ai_trades(symbol)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_status ON ai_trades(status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_strategy_id ON ai_trades(strategy_id)"))
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(ai_trades)")).fetchall()]
+        if "ai_provider" not in cols:
+            conn.execute(text("ALTER TABLE ai_trades ADD COLUMN ai_provider VARCHAR(20) NOT NULL DEFAULT 'openai'"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_ai_provider ON ai_trades(ai_provider)"))
