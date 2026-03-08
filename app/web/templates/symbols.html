@@ -14,8 +14,15 @@
           <th>Symbol</th>
           <th>24h Volume</th>
           <th>Spread</th>
+          <th>Score</th>
+          <th>Trend ✓/✗</th>
+          <th>Pullback ✓/✗</th>
+          <th>RSI ✓/✗</th>
+          <th>Volume ✓/✗</th>
+          <th>Resistance ✓/✗</th>
           <th>Trend</th>
           <th>Signal</th>
+          <th>Reason</th>
         </tr>
       </thead>
       <tbody>
@@ -24,8 +31,15 @@
           <td>{{ s.symbol }}</td>
           <td>{{ s.volume_24h }}</td>
           <td>{{ s.spread }}</td>
+          <td>{{ s.score }}</td>
+          <td>{{ s.trend_ok }}</td>
+          <td>{{ s.pullback_ok }}</td>
+          <td>{{ s.rsi_ok }}</td>
+          <td>{{ s.volume_ok }}</td>
+          <td>{{ s.resistance_ok }}</td>
           <td>{{ s.trend }}</td>
           <td>{{ s.signal }}</td>
+          <td>{{ s.reason }}</td>
         </tr>
         {% endfor %}
       </tbody>

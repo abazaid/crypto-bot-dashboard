@@ -1,5 +1,6 @@
 import time
 import threading
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -51,6 +52,24 @@ def _format_age(delta: timedelta) -> str:
     if mins < 60:
         return f"{mins}m"
     return f"{mins // 60}h {mins % 60}m"
+
+
+def _extract_log_field(message: str, key: str) -> str | None:
+    if not message:
+        return None
+    m = re.search(rf"{re.escape(key)}=([^\s]+)", message)
+    return m.group(1) if m else None
+
+
+def _as_check(value: str | None) -> str:
+    if value is None:
+        return "-"
+    low = value.strip().lower()
+    if low in {"true", "1", "yes", "on"}:
+        return "✓"
+    if low in {"false", "0", "no", "off", "none"}:
+        return "✗"
+    return "-"
 
 
 @app.on_event("startup")
@@ -134,6 +153,13 @@ async def symbols(request: Request) -> HTMLResponse:
     db = SessionLocal()
     try:
         rows = db.query(SymbolSnapshot).order_by(SymbolSnapshot.volume_24h.desc()).all()
+        entry_logs = db.query(LogEntry).filter(LogEntry.event_type == "ENTRY_DECISION").order_by(desc(LogEntry.id)).limit(800).all()
+        latest_by_symbol: dict[str, str] = {}
+        for log in entry_logs:
+            sym = (log.symbol or "").strip()
+            if not sym or sym == "-" or sym in latest_by_symbol:
+                continue
+            latest_by_symbol[sym] = log.message or ""
         symbols_data = [
             {
                 "symbol": r.symbol,
@@ -141,6 +167,13 @@ async def symbols(request: Request) -> HTMLResponse:
                 "spread": f"{r.spread_pct:.3f}%",
                 "trend": r.trend_status,
                 "signal": r.signal_status,
+                "score": _extract_log_field(latest_by_symbol.get(r.symbol, ""), "score") or "-",
+                "trend_ok": _as_check(_extract_log_field(latest_by_symbol.get(r.symbol, ""), "trend")),
+                "pullback_ok": _as_check(_extract_log_field(latest_by_symbol.get(r.symbol, ""), "pullback")),
+                "rsi_ok": _as_check(_extract_log_field(latest_by_symbol.get(r.symbol, ""), "rsi_ok")),
+                "volume_ok": _as_check(_extract_log_field(latest_by_symbol.get(r.symbol, ""), "volume_spike")),
+                "resistance_ok": _as_check(_extract_log_field(latest_by_symbol.get(r.symbol, ""), "resistance_ok")),
+                "reason": _extract_log_field(latest_by_symbol.get(r.symbol, ""), "reason") or "-",
             }
             for r in rows
         ]
