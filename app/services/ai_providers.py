@@ -7,6 +7,17 @@ import requests
 from app.services.ai_usage import normalize_usage
 
 
+def _http_error_with_body(exc: Exception) -> Exception:
+    try:
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            body = resp.text[:500]
+            return Exception(f"{exc} | body={body}")
+    except Exception:
+        pass
+    return exc
+
+
 def _safe_json_loads(text: str) -> dict:
     try:
         return json.loads(text)
@@ -109,7 +120,10 @@ def _call_claude(api_key: str, model: str, symbol_context: dict) -> tuple[dict, 
         },
         timeout=12,
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except Exception as exc:
+        raise _http_error_with_body(exc)
     data = resp.json()
     text = ""
     for part in data.get("content", []):
@@ -175,7 +189,10 @@ def _chat_claude(api_key: str, model: str, system_prompt: str, messages: list[di
         },
         timeout=20,
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except Exception as exc:
+        raise _http_error_with_body(exc)
     data = resp.json()
     text = ""
     for part in data.get("content", []):

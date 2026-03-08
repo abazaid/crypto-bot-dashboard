@@ -858,6 +858,26 @@ def _open_ai_trades(db: Session, provider: str) -> None:
         )
         record_usage(db, provider, "strategy", usage)
         cfg = _sanitize_ai_strategy(cfg)
+        if provider in {"openai", "claude", "deepseek"}:
+            expected_source = f"llm_{provider}"
+            if cfg.get("strategy_source") != expected_source:
+                _notify(
+                    db,
+                    "AI_TRADE",
+                    f"{provider} skipped candidate {symbol}: source={cfg.get('strategy_source', 'unknown')} expected={expected_source}",
+                )
+                _remember_ai(
+                    db,
+                    provider,
+                    "entry_reject",
+                    {
+                        "symbol": symbol,
+                        "reason": "non_provider_source",
+                        "source": cfg.get("strategy_source", "unknown"),
+                        "expected": expected_source,
+                    },
+                )
+                continue
         ready, _, checks = trend_pullback_signal_with_checks(item.get("k5") or [], item.get("k15") or [], config=cfg)
         if not ready:
             _remember_ai(
