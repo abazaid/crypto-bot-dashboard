@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}AI Trading | Crypto Bot{% endblock %}
+{% block page_title %}AI Trading Lab{% endblock %}
+{% block content %}
+<section class="grid cards">
+  <article class="card">
+    <p>AI Mode</p>
+    <h3>{{ "ON" if summary.enabled else "OFF" }}</h3>
+  </article>
+  <article class="card">
+    <p>AI Balance</p>
+    <h3>{{ summary.balance }}</h3>
+  </article>
+  <article class="card">
+    <p>Open Trades</p>
+    <h3>{{ summary.open_count }}</h3>
+  </article>
+  <article class="card">
+    <p>Closed Trades</p>
+    <h3>{{ summary.closed_count }}</h3>
+  </article>
+  <article class="card">
+    <p>Win Rate</p>
+    <h3>{{ summary.win_rate }}</h3>
+  </article>
+  <article class="card">
+    <p>Net PnL</p>
+    <h3 class="{% if '-' in summary.net_pnl %}down{% else %}up{% endif %}">{{ summary.net_pnl }}</h3>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Open AI Trades</h2>
+    <span>Independent from your paper balance</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Entry Time</th>
+          <th>Entry Price</th>
+          <th>Notional</th>
+          <th>Strategy ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in open_trades %}
+        <tr>
+          <td>{{ t.symbol }}</td>
+          <td>{{ t.entry_time }}</td>
+          <td>{{ t.entry_price }}</td>
+          <td>{{ t.notional }}</td>
+          <td>{{ t.strategy_id }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Closed AI Trades</h2>
+    <span>Recent 120 results</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Entry</th>
+          <th>Exit</th>
+          <th>PnL %</th>
+          <th>PnL USDT</th>
+          <th>Exit Reason</th>
+          <th>Strategy ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in closed_trades %}
+        <tr>
+          <td>{{ t.symbol }}</td>
+          <td>{{ t.entry_time }}</td>
+          <td>{{ t.exit_time }}</td>
+          <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
+          <td class="{% if '-' in t.pnl_usdt %}down{% else %}up{% endif %}">{{ t.pnl_usdt }}</td>
+          <td>{{ t.exit_reason }}</td>
+          <td>{{ t.strategy_id }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Adaptive Recommendations</h2>
+    <span>Generated from AI trade outcomes</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Strategy ID</th>
+          <th>Trades</th>
+          <th>Win Rate</th>
+          <th>Net PnL</th>
+          <th>Recommendation</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in recommendations %}
+        <tr>
+          <td>{{ r.strategy_id }}</td>
+          <td>{{ r.trades }}</td>
+          <td>{{ r.win_rate }}</td>
+          <td class="{% if '-' in r.net_pnl %}down{% else %}up{% endif %}">{{ r.net_pnl }}</td>
+          <td>{{ r.verdict }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

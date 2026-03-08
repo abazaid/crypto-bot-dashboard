@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import json
+import random
 from statistics import mean, pstdev
 from typing import Dict, List
 
@@ -6,7 +8,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
+from app.models import AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.binance_public import get_24h_tickers, get_book_tickers, get_exchange_info, get_klines, get_prices
 from app.services.strategy import (
     atr_from_klines,
@@ -147,6 +149,11 @@ def init_defaults(db: Session) -> None:
         "shadow_enabled": "true",
         "shadow_notional_usdt": "100",
         "shadow_max_open": "30",
+        "ai_trading_enabled": "true",
+        "ai_balance_usdt": "500",
+        "ai_entry_usdt": "30",
+        "ai_max_open": "15",
+        "ai_trials_per_cycle": "20",
     }
     for key, default in defaults.items():
         _get_setting(db, key, default)
@@ -189,6 +196,45 @@ def _strategy_config(db: Session) -> dict:
         "volume_spike_multiplier": _get_float(db, "strategy_volume_spike_multiplier", 1.3),
         "resistance_min_dist_pct": _get_float(db, "strategy_resistance_min_dist_pct", 1.5),
     }
+
+
+def _ai_balance(db: Session) -> float:
+    return _get_float(db, "ai_balance_usdt", 500.0)
+
+
+def _set_ai_balance(db: Session, value: float) -> None:
+    _set_setting(db, "ai_balance_usdt", f"{max(0.0, value):.8f}")
+
+
+def _ai_random_strategy() -> dict:
+    cfg = {
+        "use_score_system": True,
+        "score_threshold": random.randint(2, 4),
+        "trend_enabled": True,
+        "pullback_enabled": True,
+        "rsi_enabled": True,
+        "volume_spike_enabled": True,
+        "resistance_enabled": True,
+        "price_above_ema50_enabled": random.choice([True, False]),
+        "pullback_max_dist_pct": round(random.uniform(0.5, 1.8), 2),
+        "rsi_min": round(random.uniform(28, 42), 1),
+        "rsi_max": round(random.uniform(58, 72), 1),
+        "volume_spike_multiplier": round(random.uniform(1.1, 2.2), 2),
+        "resistance_min_dist_pct": round(random.uniform(0.8, 3.0), 2),
+    }
+    if cfg["rsi_max"] <= cfg["rsi_min"] + 8:
+        cfg["rsi_max"] = cfg["rsi_min"] + 8
+    return cfg
+
+
+def _ai_strategy_id(cfg: dict) -> str:
+    return (
+        f"sc{cfg.get('score_threshold', 3)}_pb{cfg.get('pullback_max_dist_pct', 1.0)}_"
+        f"rsi{cfg.get('rsi_min', 35)}-{cfg.get('rsi_max', 65)}_"
+        f"vol{cfg.get('volume_spike_multiplier', 1.3)}_"
+        f"res{cfg.get('resistance_min_dist_pct', 1.5)}_"
+        f"ema50{1 if cfg.get('price_above_ema50_enabled') else 0}"
+    )
 
 
 def _record_market_observations(db: Session, snapshots: List[dict], reasons: Dict[str, str]) -> None:
@@ -298,6 +344,148 @@ def _open_shadow_trades(db: Session, watchlist: List[dict]) -> None:
         db.add(shadow)
         open_count += 1
         _notify(db, "SHADOW", f"opened notional={notional:.2f} entry={price:.6f} qty={qty:.6f}", symbol)
+
+
+def _manage_ai_positions(db: Session) -> None:
+    if not _get_bool(db, "ai_trading_enabled", True):
+        return
+    open_ai = db.query(AITrade).filter(AITrade.status == "open").all()
+    if not open_ai:
+        return
+    try:
+        prices = get_prices([t.symbol for t in open_ai])
+    except Exception as exc:
+        _notify(db, "ERROR", f"AI price update failed: {exc}")
+        return
+
+    fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
+    cash = _ai_balance(db)
+    for t in open_ai:
+        price = prices.get(t.symbol)
+        if price is None:
+            continue
+        if not t.highest_price or price > t.highest_price:
+            t.highest_price = price
+        if t.trailing_active and t.trailing_stop_price:
+            t.trailing_stop_price = max(t.trailing_stop_price, (t.highest_price or price) * (1 - 0.008))
+
+        strategy_cfg = {}
+        try:
+            strategy_cfg = json.loads(t.strategy_json or "{}")
+        except Exception:
+            strategy_cfg = {}
+        time_stop_minutes = int(strategy_cfg.get("time_stop_minutes", _get_int(db, "time_stop_minutes", settings.time_stop_minutes)))
+        reason = None
+        age_minutes = (datetime.utcnow() - t.entry_time).total_seconds() / 60.0
+        if t.trailing_active and t.trailing_stop_price and price <= t.trailing_stop_price:
+            reason = "Trailing Stop"
+        elif price <= t.sl_price:
+            reason = "SL"
+        elif price >= t.tp_price:
+            t.trailing_active = 1
+            t.trailing_stop_price = price * (1 - float(strategy_cfg.get("trailing_stop_pct", 0.008)))
+        if age_minutes >= time_stop_minutes and not reason:
+            reason = "Time Stop"
+        if not reason:
+            continue
+
+        proceeds = t.quantity * price
+        entry_value = t.entry_price * t.quantity
+        entry_fee = entry_value * fee_rate
+        exit_fee = proceeds * fee_rate
+        pnl_value = (price - t.entry_price) * t.quantity - entry_fee - exit_fee
+        pnl_pct = ((price - t.entry_price) / t.entry_price) * 100 if t.entry_price > 0 else 0.0
+        cash += proceeds - exit_fee
+        t.status = "closed"
+        t.exit_time = datetime.utcnow()
+        t.exit_price = price
+        t.pnl = pnl_value
+        t.pnl_pct = pnl_pct
+        t.exit_reason = reason
+        _notify(db, "AI_TRADE", f"closed reason={reason} pnl_pct={pnl_pct:+.2f}% pnl_usdt={pnl_value:+.4f}", t.symbol)
+
+    _set_ai_balance(db, cash)
+
+
+def _open_ai_trades(db: Session, ranked_symbols: List[dict]) -> None:
+    if not _get_bool(db, "ai_trading_enabled", True):
+        return
+    ai_balance = _ai_balance(db)
+    if ai_balance < 20:
+        return
+    max_open = _get_int(db, "ai_max_open", 15)
+    open_count = db.query(AITrade).filter(AITrade.status == "open").count()
+    if open_count >= max_open:
+        return
+    entry_notional = _get_float(db, "ai_entry_usdt", 30.0)
+    trials = _get_int(db, "ai_trials_per_cycle", 20)
+
+    pool = ranked_symbols[: min(len(ranked_symbols), 80)]
+    if not pool:
+        return
+    random.shuffle(pool)
+    attempts = 0
+    for item in pool:
+        if attempts >= trials or open_count >= max_open:
+            break
+        attempts += 1
+        symbol = item["symbol"]
+        if db.query(AITrade).filter(AITrade.status == "open", AITrade.symbol == symbol).first():
+            continue
+        price = float(item.get("last_price", 0.0))
+        if price <= 0:
+            continue
+        cfg = _ai_random_strategy()
+        cfg["time_stop_minutes"] = random.randint(45, 240)
+        cfg["trailing_stop_pct"] = round(random.uniform(0.004, 0.012), 4)
+        ready, _, checks = trend_pullback_signal_with_checks(item.get("k5") or [], item.get("k15") or [], config=cfg)
+        if not ready:
+            continue
+
+        tp_pct = random.uniform(0.012, 0.045)
+        sl_pct = random.uniform(0.006, 0.02)
+        notional = min(entry_notional, ai_balance * 0.25)
+        if notional < 10:
+            continue
+        qty = notional / price
+        trade = AITrade(
+            symbol=symbol,
+            status="open",
+            entry_time=datetime.utcnow(),
+            entry_price=price,
+            quantity=qty,
+            notional_usdt=notional,
+            tp_price=price * (1 + tp_pct),
+            sl_price=price * (1 - sl_pct),
+            trailing_stop_price=None,
+            trailing_active=0,
+            highest_price=price,
+            strategy_id=_ai_strategy_id(cfg),
+            strategy_json=json.dumps(
+                {
+                    **cfg,
+                    "tp_pct": round(tp_pct, 4),
+                    "sl_pct": round(sl_pct, 4),
+                    "score_count": checks.get("score_count", 0),
+                    "score_threshold": checks.get("score_threshold", 3),
+                }
+            ),
+        )
+        db.add(trade)
+        fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
+        ai_balance -= notional + (notional * fee_rate)
+        open_count += 1
+        _notify(
+            db,
+            "AI_TRADE",
+            (
+                f"opened strategy={trade.strategy_id} symbol={symbol} "
+                f"entry={price:.6f} notional={notional:.2f} score={checks.get('score_count', 0)}/{checks.get('score_threshold', 3)}"
+            ),
+            symbol,
+        )
+
+    _set_ai_balance(db, ai_balance)
 
 
 def _mode_is_paused(db: Session) -> bool:
@@ -889,6 +1077,7 @@ def run_cycle(db: Session) -> None:
 
     _manage_open_positions(db)
     _manage_shadow_positions(db)
+    _manage_ai_positions(db)
     blocked_by_daily_loss = _daily_loss_triggered(db)
     if blocked_by_daily_loss:
         _notify(db, "ENTRY_DECISION", "rejected reason=daily_loss_limit_reached", "-")
@@ -935,6 +1124,7 @@ def run_cycle(db: Session) -> None:
             )
         watchlist = _build_priority_watchlist(db, ranked_symbols, strategy_cfg)
         _notify(db, "SCAN", f"watchlist_size={len(watchlist)}")
+        _open_ai_trades(db, ranked_symbols)
     except Exception as exc:
         _notify(db, "ERROR", f"Scanner failed: {exc}", telegram=True)
         db.commit()

@@ -18,6 +18,7 @@
           <th>TP</th>
           <th>SL</th>
           <th>Age</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>
@@ -31,6 +32,7 @@
           <td>{{ t.tp }}</td>
           <td>{{ t.sl }}</td>
           <td>{{ t.age }}</td>
+          <td><a href="/trades/close/{{ t.id }}" class="btn ghost">Close</a></td>
         </tr>
         {% endfor %}
       </tbody>

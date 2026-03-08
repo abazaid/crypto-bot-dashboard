@@ -107,6 +107,7 @@ body {
 
 .content {
   padding: 22px;
+  min-width: 0;
 }
 
 .topbar {
@@ -219,6 +220,10 @@ table {
   border-collapse: collapse;
 }
 
+.table-wrap table {
+  min-width: 760px;
+}
+
 .symbols-main-table table {
   min-width: 1180px;
 }
@@ -327,6 +332,24 @@ th {
   margin: 0;
 }
 
+.advisor-table table {
+  min-width: 980px;
+}
+
+.advisor-table td.recommendation {
+  min-width: 300px;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.advisor-notes .log-item {
+  grid-template-columns: 1fr;
+}
+
+.actions .btn {
+  white-space: nowrap;
+}
+
 @media (max-width: 960px) {
   .layout {
     grid-template-columns: 1fr;
@@ -339,7 +362,16 @@ th {
 
   .nav {
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 6px;
+    padding-bottom: 4px;
+  }
+
+  .nav a {
+    flex: 0 0 auto;
+    padding: 8px 10px;
+    font-size: 14px;
   }
 
   .log-item {
@@ -360,11 +392,95 @@ th {
     font-size: 14px;
   }
 
+  .grid.cards {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
   .symbols-main-table table {
     min-width: 1040px;
   }
 
   .symbols-legend-table table {
     min-width: 560px;
+  }
+
+  .advisor-table table {
+    min-width: 880px;
+  }
+
+  .mode {
+    margin-top: 14px;
+    padding: 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .sidebar {
+    padding: 14px 12px;
+  }
+
+  .brand {
+    margin-bottom: 14px;
+  }
+
+  .content {
+    padding: 10px;
+  }
+
+  .topbar h1 {
+    font-size: 20px;
+  }
+
+  .topbar p {
+    font-size: 13px;
+  }
+
+  .panel {
+    padding: 12px;
+    margin-top: 10px;
+  }
+
+  .panel-head {
+    align-items: flex-start;
+    gap: 6px;
+    flex-direction: column;
+  }
+
+  .panel-head h2 {
+    font-size: 17px;
+  }
+
+  .grid.cards {
+    grid-template-columns: 1fr;
+  }
+
+  .card h3 {
+    font-size: 21px;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .settings-grid label.checkbox-row {
+    margin-top: 0;
+  }
+
+  .actions {
+    gap: 6px;
+  }
+
+  .btn {
+    padding: 9px 12px;
+    font-size: 14px;
+  }
+
+  .table-wrap table {
+    min-width: 680px;
+  }
+
+  .advisor-table td.recommendation {
+    min-width: 240px;
   }
 }

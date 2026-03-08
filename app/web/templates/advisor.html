@@ -42,9 +42,9 @@
     <h2>Global Notes</h2>
     <span>Read-only guidance</span>
   </div>
-  <div class="log-list">
+  <div class="log-list advisor-notes">
     {% for note in global_notes %}
-    <div class="log-item" style="grid-template-columns: 1fr;">
+    <div class="log-item">
       <p>{{ note }}</p>
     </div>
     {% endfor %}
@@ -56,7 +56,7 @@
     <h2>Per-Symbol Suggestions</h2>
     <span>No auto-execution</span>
   </div>
-  <div class="table-wrap">
+  <div class="table-wrap advisor-table">
     <table>
       <thead>
         <tr>
@@ -76,7 +76,7 @@
           <td>{{ s.trend }}</td>
           <td>{{ s.score }}</td>
           <td>{{ s.reason }}</td>
-          <td>{{ s.recommendation }}</td>
+          <td class="recommendation">{{ s.recommendation }}</td>
         </tr>
         {% endfor %}
       </tbody>

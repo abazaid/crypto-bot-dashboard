@@ -66,3 +66,33 @@ def apply_sqlite_migrations(engine: Engine) -> None:
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shadow_trades_symbol ON shadow_trades(symbol)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shadow_trades_status ON shadow_trades(status)"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ai_trades (
+                    id INTEGER PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'open',
+                    entry_time DATETIME NOT NULL,
+                    exit_time DATETIME,
+                    entry_price REAL NOT NULL,
+                    exit_price REAL,
+                    quantity REAL NOT NULL,
+                    notional_usdt REAL NOT NULL DEFAULT 0.0,
+                    tp_price REAL NOT NULL,
+                    sl_price REAL NOT NULL,
+                    trailing_stop_price REAL,
+                    trailing_active INTEGER NOT NULL DEFAULT 0,
+                    highest_price REAL,
+                    pnl REAL,
+                    pnl_pct REAL,
+                    exit_reason VARCHAR(50),
+                    strategy_id VARCHAR(120) NOT NULL DEFAULT '-',
+                    strategy_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_symbol ON ai_trades(symbol)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_status ON ai_trades(status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_trades_strategy_id ON ai_trades(strategy_id)"))

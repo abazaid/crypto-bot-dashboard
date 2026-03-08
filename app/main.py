@@ -1,6 +1,7 @@
 import time
 import threading
 import re
+import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -16,7 +17,7 @@ from sqlalchemy.exc import OperationalError
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.migrations import apply_sqlite_migrations
-from app.models import LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
+from app.models import AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.paper_engine import init_defaults, portfolio_snapshot, run_cycle, statistics_snapshot
 from app.services.telegram_alerts import telegram_test
 
@@ -222,6 +223,7 @@ async def trades(request: Request) -> HTMLResponse:
             pnl_pct = ((cur - t.entry_price) / t.entry_price) * 100
             open_data.append(
                 {
+                    "id": t.id,
                     "symbol": t.symbol,
                     "entry": f"{t.entry_price:.6f}",
                     "entry_usdt": f"{(t.entry_price * t.quantity):.2f} USDT",
@@ -236,8 +238,8 @@ async def trades(request: Request) -> HTMLResponse:
         closed_data = [
             {
                 "symbol": t.symbol,
-                "entry_time": _as_local(t.entry_time).strftime("%H:%M"),
-                "exit_time": _as_local(t.exit_time).strftime("%H:%M") if t.exit_time else "-",
+                "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
+                "exit_time": _as_local(t.exit_time).strftime("%Y-%m-%d %H:%M") if t.exit_time else "-",
                 "entry_usdt": f"{(t.entry_price * t.quantity):.2f} USDT",
                 "pnl_pct": ((t.exit_price - t.entry_price) / t.entry_price * 100) if t.exit_price else 0,
                 "exit_reason": t.exit_reason or "-",
@@ -250,6 +252,55 @@ async def trades(request: Request) -> HTMLResponse:
         return templates.TemplateResponse("trades.html", ctx)
     finally:
         db.close()
+
+
+@app.get("/trades/close/{trade_id}")
+async def close_trade_manually(trade_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        trade = db.query(Trade).filter(Trade.id == trade_id, Trade.status == "open").first()
+        if not trade:
+            return RedirectResponse("/trades", status_code=303)
+
+        from app.services.binance_public import get_prices
+
+        prices = get_prices([trade.symbol])
+        exit_price = float(prices.get(trade.symbol, trade.entry_price))
+
+        fee_row = db.query(Setting).filter(Setting.key == "fee_rate").first()
+        fee_rate = float(fee_row.value) if fee_row and fee_row.value else settings.fee_rate
+
+        cash_row = db.query(Setting).filter(Setting.key == "paper_cash_balance").first()
+        current_cash = float(cash_row.value) if cash_row and cash_row.value else settings.paper_start_balance
+
+        proceeds = trade.quantity * exit_price
+        exit_fee = proceeds * fee_rate
+        entry_fee = (trade.entry_price * trade.quantity) * fee_rate
+        pnl_value = (exit_price - trade.entry_price) * trade.quantity - entry_fee - exit_fee
+
+        trade.status = "closed"
+        trade.exit_price = exit_price
+        trade.exit_time = datetime.utcnow()
+        trade.pnl = pnl_value
+        trade.exit_reason = "Manual Close"
+
+        new_cash = current_cash + proceeds - exit_fee
+        if cash_row:
+            cash_row.value = f"{new_cash:.8f}"
+        else:
+            db.add(Setting(key="paper_cash_balance", value=f"{new_cash:.8f}"))
+
+        db.add(
+            LogEntry(
+                event_type="TRADE",
+                symbol=trade.symbol,
+                message=f"Paper trade closed manually exit={exit_price:.6f} pnl_usdt={pnl_value:+.4f}",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/trades", status_code=303)
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -653,6 +704,93 @@ async def advisor_page(request: Request) -> HTMLResponse:
             }
         )
         return templates.TemplateResponse("advisor.html", ctx)
+    finally:
+        db.close()
+
+
+@app.get("/ai-trading", response_class=HTMLResponse)
+async def ai_trading_page(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        settings_map = {s.key: s.value for s in db.query(Setting).all()}
+        ai_enabled = settings_map.get("ai_trading_enabled", "true").lower() == "true"
+        ai_balance = float(settings_map.get("ai_balance_usdt", "500"))
+        open_rows = db.query(AITrade).filter(AITrade.status == "open").order_by(AITrade.entry_time.desc()).all()
+        closed_rows = db.query(AITrade).filter(AITrade.status == "closed").order_by(AITrade.exit_time.desc()).limit(120).all()
+
+        total_closed = len(closed_rows)
+        wins = [t for t in closed_rows if (t.pnl or 0.0) > 0]
+        losses = [t for t in closed_rows if (t.pnl or 0.0) <= 0]
+        net_pnl = sum(float(t.pnl or 0.0) for t in closed_rows)
+        win_rate = (len(wins) / total_closed * 100) if total_closed else 0.0
+
+        open_data = [
+            {
+                "symbol": t.symbol,
+                "entry_time": _as_local(t.entry_time).strftime("%H:%M"),
+                "entry_price": f"{t.entry_price:.6f}",
+                "notional": f"{t.notional_usdt:.2f} USDT",
+                "strategy_id": t.strategy_id,
+            }
+            for t in open_rows
+        ]
+        closed_data = [
+            {
+                "symbol": t.symbol,
+                "entry_time": _as_local(t.entry_time).strftime("%H:%M"),
+                "exit_time": _as_local(t.exit_time).strftime("%H:%M") if t.exit_time else "-",
+                "pnl_pct": float(t.pnl_pct or 0.0),
+                "pnl_usdt": f"{float(t.pnl or 0.0):+.4f}",
+                "exit_reason": t.exit_reason or "-",
+                "strategy_id": t.strategy_id,
+            }
+            for t in closed_rows
+        ]
+
+        by_strategy: dict[str, dict] = {}
+        for t in closed_rows:
+            sid = t.strategy_id or "-"
+            row = by_strategy.setdefault(sid, {"count": 0, "wins": 0, "net": 0.0})
+            row["count"] += 1
+            pnl_v = float(t.pnl or 0.0)
+            row["net"] += pnl_v
+            if pnl_v > 0:
+                row["wins"] += 1
+        recommendations = []
+        for sid, row in by_strategy.items():
+            if row["count"] < 3:
+                continue
+            wr = (row["wins"] / row["count"]) * 100
+            verdict = "Consider testing in main strategy" if row["net"] > 0 and wr >= 55 else "Keep in AI lab only"
+            recommendations.append(
+                {
+                    "strategy_id": sid,
+                    "trades": row["count"],
+                    "win_rate": f"{wr:.1f}%",
+                    "net_pnl": f"{row['net']:+.4f}",
+                    "verdict": verdict,
+                }
+            )
+        recommendations.sort(key=lambda x: float(x["net_pnl"]), reverse=True)
+
+        ctx = _base_context("ai_trading")
+        ctx.update(
+            {
+                "request": request,
+                "summary": {
+                    "enabled": ai_enabled,
+                    "balance": f"{ai_balance:.2f} USDT",
+                    "open_count": len(open_rows),
+                    "closed_count": total_closed,
+                    "win_rate": f"{win_rate:.2f}%",
+                    "net_pnl": f"{net_pnl:+.4f} USDT",
+                },
+                "open_trades": open_data,
+                "closed_trades": closed_data,
+                "recommendations": recommendations[:12],
+            }
+        )
+        return templates.TemplateResponse("ai_trading.html", ctx)
     finally:
         db.close()
 
