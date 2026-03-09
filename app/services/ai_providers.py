@@ -1,10 +1,16 @@
 import json
 import random
+import time
 from typing import Any, Dict
 
 import requests
 
 from app.services.ai_usage import normalize_usage
+
+
+DEEPSEEK_STRATEGY_TIMEOUT = 30
+DEEPSEEK_CHAT_TIMEOUT = 35
+DEEPSEEK_RETRIES = 2
 
 
 def _http_error_with_body(exc: Exception) -> Exception:
@@ -16,6 +22,32 @@ def _http_error_with_body(exc: Exception) -> Exception:
     except Exception:
         pass
     return exc
+
+
+def _post_with_retries(
+    url: str,
+    headers: dict,
+    payload: dict,
+    timeout: int,
+    retries: int = 0,
+    retry_delay_sec: float = 1.2,
+):
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_exc = exc
+            if attempt >= retries:
+                raise _http_error_with_body(exc)
+            time.sleep(retry_delay_sec * (attempt + 1))
+        except Exception as exc:
+            raise _http_error_with_body(exc)
+    if last_exc:
+        raise _http_error_with_body(last_exc)
+    raise Exception("Unknown HTTP failure")
 
 
 def _safe_json_loads(text: str) -> dict:
@@ -83,10 +115,10 @@ def _prompt(symbol_context: dict) -> str:
 
 
 def _call_openai(api_key: str, model: str, symbol_context: dict) -> tuple[dict, dict[str, Any]]:
-    resp = requests.post(
+    resp = _post_with_retries(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
+        payload={
             "model": model,
             "temperature": 0.3,
             "messages": [
@@ -97,21 +129,20 @@ def _call_openai(api_key: str, model: str, symbol_context: dict) -> tuple[dict, 
         },
         timeout=12,
     )
-    resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"]
     return _safe_json_loads(content), normalize_usage("openai", model, data.get("usage", {}))
 
 
 def _call_claude(api_key: str, model: str, symbol_context: dict) -> tuple[dict, dict[str, Any]]:
-    resp = requests.post(
+    resp = _post_with_retries(
         "https://api.anthropic.com/v1/messages",
         headers={
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
-        json={
+        payload={
             "model": model,
             "max_tokens": 300,
             "temperature": 0.3,
@@ -120,10 +151,6 @@ def _call_claude(api_key: str, model: str, symbol_context: dict) -> tuple[dict, 
         },
         timeout=12,
     )
-    try:
-        resp.raise_for_status()
-    except Exception as exc:
-        raise _http_error_with_body(exc)
     data = resp.json()
     text = ""
     for part in data.get("content", []):
@@ -133,10 +160,10 @@ def _call_claude(api_key: str, model: str, symbol_context: dict) -> tuple[dict, 
 
 
 def _call_deepseek(api_key: str, model: str, symbol_context: dict) -> tuple[dict, dict[str, Any]]:
-    resp = requests.post(
+    resp = _post_with_retries(
         "https://api.deepseek.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
+        payload={
             "model": model,
             "temperature": 0.3,
             "messages": [
@@ -145,9 +172,9 @@ def _call_deepseek(api_key: str, model: str, symbol_context: dict) -> tuple[dict
             ],
             "max_tokens": 250,
         },
-        timeout=12,
+        timeout=DEEPSEEK_STRATEGY_TIMEOUT,
+        retries=DEEPSEEK_RETRIES,
     )
-    resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"]
     return _safe_json_loads(content), normalize_usage("deepseek", model, data.get("usage", {}))
@@ -156,13 +183,12 @@ def _call_deepseek(api_key: str, model: str, symbol_context: dict) -> tuple[dict
 def _chat_openai(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> tuple[str, dict[str, Any]]:
     payload_messages = [{"role": "system", "content": system_prompt}]
     payload_messages.extend(messages)
-    resp = requests.post(
+    resp = _post_with_retries(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "temperature": 0.2, "messages": payload_messages, "max_tokens": 450},
+        payload={"model": model, "temperature": 0.2, "messages": payload_messages, "max_tokens": 450},
         timeout=20,
     )
-    resp.raise_for_status()
     data = resp.json()
     text = str(data["choices"][0]["message"]["content"]).strip()
     return text, normalize_usage("openai", model, data.get("usage", {}))
@@ -173,14 +199,14 @@ def _chat_claude(api_key: str, model: str, system_prompt: str, messages: list[di
     for m in messages:
         role = "assistant" if m.get("role") == "assistant" else "user"
         claude_messages.append({"role": role, "content": str(m.get("content", ""))})
-    resp = requests.post(
+    resp = _post_with_retries(
         "https://api.anthropic.com/v1/messages",
         headers={
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
-        json={
+        payload={
             "model": model,
             "max_tokens": 500,
             "temperature": 0.2,
@@ -189,10 +215,6 @@ def _chat_claude(api_key: str, model: str, system_prompt: str, messages: list[di
         },
         timeout=20,
     )
-    try:
-        resp.raise_for_status()
-    except Exception as exc:
-        raise _http_error_with_body(exc)
     data = resp.json()
     text = ""
     for part in data.get("content", []):
@@ -202,15 +224,24 @@ def _chat_claude(api_key: str, model: str, system_prompt: str, messages: list[di
 
 
 def _chat_deepseek(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> tuple[str, dict[str, Any]]:
-    payload_messages = [{"role": "system", "content": system_prompt}]
-    payload_messages.extend(messages)
-    resp = requests.post(
+    trimmed_messages = messages[-8:]
+    compact_messages = []
+    for m in trimmed_messages:
+        compact_messages.append(
+            {
+                "role": m.get("role", "user"),
+                "content": str(m.get("content", ""))[:1200],
+            }
+        )
+    payload_messages = [{"role": "system", "content": system_prompt[:1800]}]
+    payload_messages.extend(compact_messages)
+    resp = _post_with_retries(
         "https://api.deepseek.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "temperature": 0.2, "messages": payload_messages, "max_tokens": 450},
-        timeout=20,
+        payload={"model": model, "temperature": 0.2, "messages": payload_messages, "max_tokens": 450},
+        timeout=DEEPSEEK_CHAT_TIMEOUT,
+        retries=DEEPSEEK_RETRIES,
     )
-    resp.raise_for_status()
     data = resp.json()
     text = str(data["choices"][0]["message"]["content"]).strip()
     return text, normalize_usage("deepseek", model, data.get("usage", {}))
