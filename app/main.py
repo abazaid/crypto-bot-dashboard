@@ -125,6 +125,80 @@ def _local_day_start_utc_naive() -> datetime:
     return start_local.astimezone(UTC_TZ).replace(tzinfo=None)
 
 
+def _extract_action_json(text: str) -> dict | None:
+    if not text:
+        return None
+    marker = "ACTION_JSON:"
+    idx = text.find(marker)
+    if idx < 0:
+        return None
+    raw = text[idx + len(marker) :].strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(raw[start : end + 1])
+    except Exception:
+        return None
+
+
+def _set_setting_value(db, key: str, value: str) -> None:
+    row = db.query(Setting).filter(Setting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value))
+
+
+def _apply_ai_chat_actions(db, provider: str, action_payload: dict | None) -> list[str]:
+    if not action_payload or not isinstance(action_payload, dict):
+        return []
+    set_block = action_payload.get("set")
+    if not isinstance(set_block, dict):
+        return []
+
+    p = provider.lower().strip()
+    allowed = {
+        "max_trades_per_day": (f"ai_{p}_max_trades_per_day", int, 1, 2000),
+        "daily_loss_limit_pct": (f"ai_{p}_daily_loss_limit_pct", float, 0.1, 50.0),
+        "max_open": (f"ai_{p}_max_open", int, 1, 200),
+        "entry_usdt": (f"ai_{p}_entry_usdt", float, 5.0, 100000.0),
+        "trials_per_cycle": (f"ai_{p}_trials_per_cycle", int, 1, 500),
+        "scan_symbols": (f"ai_{p}_scan_symbols", int, 5, 1000),
+        "min_quote_volume": (f"ai_{p}_min_quote_volume", float, 1000000.0, 10000000000.0),
+        "max_spread_pct": (f"ai_{p}_max_spread_pct", float, 0.01, 5.0),
+        "max_risk_per_trade_pct": (f"ai_{p}_max_risk_per_trade_pct", float, 0.1, 10.0),
+        "enabled": (f"ai_{p}_enabled", bool, 0, 1),
+    }
+
+    applied: list[str] = []
+    for k, v in set_block.items():
+        if k not in allowed:
+            continue
+        setting_key, typ, min_v, max_v = allowed[k]
+        try:
+            if typ is bool:
+                b = str(v).lower() in {"1", "true", "yes", "on"}
+                _set_setting_value(db, setting_key, "true" if b else "false")
+                applied.append(f"{k}={'true' if b else 'false'}")
+            elif typ is int:
+                iv = int(float(v))
+                iv = max(min_v, min(max_v, iv))
+                _set_setting_value(db, setting_key, str(iv))
+                applied.append(f"{k}={iv}")
+            else:
+                fv = float(v)
+                fv = max(min_v, min(max_v, fv))
+                _set_setting_value(db, setting_key, str(fv))
+                applied.append(f"{k}={fv}")
+        except Exception:
+            continue
+    if applied:
+        db.add(LogEntry(event_type="AI_CONFIG", symbol=provider.upper(), message=f"Applied via chat: {', '.join(applied)}"))
+    return applied
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -822,6 +896,17 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
             }
         )
     recommendations.sort(key=lambda x: float(x["net_pnl"]), reverse=True)
+    cfg = {
+        "max_trades_per_day": settings_map.get(f"ai_{p}_max_trades_per_day", "20"),
+        "daily_loss_limit_pct": settings_map.get(f"ai_{p}_daily_loss_limit_pct", "3.0"),
+        "max_open": settings_map.get(f"ai_{p}_max_open", "10"),
+        "entry_usdt": settings_map.get(f"ai_{p}_entry_usdt", "30"),
+        "trials_per_cycle": settings_map.get(f"ai_{p}_trials_per_cycle", "20"),
+        "scan_symbols": settings_map.get(f"ai_{p}_scan_symbols", "80"),
+        "min_quote_volume": settings_map.get(f"ai_{p}_min_quote_volume", "10000000"),
+        "max_spread_pct": settings_map.get(f"ai_{p}_max_spread_pct", "0.20"),
+        "max_risk_per_trade_pct": settings_map.get(f"ai_{p}_max_risk_per_trade_pct", "1.0"),
+    }
 
     usage_rows = db.query(AIProviderUsage).filter(AIProviderUsage.ai_provider == p).all()
     daily_start = _local_day_start_utc_naive()
@@ -933,6 +1018,7 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
         "recommendations": recommendations[:12],
         "brain": brain,
         "chat_history": chat_history,
+        "config": cfg,
     }
 
 
@@ -1032,8 +1118,12 @@ async def ai_trading_provider_chat(request: Request, provider: str) -> RedirectR
             "Be concise, practical, and transparent. "
             "Always explain what you are currently doing, your planned next action, "
             "entry logic, exit logic, and risk controls. Do not claim guaranteed profit.\n"
+            "If the user asks to change configuration, append one JSON block at the END in this exact format:\n"
+            "ACTION_JSON:{\"set\":{\"max_trades_per_day\":50,\"entry_usdt\":30}}\n"
+            "Allowed keys in set: max_trades_per_day,daily_loss_limit_pct,max_open,entry_usdt,trials_per_cycle,scan_symbols,min_quote_volume,max_spread_pct,max_risk_per_trade_pct,enabled.\n"
             f"Current summary: {json.dumps(data['summary'], ensure_ascii=True)}\n"
-            f"Current brain: {json.dumps(data['brain'], ensure_ascii=True)}"
+            f"Current brain: {json.dumps(data['brain'], ensure_ascii=True)}\n"
+            f"Current config: {json.dumps(data['config'], ensure_ascii=True)}"
         )
 
         history_rows = (
@@ -1048,6 +1138,9 @@ async def ai_trading_provider_chat(request: Request, provider: str) -> RedirectR
 
         reply, usage = chat_with_provider_with_usage(p, system_prompt, messages, _provider_env_cfg())
         record_usage(db, p, "chat", usage)
+        applied = _apply_ai_chat_actions(db, p, _extract_action_json(reply))
+        if applied:
+            reply = f"{reply}\n\nApplied settings: {', '.join(applied)}"
         db.add(AIChatMessage(ai_provider=p, role="assistant", message=reply[:4000]))
         db.commit()
     finally:

@@ -54,6 +54,27 @@
     <h2>Model Brain</h2>
     <span>What this model is doing now</span>
   </div>
+  <div class="table-wrap" style="margin-bottom:10px;">
+    <table>
+      <thead>
+        <tr>
+          <th>Config</th>
+          <th>Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>max_trades_per_day</td><td>{{ config.max_trades_per_day }}</td></tr>
+        <tr><td>daily_loss_limit_pct</td><td>{{ config.daily_loss_limit_pct }}</td></tr>
+        <tr><td>max_open</td><td>{{ config.max_open }}</td></tr>
+        <tr><td>entry_usdt</td><td>{{ config.entry_usdt }}</td></tr>
+        <tr><td>trials_per_cycle</td><td>{{ config.trials_per_cycle }}</td></tr>
+        <tr><td>scan_symbols</td><td>{{ config.scan_symbols }}</td></tr>
+        <tr><td>min_quote_volume</td><td>{{ config.min_quote_volume }}</td></tr>
+        <tr><td>max_spread_pct</td><td>{{ config.max_spread_pct }}</td></tr>
+        <tr><td>max_risk_per_trade_pct</td><td>{{ config.max_risk_per_trade_pct }}</td></tr>
+      </tbody>
+    </table>
+  </div>
   <div class="advisor-notes">
     <div class="log-item"><p><strong>Current Focus:</strong> {{ brain.focus }}</p></div>
     <div class="log-item"><p><strong>Entry Logic:</strong> {{ brain.entry_logic }}</p></div>
