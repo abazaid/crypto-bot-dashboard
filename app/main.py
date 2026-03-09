@@ -908,7 +908,10 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
         "max_risk_per_trade_pct": settings_map.get(f"ai_{p}_max_risk_per_trade_pct", "1.0"),
     }
 
-    usage_rows = db.query(AIProviderUsage).filter(AIProviderUsage.ai_provider == p).all()
+    try:
+        usage_rows = db.query(AIProviderUsage).filter(AIProviderUsage.ai_provider == p).all()
+    except OperationalError:
+        usage_rows = []
     daily_start = _local_day_start_utc_naive()
     usage_daily = [u for u in usage_rows if u.created_at >= daily_start]
     daily_tokens = sum(int(u.total_tokens or 0) for u in usage_daily)
@@ -936,13 +939,16 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
             f"{_as_local(l.timestamp).strftime('%H:%M:%S')} | {l.event_type} | {l.message}" for l in provider_logs
         ]
 
-    memory_rows = (
-        db.query(AIAgentMemory)
-        .filter(AIAgentMemory.ai_provider == p)
-        .order_by(desc(AIAgentMemory.id))
-        .limit(20)
-        .all()
-    )
+    try:
+        memory_rows = (
+            db.query(AIAgentMemory)
+            .filter(AIAgentMemory.ai_provider == p)
+            .order_by(desc(AIAgentMemory.id))
+            .limit(20)
+            .all()
+        )
+    except OperationalError:
+        memory_rows = []
     memory_rows.reverse()
     memory_feed = []
     for m in memory_rows:
@@ -980,13 +986,16 @@ def _ai_provider_dashboard(db: SessionLocal, provider: str) -> dict:
         except Exception:
             pass
 
-    chat_rows = (
-        db.query(AIChatMessage)
-        .filter(AIChatMessage.ai_provider == p)
-        .order_by(AIChatMessage.id.desc())
-        .limit(80)
-        .all()
-    )
+    try:
+        chat_rows = (
+            db.query(AIChatMessage)
+            .filter(AIChatMessage.ai_provider == p)
+            .order_by(AIChatMessage.id.desc())
+            .limit(80)
+            .all()
+        )
+    except OperationalError:
+        chat_rows = []
     chat_rows.reverse()
     chat_history = [
         {
