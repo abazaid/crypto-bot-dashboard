@@ -1097,6 +1097,7 @@ async def ai_trading_provider(request: Request, provider: str) -> HTMLResponse:
                 "recommendations": data["recommendations"],
                 "brain": data["brain"],
                 "chat_history": data["chat_history"],
+                "config": data["config"],
             }
         )
         return templates.TemplateResponse("ai_trading_provider.html", ctx)
