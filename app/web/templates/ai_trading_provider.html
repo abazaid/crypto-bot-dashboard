@@ -63,15 +63,15 @@
         </tr>
       </thead>
       <tbody>
-        <tr><td>max_trades_per_day</td><td>{{ config.max_trades_per_day }}</td></tr>
-        <tr><td>daily_loss_limit_pct</td><td>{{ config.daily_loss_limit_pct }}</td></tr>
-        <tr><td>max_open</td><td>{{ config.max_open }}</td></tr>
-        <tr><td>entry_usdt</td><td>{{ config.entry_usdt }}</td></tr>
-        <tr><td>trials_per_cycle</td><td>{{ config.trials_per_cycle }}</td></tr>
-        <tr><td>scan_symbols</td><td>{{ config.scan_symbols }}</td></tr>
-        <tr><td>min_quote_volume</td><td>{{ config.min_quote_volume }}</td></tr>
-        <tr><td>max_spread_pct</td><td>{{ config.max_spread_pct }}</td></tr>
-        <tr><td>max_risk_per_trade_pct</td><td>{{ config.max_risk_per_trade_pct }}</td></tr>
+        <tr><td>max_trades_per_day</td><td>{{ config.get('max_trades_per_day', '-') if config else '-' }}</td></tr>
+        <tr><td>daily_loss_limit_pct</td><td>{{ config.get('daily_loss_limit_pct', '-') if config else '-' }}</td></tr>
+        <tr><td>max_open</td><td>{{ config.get('max_open', '-') if config else '-' }}</td></tr>
+        <tr><td>entry_usdt</td><td>{{ config.get('entry_usdt', '-') if config else '-' }}</td></tr>
+        <tr><td>trials_per_cycle</td><td>{{ config.get('trials_per_cycle', '-') if config else '-' }}</td></tr>
+        <tr><td>scan_symbols</td><td>{{ config.get('scan_symbols', '-') if config else '-' }}</td></tr>
+        <tr><td>min_quote_volume</td><td>{{ config.get('min_quote_volume', '-') if config else '-' }}</td></tr>
+        <tr><td>max_spread_pct</td><td>{{ config.get('max_spread_pct', '-') if config else '-' }}</td></tr>
+        <tr><td>max_risk_per_trade_pct</td><td>{{ config.get('max_risk_per_trade_pct', '-') if config else '-' }}</td></tr>
       </tbody>
     </table>
   </div>
