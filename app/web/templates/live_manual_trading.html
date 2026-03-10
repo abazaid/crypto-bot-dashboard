@@ -16,6 +16,14 @@
     <h3>{{ "%.2f"|format(manual.paper_cash) }} USDT</h3>
   </article>
   <article class="card">
+    <p>Live Cash (USDT)</p>
+    {% if manual.live_cash is not none %}
+    <h3>{{ "%.2f"|format(manual.live_cash) }} USDT</h3>
+    {% else %}
+    <h3 class="warn">N/A</h3>
+    {% endif %}
+  </article>
+  <article class="card">
     <p>Open Manual Trades</p>
     <h3>{{ manual.open_count }}</h3>
   </article>
@@ -55,36 +63,32 @@
     <table>
       <thead>
         <tr>
-          <th>ID</th>
           <th>Symbol</th>
-          <th>Entry</th>
-          <th>Current</th>
-          <th>Qty</th>
-          <th>Entry USDT</th>
-          <th>PnL USDT</th>
+          <th>Entry Time</th>
+          <th>Entry Price</th>
+          <th>Current Price</th>
+          <th>Notional</th>
           <th>PnL %</th>
-          <th>TP</th>
+          <th>PnL USDT</th>
+          <th>TP Target</th>
           <th>SL</th>
-          <th>Live Link</th>
-          <th>Age</th>
+          <th>Trailing</th>
           <th>Action</th>
         </tr>
       </thead>
       <tbody>
         {% for t in open_trades %}
         <tr>
-          <td>{{ t.id }}</td>
           <td>{{ t.symbol }}</td>
+          <td>{{ t.entry_time }}</td>
           <td>{{ t.entry }}</td>
           <td>{{ t.current }}</td>
-          <td>{{ t.qty }}</td>
           <td>{{ t.entry_usdt }}</td>
-          <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
           <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
+          <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
           <td>{{ t.tp }}</td>
           <td>{{ t.sl }}</td>
-          <td>{{ "Yes" if t.live_linked else "No" }}</td>
-          <td>{{ t.age }}</td>
+          <td>{{ t.trailing }}</td>
           <td><a href="/live-manual/close/{{ t.id }}" class="btn ghost">Close</a></td>
         </tr>
         {% endfor %}

@@ -19,7 +19,11 @@ from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.migrations import apply_sqlite_migrations
 from app.models import AIAgentMemory, AIChatMessage, AIProviderUsage, AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
-from app.services.binance_live import is_configured as live_binance_configured, place_market_buy_quote
+from app.services.binance_live import (
+    get_free_asset_balance as live_get_free_asset_balance,
+    is_configured as live_binance_configured,
+    place_market_buy_quote,
+)
 from app.services.paper_engine import (
     init_defaults,
     mirror_close_for_manual_action,
@@ -512,16 +516,15 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
                 {
                     "id": t.id,
                     "symbol": t.symbol,
+                    "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
                     "entry": f"{t.entry_price:.6f}",
                     "current": f"{current:.6f}",
-                    "qty": f"{t.quantity:.8f}",
-                    "entry_usdt": f"{(t.entry_price * t.quantity):.2f}",
+                    "entry_usdt": f"{(t.entry_price * t.quantity):.2f} USDT",
                     "pnl_pct": pnl_pct,
                     "pnl_usdt": pnl_usdt,
                     "tp": f"{t.tp_price:.6f}",
                     "sl": f"{t.sl_price:.6f}",
-                    "age": _format_age(now - t.entry_time),
-                    "live_linked": bool(db.query(Setting).filter(Setting.key == f"live_link_trade_{t.id}").first()),
+                    "trailing": "Active" if int(t.trailing_active or 0) == 1 else "Not Active",
                 }
             )
 
@@ -551,6 +554,12 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
         recent_logs = [l for l in recent_logs if (l.symbol in {t.symbol for t in open_rows + closed_rows} or l.event_type == "MANUAL")][:20]
 
         ctx = _base_context("live_manual")
+        live_cash = None
+        if live_binance_configured():
+            try:
+                live_cash = float(live_get_free_asset_balance("USDT"))
+            except Exception:
+                live_cash = None
         ctx.update(
             {
                 "request": request,
@@ -558,6 +567,7 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
                     "is_live_mode": settings_map.get("trading_mode", "paper").lower() == "live",
                     "api_ready": live_binance_configured(),
                     "paper_cash": float(settings_map.get("paper_cash_balance", settings.paper_start_balance)),
+                    "live_cash": live_cash,
                     "open_count": len(open_rows),
                     "closed_count": len(closed_rows),
                     "manual_count_total": len(manual_ids),
