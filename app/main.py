@@ -20,7 +20,15 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.migrations import apply_sqlite_migrations
 from app.models import AIAgentMemory, AIChatMessage, AIProviderUsage, AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.binance_live import is_configured as live_binance_configured, place_market_buy_quote
-from app.services.paper_engine import init_defaults, mirror_close_for_manual_action, portfolio_snapshot, register_live_link_for_trade, run_cycle, statistics_snapshot
+from app.services.paper_engine import (
+    init_defaults,
+    mirror_close_for_manual_action,
+    portfolio_snapshot,
+    register_live_link_for_trade,
+    run_cycle,
+    run_position_watch_cycle,
+    statistics_snapshot,
+)
 from app.services.ai_providers import chat_with_provider_with_usage
 from app.services.ai_usage import record_usage
 from app.services.telegram_alerts import telegram_test
@@ -264,6 +272,13 @@ def on_startup() -> None:
     finally:
         db.close()
     scheduler.add_job(_scheduled_cycle, "interval", seconds=settings.cycle_seconds, id="paper_cycle", replace_existing=True)
+    scheduler.add_job(
+        _scheduled_position_watch,
+        "interval",
+        seconds=max(2, settings.position_watch_seconds),
+        id="position_watch",
+        replace_existing=True,
+    )
     scheduler.start()
 
 
@@ -285,6 +300,17 @@ def _scheduled_cycle() -> None:
     db = SessionLocal()
     try:
         run_cycle(db)
+    finally:
+        db.close()
+        cycle_lock.release()
+
+
+def _scheduled_position_watch() -> None:
+    if not cycle_lock.acquire(blocking=False):
+        return
+    db = SessionLocal()
+    try:
+        run_position_watch_cycle(db)
     finally:
         db.close()
         cycle_lock.release()

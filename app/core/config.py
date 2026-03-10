@@ -4,6 +4,7 @@ import os
 class Settings:
     database_url = os.getenv("DATABASE_URL", "sqlite:///./paper_trading.db")
     cycle_seconds = int(os.getenv("CYCLE_SECONDS", "300"))
+    position_watch_seconds = int(os.getenv("POSITION_WATCH_SECONDS", "10"))
 
     paper_start_balance = float(os.getenv("PAPER_START_BALANCE", "1000"))
     fee_rate = float(os.getenv("FEE_RATE", "0.001"))

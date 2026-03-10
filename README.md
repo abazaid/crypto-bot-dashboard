@@ -10,6 +10,7 @@ Paper-trading crypto bot with live Binance market data, scanner, strategy engine
 - API keys are read only from environment variables:
   - `BINANCE_API_KEY`
   - `BINANCE_API_SECRET`
+- Exit monitoring is decoupled from scanner cycle using `POSITION_WATCH_SECONDS` (default `10s`) for faster SL/TP/trailing reactions.
 
 ## Run locally
 

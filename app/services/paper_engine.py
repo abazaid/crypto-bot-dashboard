@@ -1663,16 +1663,23 @@ def _manage_open_positions(db: Session) -> None:
     _update_cash_balance(db, cash)
 
 
+def run_position_watch_cycle(db: Session) -> None:
+    init_defaults(db)
+    _reconcile_cash_if_needed(db)
+    _manage_open_positions(db)
+    _manage_shadow_positions(db)
+    for provider in ("classic", "openai", "claude", "deepseek"):
+        _manage_ai_positions(db, provider)
+    db.commit()
+
+
 def run_cycle(db: Session) -> None:
     init_defaults(db)
     _reconcile_cash_if_needed(db)
     if _is_live_mode(db) and not binance_live_configured():
         _notify(db, "LIVE", "Live mode is selected but API keys are missing. Entries will be rejected.", telegram=True)
 
-    _manage_open_positions(db)
-    _manage_shadow_positions(db)
-    for provider in ("classic", "openai", "claude", "deepseek"):
-        _manage_ai_positions(db, provider)
+    run_position_watch_cycle(db)
     blocked_by_daily_loss = _daily_loss_triggered(db)
     if blocked_by_daily_loss:
         _notify(db, "ENTRY_DECISION", "rejected reason=daily_loss_limit_reached", "-")
