@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.migrations import apply_sqlite_migrations
 from app.models import AIAgentMemory, AIChatMessage, AIProviderUsage, AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
-from app.services.paper_engine import init_defaults, portfolio_snapshot, run_cycle, statistics_snapshot
+from app.services.paper_engine import init_defaults, mirror_close_for_manual_action, portfolio_snapshot, run_cycle, statistics_snapshot
 from app.services.ai_providers import chat_with_provider_with_usage
 from app.services.ai_usage import record_usage
 from app.services.telegram_alerts import telegram_test
@@ -39,9 +39,18 @@ except Exception:
 
 def _base_context(active_page: str) -> dict:
     now_local = datetime.utcnow().replace(tzinfo=UTC_TZ).astimezone(APP_TZ)
+    mode_label = "Paper Trading"
+    db = SessionLocal()
+    try:
+        row = db.query(Setting).filter(Setting.key == "trading_mode").first()
+        if row and str(row.value).strip().lower() == "live":
+            mode_label = "Live Mirror"
+    finally:
+        db.close()
     return {
         "active_page": active_page,
         "last_update": now_local.strftime("%Y-%m-%d %H:%M %Z"),
+        "mode_label": mode_label,
     }
 
 
@@ -388,6 +397,7 @@ async def close_trade_manually(trade_id: int) -> RedirectResponse:
         trade.exit_time = datetime.utcnow()
         trade.pnl = pnl_value
         trade.exit_reason = "Manual Close"
+        mirror_close_for_manual_action(db, trade, reason="Manual Close")
 
         new_cash = current_cash + proceeds - exit_fee
         if cash_row:

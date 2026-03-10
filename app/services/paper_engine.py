@@ -23,6 +23,13 @@ from app.services.strategy import (
 )
 from app.services.ai_providers import propose_strategy_with_usage
 from app.services.ai_usage import record_usage
+from app.services.binance_live import (
+    get_base_asset,
+    get_free_asset_balance,
+    is_configured as binance_live_configured,
+    place_market_buy_quote,
+    place_market_sell_qty,
+)
 from app.services.telegram_alerts import send_telegram_message
 
 EXCLUDED_SYMBOLS = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "DAIUSDT"}
@@ -95,6 +102,111 @@ def _get_int(db: Session, key: str, default: int) -> int:
 def _get_bool(db: Session, key: str, default: bool) -> bool:
     val = _get_setting(db, key, "true" if default else "false").lower()
     return val in {"1", "true", "yes", "on"}
+
+
+def _is_live_mode(db: Session) -> bool:
+    return _get_setting(db, "trading_mode", "paper").strip().lower() == "live"
+
+
+def _live_link_key(trade_id: int) -> str:
+    return f"live_link_trade_{trade_id}"
+
+
+def _set_live_link(db: Session, trade_id: int, symbol: str, quantity: float, order_id: int | str) -> None:
+    value = f"{symbol.upper()}|{quantity:.12f}|{order_id}"
+    _set_setting(db, _live_link_key(trade_id), value[:200])
+
+
+def _get_live_link(db: Session, trade_id: int) -> tuple[str, float, str] | None:
+    row = db.query(Setting).filter(Setting.key == _live_link_key(trade_id)).first()
+    raw = row.value if row else ""
+    if not raw:
+        return None
+    parts = raw.split("|")
+    if len(parts) != 3:
+        return None
+    symbol = parts[0].strip().upper()
+    try:
+        qty = float(parts[1])
+    except (TypeError, ValueError):
+        return None
+    order_id = parts[2].strip()
+    if not symbol or qty <= 0 or not order_id:
+        return None
+    return symbol, qty, order_id
+
+
+def _clear_live_link(db: Session, trade_id: int) -> None:
+    row = db.query(Setting).filter(Setting.key == _live_link_key(trade_id)).first()
+    if row:
+        db.delete(row)
+
+
+def _mirror_open_live(db: Session, trade: Trade, allocation_usdt: float) -> bool:
+    if not _is_live_mode(db):
+        return True
+    if not binance_live_configured():
+        _notify(db, "LIVE", "Live mode is enabled but BINANCE_API_KEY/SECRET are missing", trade.symbol, telegram=True)
+        return False
+    try:
+        order = place_market_buy_quote(trade.symbol, allocation_usdt)
+        executed_qty = float(order.get("executedQty", "0") or 0.0)
+        order_id = order.get("orderId", "-")
+        if executed_qty <= 0:
+            _notify(db, "LIVE", f"entry failed: executedQty=0 orderId={order_id}", trade.symbol, telegram=True)
+            return False
+        _set_live_link(db, trade.id, trade.symbol, executed_qty, order_id)
+        _notify(
+            db,
+            "LIVE",
+            f"entry mirrored orderId={order_id} executed_qty={executed_qty:.8f} quote_usdt={allocation_usdt:.2f}",
+            trade.symbol,
+            telegram=True,
+        )
+        return True
+    except Exception as exc:
+        _notify(db, "LIVE", f"entry failed: {exc}", trade.symbol, telegram=True)
+        return False
+
+
+def _mirror_close_live(db: Session, trade: Trade, reason: str) -> None:
+    if not _is_live_mode(db):
+        return
+    link = _get_live_link(db, trade.id)
+    if not link:
+        _notify(db, "LIVE", "close skipped: no live link found for paper trade", trade.symbol, telegram=True)
+        return
+    symbol, linked_qty, _ = link
+    try:
+        base_asset = get_base_asset(symbol)
+        free_balance = get_free_asset_balance(base_asset)
+        sell_qty = min(linked_qty, free_balance * 0.999)
+        if sell_qty <= 0:
+            _notify(
+                db,
+                "LIVE",
+                f"close skipped: insufficient free {base_asset} balance (free={free_balance:.8f})",
+                symbol,
+                telegram=True,
+            )
+            return
+        order = place_market_sell_qty(symbol, sell_qty)
+        order_id = order.get("orderId", "-")
+        executed_qty = float(order.get("executedQty", "0") or 0.0)
+        _notify(
+            db,
+            "LIVE",
+            f"close mirrored ({reason}) orderId={order_id} executed_qty={executed_qty:.8f}",
+            symbol,
+            telegram=True,
+        )
+        _clear_live_link(db, trade.id)
+    except Exception as exc:
+        _notify(db, "LIVE", f"close failed: {exc}", symbol, telegram=True)
+
+
+def mirror_close_for_manual_action(db: Session, trade: Trade, reason: str = "Manual Close") -> None:
+    _mirror_close_live(db, trade, reason)
 
 
 def _cash_balance(db: Session) -> float:
@@ -1421,6 +1533,11 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
         trailing_active=0,
     )
     db.add(trade)
+    db.flush()
+    if not _mirror_open_live(db, trade, allocation):
+        db.delete(trade)
+        _notify(db, "ENTRY_DECISION", "rejected reason=live_entry_failed", symbol)
+        return
     _update_cash_balance(db, new_cash)
     checks = item.get("entry_checks", {})
     _notify(
@@ -1478,6 +1595,7 @@ def _manage_open_positions(db: Session) -> None:
             t.exit_time = datetime.utcnow()
             t.pnl = pnl_value
             t.exit_reason = reason
+            _mirror_close_live(db, t, reason)
             _notify(
                 db,
                 "TRADE",
@@ -1522,6 +1640,7 @@ def _manage_open_positions(db: Session) -> None:
         t.exit_time = datetime.utcnow()
         t.pnl = pnl_value
         t.exit_reason = reason
+        _mirror_close_live(db, t, reason)
         _notify(
             db,
             "TRADE",
@@ -1539,9 +1658,8 @@ def _manage_open_positions(db: Session) -> None:
 def run_cycle(db: Session) -> None:
     init_defaults(db)
     _reconcile_cash_if_needed(db)
-    if _get_setting(db, "trading_mode", "paper").lower() != "paper":
-        _notify(db, "MODE", "Live mode disabled in this build; forced to paper mode.", telegram=True)
-        _set_setting(db, "trading_mode", "paper")
+    if _is_live_mode(db) and not binance_live_configured():
+        _notify(db, "LIVE", "Live mode is selected but API keys are missing. Entries will be rejected.", telegram=True)
 
     _manage_open_positions(db)
     _manage_shadow_positions(db)

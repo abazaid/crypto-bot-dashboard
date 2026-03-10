@@ -2,6 +2,15 @@
 
 Paper-trading crypto bot with live Binance market data, scanner, strategy engine, risk controls, and dashboard.
 
+## Live mirroring mode
+
+- Keep one strategy configuration in `/settings`.
+- When `Trading mode = Live`, each approved paper entry is mirrored to Binance Spot (main account) using market orders.
+- When the paper trade closes (TP/SL/trailing/time/manual), a matching market close is sent to Binance.
+- API keys are read only from environment variables:
+  - `BINANCE_API_KEY`
+  - `BINANCE_API_SECRET`
+
 ## Run locally
 
 ```bash
