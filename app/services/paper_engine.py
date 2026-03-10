@@ -169,8 +169,8 @@ def _mirror_open_live(db: Session, trade: Trade, allocation_usdt: float) -> bool
         return False
 
 
-def _mirror_close_live(db: Session, trade: Trade, reason: str) -> None:
-    if not _is_live_mode(db):
+def _mirror_close_live(db: Session, trade: Trade, reason: str, force_live: bool = False) -> None:
+    if not _is_live_mode(db) and not force_live:
         return
     link = _get_live_link(db, trade.id)
     if not link:
@@ -205,8 +205,12 @@ def _mirror_close_live(db: Session, trade: Trade, reason: str) -> None:
         _notify(db, "LIVE", f"close failed: {exc}", symbol, telegram=True)
 
 
-def mirror_close_for_manual_action(db: Session, trade: Trade, reason: str = "Manual Close") -> None:
-    _mirror_close_live(db, trade, reason)
+def mirror_close_for_manual_action(db: Session, trade: Trade, reason: str = "Manual Close", force_live: bool = False) -> None:
+    _mirror_close_live(db, trade, reason, force_live=force_live)
+
+
+def register_live_link_for_trade(db: Session, trade: Trade, symbol: str, quantity: float, order_id: int | str) -> None:
+    _set_live_link(db, trade.id, symbol, quantity, order_id)
 
 
 def _cash_balance(db: Session) -> float:
@@ -1535,9 +1539,13 @@ def _try_open_trade(db: Session, item: dict, filters_map: Dict[str, dict]) -> No
     db.add(trade)
     db.flush()
     if not _mirror_open_live(db, trade, allocation):
-        db.delete(trade)
-        _notify(db, "ENTRY_DECISION", "rejected reason=live_entry_failed", symbol)
-        return
+        _notify(
+            db,
+            "LIVE",
+            "entry mirror failed; paper trade kept open (paper-only execution for this entry)",
+            symbol,
+            telegram=True,
+        )
     _update_cash_balance(db, new_cash)
     checks = item.get("entry_checks", {})
     _notify(

@@ -19,7 +19,8 @@ from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.migrations import apply_sqlite_migrations
 from app.models import AIAgentMemory, AIChatMessage, AIProviderUsage, AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
-from app.services.paper_engine import init_defaults, mirror_close_for_manual_action, portfolio_snapshot, run_cycle, statistics_snapshot
+from app.services.binance_live import is_configured as live_binance_configured, place_market_buy_quote
+from app.services.paper_engine import init_defaults, mirror_close_for_manual_action, portfolio_snapshot, register_live_link_for_trade, run_cycle, statistics_snapshot
 from app.services.ai_providers import chat_with_provider_with_usage
 from app.services.ai_usage import record_usage
 from app.services.telegram_alerts import telegram_test
@@ -158,6 +159,50 @@ def _set_setting_value(db, key: str, value: str) -> None:
         row.value = value
     else:
         db.add(Setting(key=key, value=value))
+
+
+def _trade_origin_key(trade_id: int) -> str:
+    return f"trade_origin_{trade_id}"
+
+
+def _set_trade_origin(db, trade_id: int, origin: str) -> None:
+    _set_setting_value(db, _trade_origin_key(trade_id), origin[:80])
+
+
+def _manual_trade_ids(db) -> set[int]:
+    rows = (
+        db.query(Setting)
+        .filter(Setting.key.like("trade_origin_%"), Setting.value == "manual_live")
+        .all()
+    )
+    ids: set[int] = set()
+    for row in rows:
+        try:
+            ids.add(int(str(row.key).split("trade_origin_", 1)[1]))
+        except Exception:
+            continue
+    return ids
+
+
+def _manual_trade_context(db) -> dict:
+    manual_ids = _manual_trade_ids(db)
+    open_rows = []
+    closed_rows = []
+    if manual_ids:
+        open_rows = (
+            db.query(Trade)
+            .filter(Trade.id.in_(manual_ids), Trade.status == "open")
+            .order_by(Trade.entry_time.desc())
+            .all()
+        )
+        closed_rows = (
+            db.query(Trade)
+            .filter(Trade.id.in_(manual_ids), Trade.status == "closed")
+            .order_by(Trade.exit_time.desc())
+            .limit(80)
+            .all()
+        )
+    return {"manual_ids": manual_ids, "open_rows": open_rows, "closed_rows": closed_rows}
 
 
 def _apply_ai_chat_actions(db, provider: str, action_payload: dict | None) -> list[str]:
@@ -416,6 +461,254 @@ async def close_trade_manually(trade_id: int) -> RedirectResponse:
     finally:
         db.close()
     return RedirectResponse("/trades", status_code=303)
+
+
+@app.get("/live-manual", response_class=HTMLResponse)
+async def live_manual_trading_page(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        ctx_state = _manual_trade_context(db)
+        open_rows = ctx_state["open_rows"]
+        closed_rows = ctx_state["closed_rows"]
+        manual_ids = ctx_state["manual_ids"]
+        settings_map = {s.key: s.value for s in db.query(Setting).all()}
+
+        from app.services.binance_public import get_prices
+
+        prices = get_prices([t.symbol for t in open_rows]) if open_rows else {}
+        now = datetime.utcnow()
+        open_data = []
+        for t in open_rows:
+            current = float(prices.get(t.symbol, t.entry_price))
+            pnl_pct = ((current - t.entry_price) / t.entry_price) * 100 if t.entry_price > 0 else 0.0
+            pnl_usdt = (current - t.entry_price) * t.quantity
+            open_data.append(
+                {
+                    "id": t.id,
+                    "symbol": t.symbol,
+                    "entry": f"{t.entry_price:.6f}",
+                    "current": f"{current:.6f}",
+                    "qty": f"{t.quantity:.8f}",
+                    "entry_usdt": f"{(t.entry_price * t.quantity):.2f}",
+                    "pnl_pct": pnl_pct,
+                    "pnl_usdt": pnl_usdt,
+                    "tp": f"{t.tp_price:.6f}",
+                    "sl": f"{t.sl_price:.6f}",
+                    "age": _format_age(now - t.entry_time),
+                    "live_linked": bool(db.query(Setting).filter(Setting.key == f"live_link_trade_{t.id}").first()),
+                }
+            )
+
+        closed_data = []
+        for t in closed_rows:
+            pnl_pct = ((t.exit_price - t.entry_price) / t.entry_price * 100) if t.exit_price and t.entry_price else 0.0
+            closed_data.append(
+                {
+                    "id": t.id,
+                    "symbol": t.symbol,
+                    "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
+                    "exit_time": _as_local(t.exit_time).strftime("%Y-%m-%d %H:%M") if t.exit_time else "-",
+                    "entry_usdt": f"{(t.entry_price * t.quantity):.2f}",
+                    "pnl_usdt": float(t.pnl or 0.0),
+                    "pnl_pct": pnl_pct,
+                    "reason": t.exit_reason or "-",
+                }
+            )
+
+        recent_logs = (
+            db.query(LogEntry)
+            .filter(LogEntry.event_type.in_(["MANUAL", "LIVE", "TRADE"]))
+            .order_by(desc(LogEntry.id))
+            .limit(40)
+            .all()
+        )
+        recent_logs = [l for l in recent_logs if (l.symbol in {t.symbol for t in open_rows + closed_rows} or l.event_type == "MANUAL")][:20]
+
+        ctx = _base_context("live_manual")
+        ctx.update(
+            {
+                "request": request,
+                "manual": {
+                    "is_live_mode": settings_map.get("trading_mode", "paper").lower() == "live",
+                    "api_ready": live_binance_configured(),
+                    "paper_cash": float(settings_map.get("paper_cash_balance", settings.paper_start_balance)),
+                    "open_count": len(open_rows),
+                    "closed_count": len(closed_rows),
+                    "manual_count_total": len(manual_ids),
+                    "take_profit_pct": float(settings_map.get("take_profit_pct", settings.take_profit_pct)) * 100.0,
+                    "stop_loss_pct": float(settings_map.get("stop_loss_pct", settings.stop_loss_pct)) * 100.0,
+                },
+                "open_trades": open_data,
+                "closed_trades": closed_data,
+                "recent_logs": [
+                    {
+                        "time": _as_local(l.timestamp).strftime("%H:%M:%S"),
+                        "event": l.event_type,
+                        "symbol": l.symbol or "-",
+                        "message": l.message,
+                    }
+                    for l in recent_logs
+                ],
+            }
+        )
+        return templates.TemplateResponse("live_manual_trading.html", ctx)
+    finally:
+        db.close()
+
+
+@app.post("/live-manual/open")
+async def live_manual_open(request: Request) -> RedirectResponse:
+    form = await request.form()
+    symbol = str(form.get("symbol", "")).upper().replace(" ", "")
+    db = SessionLocal()
+    try:
+        try:
+            quote_usdt = float(str(form.get("entry_usdt", "0")).replace(",", "").strip())
+        except Exception:
+            quote_usdt = 0.0
+
+        if not symbol or not symbol.endswith("USDT"):
+            db.add(LogEntry(event_type="MANUAL", symbol=symbol or "-", message="Manual open rejected: symbol must be USDT pair"))
+            db.commit()
+            return RedirectResponse("/live-manual", status_code=303)
+        if quote_usdt < 10:
+            db.add(LogEntry(event_type="MANUAL", symbol=symbol, message="Manual open rejected: entry_usdt must be >= 10"))
+            db.commit()
+            return RedirectResponse("/live-manual", status_code=303)
+        if db.query(Trade).filter(Trade.status == "open", Trade.symbol == symbol).first():
+            db.add(LogEntry(event_type="MANUAL", symbol=symbol, message="Manual open rejected: symbol already has open trade"))
+            db.commit()
+            return RedirectResponse("/live-manual", status_code=303)
+        if not live_binance_configured():
+            db.add(LogEntry(event_type="MANUAL", symbol=symbol, message="Manual open rejected: BINANCE_API_KEY/SECRET missing"))
+            db.commit()
+            return RedirectResponse("/live-manual", status_code=303)
+
+        cash_row = db.query(Setting).filter(Setting.key == "paper_cash_balance").first()
+        paper_cash = float(cash_row.value) if cash_row and cash_row.value else settings.paper_start_balance
+        fee_row = db.query(Setting).filter(Setting.key == "fee_rate").first()
+        fee_rate = float(fee_row.value) if fee_row and fee_row.value else settings.fee_rate
+        tp_row = db.query(Setting).filter(Setting.key == "take_profit_pct").first()
+        sl_row = db.query(Setting).filter(Setting.key == "stop_loss_pct").first()
+        take_profit_pct = float(tp_row.value) if tp_row and tp_row.value else settings.take_profit_pct
+        stop_loss_pct = float(sl_row.value) if sl_row and sl_row.value else settings.stop_loss_pct
+
+        expected_total = quote_usdt * (1 + fee_rate)
+        if paper_cash < expected_total:
+            db.add(
+                LogEntry(
+                    event_type="MANUAL",
+                    symbol=symbol,
+                    message=f"Manual open rejected: insufficient paper cash ({paper_cash:.2f} < {expected_total:.2f})",
+                )
+            )
+            db.commit()
+            return RedirectResponse("/live-manual", status_code=303)
+
+        live_order = place_market_buy_quote(symbol, quote_usdt)
+        executed_qty = float(live_order.get("executedQty", "0") or 0.0)
+        executed_quote = float(live_order.get("cummulativeQuoteQty", "0") or 0.0)
+        order_id = live_order.get("orderId", "-")
+        if executed_qty <= 0 or executed_quote <= 0:
+            db.add(LogEntry(event_type="MANUAL", symbol=symbol, message=f"Manual open failed: invalid fill orderId={order_id}"))
+            db.commit()
+            return RedirectResponse("/live-manual", status_code=303)
+
+        entry_price = executed_quote / executed_qty
+        entry_fee = executed_quote * fee_rate
+        trade = Trade(
+            symbol=symbol,
+            entry_price=entry_price,
+            quantity=executed_qty,
+            status="open",
+            tp_price=entry_price * (1 + take_profit_pct),
+            sl_price=entry_price * (1 - stop_loss_pct),
+            entry_time=datetime.utcnow(),
+            highest_price=entry_price,
+            trailing_active=0,
+        )
+        db.add(trade)
+        db.flush()
+        register_live_link_for_trade(db, trade, symbol, executed_qty, order_id)
+        _set_trade_origin(db, trade.id, "manual_live")
+
+        new_paper_cash = paper_cash - executed_quote - entry_fee
+        if cash_row:
+            cash_row.value = f"{new_paper_cash:.8f}"
+        else:
+            db.add(Setting(key="paper_cash_balance", value=f"{new_paper_cash:.8f}"))
+
+        db.add(
+            LogEntry(
+                event_type="MANUAL",
+                symbol=symbol,
+                message=(
+                    f"Manual mirrored BUY success orderId={order_id} qty={executed_qty:.8f} "
+                    f"entry={entry_price:.8f} quote={executed_quote:.2f}"
+                ),
+            )
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        db.add(LogEntry(event_type="MANUAL", symbol=symbol or "-", message=f"Manual open failed: {exc}"))
+        db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/live-manual", status_code=303)
+
+
+@app.get("/live-manual/close/{trade_id}")
+async def live_manual_close(trade_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        trade = db.query(Trade).filter(Trade.id == trade_id, Trade.status == "open").first()
+        if not trade:
+            return RedirectResponse("/live-manual", status_code=303)
+        origin = db.query(Setting).filter(Setting.key == _trade_origin_key(trade_id)).first()
+        if not origin or origin.value != "manual_live":
+            db.add(LogEntry(event_type="MANUAL", symbol=trade.symbol, message=f"Manual close rejected: trade #{trade_id} not manual_live"))
+            db.commit()
+            return RedirectResponse("/live-manual", status_code=303)
+
+        from app.services.binance_public import get_prices
+
+        prices = get_prices([trade.symbol])
+        exit_price = float(prices.get(trade.symbol, trade.entry_price))
+        fee_row = db.query(Setting).filter(Setting.key == "fee_rate").first()
+        fee_rate = float(fee_row.value) if fee_row and fee_row.value else settings.fee_rate
+        cash_row = db.query(Setting).filter(Setting.key == "paper_cash_balance").first()
+        current_cash = float(cash_row.value) if cash_row and cash_row.value else settings.paper_start_balance
+
+        proceeds = trade.quantity * exit_price
+        exit_fee = proceeds * fee_rate
+        entry_fee = (trade.entry_price * trade.quantity) * fee_rate
+        pnl_value = (exit_price - trade.entry_price) * trade.quantity - entry_fee - exit_fee
+
+        trade.status = "closed"
+        trade.exit_price = exit_price
+        trade.exit_time = datetime.utcnow()
+        trade.pnl = pnl_value
+        trade.exit_reason = "Manual Live Close"
+        mirror_close_for_manual_action(db, trade, reason="Manual Live Close", force_live=True)
+
+        new_cash = current_cash + proceeds - exit_fee
+        if cash_row:
+            cash_row.value = f"{new_cash:.8f}"
+        else:
+            db.add(Setting(key="paper_cash_balance", value=f"{new_cash:.8f}"))
+
+        db.add(
+            LogEntry(
+                event_type="MANUAL",
+                symbol=trade.symbol,
+                message=f"Manual mirrored close success trade_id={trade.id} exit={exit_price:.6f} pnl_usdt={pnl_value:+.4f}",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/live-manual", status_code=303)
 
 
 @app.get("/settings", response_class=HTMLResponse)

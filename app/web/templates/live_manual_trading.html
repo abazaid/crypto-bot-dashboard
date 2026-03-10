@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Live Manual Trading | Crypto Bot{% endblock %}
+{% block page_title %}Live Manual Trading{% endblock %}
+{% block content %}
+<section class="grid cards">
+  <article class="card">
+    <p>Live API</p>
+    <h3 class="{% if manual.api_ready %}up{% else %}down{% endif %}">{{ "Ready" if manual.api_ready else "Not Ready" }}</h3>
+  </article>
+  <article class="card">
+    <p>Trading Mode</p>
+    <h3 class="{% if manual.is_live_mode %}up{% else %}warn{% endif %}">{{ "Live" if manual.is_live_mode else "Paper" }}</h3>
+  </article>
+  <article class="card">
+    <p>Paper Cash</p>
+    <h3>{{ "%.2f"|format(manual.paper_cash) }} USDT</h3>
+  </article>
+  <article class="card">
+    <p>Open Manual Trades</p>
+    <h3>{{ manual.open_count }}</h3>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Open Manual Mirrored Trade</h2>
+    <span>Opens on Binance live + paper</span>
+  </div>
+  <form class="settings-grid" method="post" action="/live-manual/open">
+    <label>
+      Symbol (USDT pair)
+      <input type="text" name="symbol" placeholder="BTCUSDT" required>
+    </label>
+    <label>
+      Entry USDT
+      <input type="text" name="entry_usdt" placeholder="20" required>
+    </label>
+    <label>
+      Current TP / SL
+      <input type="text" value="{{ '%.2f'|format(manual.take_profit_pct) }}% / {{ '%.2f'|format(manual.stop_loss_pct) }}%" disabled>
+    </label>
+    <div class="actions">
+      <button type="submit" class="btn">Open Mirrored Trade</button>
+      <a href="/live-manual" class="btn ghost">Refresh</a>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Open Manual Trades</h2>
+    <span>Only manual_live trades</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Symbol</th>
+          <th>Entry</th>
+          <th>Current</th>
+          <th>Qty</th>
+          <th>Entry USDT</th>
+          <th>PnL USDT</th>
+          <th>PnL %</th>
+          <th>TP</th>
+          <th>SL</th>
+          <th>Live Link</th>
+          <th>Age</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in open_trades %}
+        <tr>
+          <td>{{ t.id }}</td>
+          <td>{{ t.symbol }}</td>
+          <td>{{ t.entry }}</td>
+          <td>{{ t.current }}</td>
+          <td>{{ t.qty }}</td>
+          <td>{{ t.entry_usdt }}</td>
+          <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
+          <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
+          <td>{{ t.tp }}</td>
+          <td>{{ t.sl }}</td>
+          <td>{{ "Yes" if t.live_linked else "No" }}</td>
+          <td>{{ t.age }}</td>
+          <td><a href="/live-manual/close/{{ t.id }}" class="btn ghost">Close</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Manual Trades History</h2>
+    <span>Last {{ closed_trades|length }} closed trades</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Symbol</th>
+          <th>Entry Time</th>
+          <th>Exit Time</th>
+          <th>Entry USDT</th>
+          <th>PnL USDT</th>
+          <th>PnL %</th>
+          <th>Exit Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in closed_trades %}
+        <tr>
+          <td>{{ t.id }}</td>
+          <td>{{ t.symbol }}</td>
+          <td>{{ t.entry_time }}</td>
+          <td>{{ t.exit_time }}</td>
+          <td>{{ t.entry_usdt }}</td>
+          <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
+          <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
+          <td>{{ t.reason }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Recent Manual/Live Logs</h2>
+    <span>Quick diagnostics</span>
+  </div>
+  <div class="log-list">
+    {% for l in recent_logs %}
+    <article class="log-item">
+      <span class="time">{{ l.time }}</span>
+      <span class="tag">{{ l.event }}</span>
+      <span class="symbol">{{ l.symbol }}</span>
+      <p>{{ l.message }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

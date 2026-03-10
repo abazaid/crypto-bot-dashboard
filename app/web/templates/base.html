@@ -29,6 +29,7 @@
         <a href="/advisor" class="{% if active_page == 'advisor' %}active{% endif %}">Advisor</a>
         <a href="/ai-trading" class="{% if active_page == 'ai_trading' %}active{% endif %}">AI Trading</a>
         <a href="/strategy" class="{% if active_page == 'strategy' %}active{% endif %}">Strategy</a>
+        <a href="/live-manual" class="{% if active_page == 'live_manual' %}active{% endif %}">Live Manual</a>
         <a href="/settings" class="{% if active_page == 'settings' %}active{% endif %}">Settings</a>
         <a href="/logs" class="{% if active_page == 'logs' %}active{% endif %}">Logs</a>
       </nav>
@@ -51,7 +52,7 @@
       {% block content %}{% endblock %}
     </main>
   </div>
-  {% if active_page in ['overview', 'symbols', 'trades', 'logs', 'statistics', 'advisor', 'ai_trading', 'strategy'] %}
+  {% if active_page in ['overview', 'symbols', 'trades', 'logs', 'statistics', 'advisor', 'ai_trading', 'strategy', 'live_manual'] %}
   <script>
     setTimeout(function () {
       window.location.reload();
