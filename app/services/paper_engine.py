@@ -345,25 +345,29 @@ def init_defaults(db: Session) -> None:
             db.add(Setting(key="ai_provider_split_done", value="true"))
         _log(db, "AI_TRADE", "Migrated legacy AI trades to classic provider")
 
-    # Upgrade old defaults to enhanced profile only if values are still legacy.
-    upgrades = {
-        "take_profit_pct": {"0.02", "0.0200000000000000"},
-        "trailing_stop_pct": {"0.008", "0.0080000000000000"},
-        "time_stop_minutes": {"180", "180.0"},
-        "min_quote_volume": {"20000000", "20000000.0"},
-        "max_spread_pct": {"0.15", "0.1500000000000000"},
-    }
-    target = {
-        "take_profit_pct": str(settings.take_profit_pct),
-        "trailing_stop_pct": "0.01",
-        "time_stop_minutes": str(settings.time_stop_minutes),
-        "min_quote_volume": str(settings.min_quote_volume),
-        "max_spread_pct": str(settings.max_spread_pct),
-    }
-    for key, legacy_values in upgrades.items():
-        row = db.query(Setting).filter(Setting.key == key).first()
-        if row and row.value in legacy_values:
-            row.value = target[key]
+    # Upgrade old defaults to enhanced profile only once.
+    upgrade_done = db.query(Setting).filter(Setting.key == "enhanced_defaults_upgrade_done").first()
+    if not upgrade_done or upgrade_done.value != "true":
+        upgrades = {
+            "trailing_stop_pct": {"0.008", "0.0080000000000000"},
+            "time_stop_minutes": {"180", "180.0"},
+            "min_quote_volume": {"20000000", "20000000.0"},
+            "max_spread_pct": {"0.15", "0.1500000000000000"},
+        }
+        target = {
+            "trailing_stop_pct": "0.01",
+            "time_stop_minutes": str(settings.time_stop_minutes),
+            "min_quote_volume": str(settings.min_quote_volume),
+            "max_spread_pct": str(settings.max_spread_pct),
+        }
+        for key, legacy_values in upgrades.items():
+            row = db.query(Setting).filter(Setting.key == key).first()
+            if row and row.value in legacy_values:
+                row.value = target[key]
+        if upgrade_done:
+            upgrade_done.value = "true"
+        else:
+            db.add(Setting(key="enhanced_defaults_upgrade_done", value="true"))
     db.commit()
 
 
