@@ -931,6 +931,31 @@ async def save_settings(request: Request) -> RedirectResponse:
             "telegram_enabled": "true" if telegram_enabled else "false",
             "telegram_chat_id": telegram_chat_id,
         }
+
+        def _sync_open_trade_targets() -> tuple[int, int, int]:
+            updated_trades = 0
+            updated_shadow = 0
+            updated_ai = 0
+            for t in db.query(Trade).filter(Trade.status == "open").all():
+                if float(t.entry_price or 0.0) <= 0:
+                    continue
+                t.tp_price = float(t.entry_price) * (1 + tp_pct)
+                t.sl_price = float(t.entry_price) * (1 - sl_pct)
+                updated_trades += 1
+            for t in db.query(ShadowTrade).filter(ShadowTrade.status == "open").all():
+                if float(t.entry_price or 0.0) <= 0:
+                    continue
+                t.tp_price = float(t.entry_price) * (1 + tp_pct)
+                t.sl_price = float(t.entry_price) * (1 - sl_pct)
+                updated_shadow += 1
+            for t in db.query(AITrade).filter(AITrade.status == "open").all():
+                if float(t.entry_price or 0.0) <= 0:
+                    continue
+                t.tp_price = float(t.entry_price) * (1 + tp_pct)
+                t.sl_price = float(t.entry_price) * (1 - sl_pct)
+                updated_ai += 1
+            return updated_trades, updated_shadow, updated_ai
+
         def _apply_changes() -> None:
             for key, value in mapping.items():
                 row = db.query(Setting).filter(Setting.key == key).first()
@@ -944,7 +969,19 @@ async def save_settings(request: Request) -> RedirectResponse:
                     row.value = telegram_bot_token
                 else:
                     db.add(Setting(key="telegram_bot_token", value=telegram_bot_token))
+            updated_trades, updated_shadow, updated_ai = _sync_open_trade_targets()
             db.add(LogEntry(event_type="SETTINGS", symbol="-", message="Settings updated from dashboard"))
+            if updated_trades or updated_shadow or updated_ai:
+                db.add(
+                    LogEntry(
+                        event_type="SETTINGS",
+                        symbol="-",
+                        message=(
+                            f"Updated open TP/SL targets (trades={updated_trades}, "
+                            f"shadow={updated_shadow}, ai={updated_ai})"
+                        ),
+                    )
+                )
 
         for _ in range(4):
             try:

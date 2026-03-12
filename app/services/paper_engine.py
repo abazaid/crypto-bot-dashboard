@@ -1008,8 +1008,8 @@ def _open_ai_trades(db: Session, provider: str) -> None:
             )
             continue
 
-        tp_pct = float(cfg.get("tp_pct", 0.02))
-        sl_pct = float(cfg.get("sl_pct", 0.012))
+        tp_pct = _get_float(db, "take_profit_pct", settings.take_profit_pct)
+        sl_pct = _get_float(db, "stop_loss_pct", settings.stop_loss_pct)
         max_risk_pct = max(0.1, float(cfg_p.get("max_risk_per_trade_pct", 1.0)))
         risk_notional_cap = ai_balance * (max_risk_pct / 100.0) / max(sl_pct, 0.001)
         notional = min(entry_notional, ai_balance * 0.25, risk_notional_cap)
