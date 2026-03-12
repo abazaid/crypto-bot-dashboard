@@ -897,9 +897,11 @@ def _open_ai_trades(db: Session, provider: str) -> None:
     ai_balance = cfg_p["balance"]
     if ai_balance < 20:
         return
-    max_open = int(cfg_p["max_open"])
+    global_max_open = _get_int(db, "max_open_trades", settings.max_open_trades)
+    max_open = min(int(cfg_p["max_open"]), global_max_open)
     open_count = db.query(AITrade).filter(AITrade.status == "open", AITrade.ai_provider == provider).count()
-    if open_count >= max_open:
+    global_open_count = db.query(AITrade).filter(AITrade.status == "open").count()
+    if open_count >= max_open or global_open_count >= global_max_open:
         return
     entry_notional = float(cfg_p["entry_usdt"])
     trials = int(cfg_p["trials_per_cycle"])
@@ -940,6 +942,8 @@ def _open_ai_trades(db: Session, provider: str) -> None:
             "balance": round(ai_balance, 4),
             "open_count": open_count,
             "max_open": max_open,
+            "global_open_count": global_open_count,
+            "global_max_open": global_max_open,
             "trials": trials,
             "pool_size": len(pool),
             "learning": learning,
@@ -949,7 +953,7 @@ def _open_ai_trades(db: Session, provider: str) -> None:
     random.shuffle(pool)
     attempts = 0
     for item in pool:
-        if attempts >= trials or open_count >= max_open:
+        if attempts >= trials or open_count >= max_open or global_open_count >= global_max_open:
             break
         attempts += 1
         symbol = item["symbol"]
@@ -1043,6 +1047,7 @@ def _open_ai_trades(db: Session, provider: str) -> None:
         fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
         ai_balance -= notional + (notional * fee_rate)
         open_count += 1
+        global_open_count += 1
         _notify(
             db,
             "AI_TRADE",
