@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import time
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 from urllib.parse import urlencode
 
@@ -70,13 +71,21 @@ def _get_exchange_symbols() -> dict[str, dict[str, Any]]:
 def _round_step_down(value: float, step: float) -> float:
     if step <= 0:
         return value
-    units = int(value / step)
-    rounded = units * step
-    precision = 0
-    s = f"{step:.18f}".rstrip("0")
-    if "." in s:
-        precision = len(s.split(".")[1])
-    return round(rounded, precision)
+    step_dec = Decimal(str(step))
+    value_dec = Decimal(str(value))
+    units = (value_dec / step_dec).to_integral_value(rounding=ROUND_DOWN)
+    return float(units * step_dec)
+
+
+def _format_step_value(value: float, step: float) -> str:
+    if step <= 0:
+        return str(value)
+    step_dec = Decimal(str(step)).normalize()
+    value_dec = Decimal(str(_round_step_down(value, step)))
+    precision = max(0, -step_dec.as_tuple().exponent)
+    if precision == 0:
+        return f"{value_dec:.0f}"
+    return f"{value_dec:.{precision}f}"
 
 
 def _symbol_meta(symbol: str) -> tuple[str, float]:
@@ -329,7 +338,7 @@ def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, Any]:
         "symbol": symbol.upper(),
         "side": "SELL",
         "type": "MARKET",
-        "quantity": f"{qty:.8f}",
+        "quantity": _format_step_value(qty, step),
         "newOrderRespType": "FULL",
     }
     return _request("POST", "/api/v3/order", params=params, signed=True)
