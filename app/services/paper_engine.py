@@ -1451,6 +1451,40 @@ def _build_priority_watchlist(db: Session, scanned: List[dict], strategy_cfg: di
     return watchlist
 
 
+def _backfill_symbol_snapshots(db: Session, safety_symbols: List[dict]) -> int:
+    max_symbols = _get_int(db, "max_symbols", settings.max_symbols)
+    if max_symbols <= 0:
+        return 0
+
+    existing_symbols = {row[0] for row in db.query(SymbolSnapshot.symbol).all()}
+    remaining_slots = max_symbols - len(existing_symbols)
+    if remaining_slots <= 0:
+        return 0
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    filler_rows = 0
+    for item in sorted(safety_symbols, key=lambda row: float(row.get("volume_24h", 0.0)), reverse=True):
+        symbol = item["symbol"]
+        if symbol in existing_symbols:
+            continue
+        db.add(
+            SymbolSnapshot(
+                symbol=symbol,
+                volume_24h=float(item.get("volume_24h", 0.0)),
+                spread_pct=float(item.get("spread_pct", 0.0)),
+                last_price=float(item.get("last_price", 0.0)),
+                trend_status="Neutral",
+                signal_status="Scanned",
+                updated_at=now,
+            )
+        )
+        existing_symbols.add(symbol)
+        filler_rows += 1
+        if filler_rows >= remaining_slots:
+            break
+    return filler_rows
+
+
 def _in_cooldown(db: Session, symbol: str, cooldown_minutes: int) -> bool:
     last_trade = db.query(Trade).filter(Trade.symbol == symbol).order_by(desc(Trade.id)).first()
     if not last_trade:
@@ -1734,6 +1768,8 @@ def run_cycle(db: Session) -> None:
                 ranked["symbol"],
             )
         watchlist = _build_priority_watchlist(db, ranked_symbols, strategy_cfg)
+        displayed_symbols = len(ranked_symbols) + _backfill_symbol_snapshots(db, safety_symbols)
+        _notify(db, "SCAN", f"displayed_symbols={displayed_symbols}")
         _notify(db, "SCAN", f"watchlist_size={len(watchlist)}")
         for provider in ("classic", "openai", "claude", "deepseek"):
             _open_ai_trades(db, provider)
