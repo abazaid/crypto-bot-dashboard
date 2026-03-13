@@ -30,7 +30,7 @@ def _sign(query: str, api_secret: str) -> str:
     return hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _request(method: str, path: str, params: dict[str, Any] | None = None, signed: bool = False) -> dict[str, Any]:
+def _request(method: str, path: str, params: dict[str, Any] | None = None, signed: bool = False) -> Any:
     params = dict(params or {})
     api_key, api_secret = _credentials()
     headers = {"X-MBX-APIKEY": api_key}
@@ -45,7 +45,7 @@ def _request(method: str, path: str, params: dict[str, Any] | None = None, signe
         body = response.text.strip()
         raise RuntimeError(f"Binance error {response.status_code}: {body[:300]}")
     data = response.json()
-    if isinstance(data, dict):
+    if isinstance(data, (dict, list)):
         return data
     raise RuntimeError("Unexpected Binance response format.")
 
@@ -104,6 +104,120 @@ def get_free_asset_balance(asset: str) -> float:
             except Exception:
                 return 0.0
     return 0.0
+
+
+def get_account_balances() -> list[dict[str, float | str]]:
+    account = _request("GET", "/api/v3/account", signed=True)
+    balances: list[dict[str, float | str]] = []
+    for row in account.get("balances", []):
+        asset = str(row.get("asset", "")).upper()
+        try:
+            free = float(row.get("free", "0") or 0.0)
+        except Exception:
+            free = 0.0
+        try:
+            locked = float(row.get("locked", "0") or 0.0)
+        except Exception:
+            locked = 0.0
+        total = free + locked
+        if asset and total > 0:
+            balances.append({"asset": asset, "free": free, "locked": locked, "total": total})
+    return balances
+
+
+def get_my_trades(symbol: str, limit: int = 50) -> list[dict[str, Any]]:
+    payload = _request(
+        "GET",
+        "/api/v3/myTrades",
+        params={"symbol": symbol.upper(), "limit": max(1, min(limit, 1000))},
+        signed=True,
+    )
+    if isinstance(payload, list):
+        return payload
+    raise RuntimeError("Unexpected Binance myTrades response format.")
+
+
+def infer_manual_live_spot_buys(max_age_minutes: int = 180, min_notional_usdt: float = 10.0) -> list[dict[str, Any]]:
+    stable_assets = {"USDT", "USDC", "FDUSD", "TUSD", "USDP", "DAI"}
+    exchange_symbols = _get_exchange_symbols()
+    now_ms = int(time.time() * 1000)
+    inferred: list[dict[str, Any]] = []
+
+    for balance in get_account_balances():
+        asset = str(balance.get("asset", "")).upper()
+        quantity = float(balance.get("total", 0.0) or 0.0)
+        if asset in stable_assets or quantity <= 0:
+            continue
+
+        symbol = f"{asset}USDT"
+        if symbol not in exchange_symbols:
+            continue
+
+        try:
+            trades = get_my_trades(symbol, limit=50)
+        except Exception:
+            continue
+
+        trades = sorted(trades, key=lambda row: int(row.get("time", 0) or 0), reverse=True)
+        remaining = quantity
+        accumulated_qty = 0.0
+        accumulated_quote = 0.0
+        newest_buy_time = 0
+        newest_buy_order_id = "-"
+
+        for trade in trades:
+            is_buyer = bool(trade.get("isBuyer", False))
+            if not is_buyer and accumulated_qty <= 0:
+                break
+            if not is_buyer:
+                continue
+
+            try:
+                trade_qty = float(trade.get("qty", "0") or 0.0)
+                trade_price = float(trade.get("price", "0") or 0.0)
+            except Exception:
+                continue
+            if trade_qty <= 0 or trade_price <= 0:
+                continue
+
+            take_qty = min(remaining, trade_qty)
+            accumulated_qty += take_qty
+            accumulated_quote += take_qty * trade_price
+            remaining -= take_qty
+
+            trade_time = int(trade.get("time", 0) or 0)
+            if trade_time > newest_buy_time:
+                newest_buy_time = trade_time
+                newest_buy_order_id = str(trade.get("orderId", "-"))
+
+            if remaining <= max(quantity * 0.001, 1e-12):
+                break
+
+        if accumulated_qty <= 0:
+            continue
+        if remaining > max(quantity * 0.05, 1e-8):
+            continue
+
+        notional = accumulated_quote
+        if notional < min_notional_usdt:
+            continue
+
+        age_minutes = (now_ms - newest_buy_time) / 60000 if newest_buy_time else 999999
+        if max_age_minutes > 0 and age_minutes > max_age_minutes:
+            continue
+
+        inferred.append(
+            {
+                "symbol": symbol,
+                "quantity": quantity,
+                "entry_price": accumulated_quote / accumulated_qty,
+                "order_id": newest_buy_order_id,
+                "trade_time_ms": newest_buy_time,
+                "notional_usdt": notional,
+            }
+        )
+
+    return inferred
 
 
 def place_market_buy_quote(symbol: str, quote_usdt: float) -> dict[str, Any]:

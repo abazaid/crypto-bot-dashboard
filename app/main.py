@@ -21,6 +21,7 @@ from app.core.migrations import apply_sqlite_migrations
 from app.models import AIAgentMemory, AIChatMessage, AIProviderUsage, AITrade, LogEntry, MarketObservation, Setting, ShadowTrade, SymbolSnapshot, Trade
 from app.services.binance_live import (
     get_free_asset_balance as live_get_free_asset_balance,
+    infer_manual_live_spot_buys,
     is_configured as live_binance_configured,
     place_market_buy_quote,
 )
@@ -215,6 +216,81 @@ def _manual_trade_context(db) -> dict:
             .all()
         )
     return {"manual_ids": manual_ids, "open_rows": open_rows, "closed_rows": closed_rows}
+
+
+def _sync_manual_live_from_binance(db) -> int:
+    if not live_binance_configured():
+        return 0
+
+    candidates = infer_manual_live_spot_buys(max_age_minutes=180, min_notional_usdt=10.0)
+    if not candidates:
+        return 0
+
+    open_symbols = {
+        str(symbol).upper()
+        for (symbol,) in db.query(Trade.symbol).filter(Trade.status == "open").all()
+        if symbol
+    }
+    cash_row = db.query(Setting).filter(Setting.key == "paper_cash_balance").first()
+    fee_row = db.query(Setting).filter(Setting.key == "fee_rate").first()
+    tp_row = db.query(Setting).filter(Setting.key == "take_profit_pct").first()
+    sl_row = db.query(Setting).filter(Setting.key == "stop_loss_pct").first()
+
+    paper_cash = float(cash_row.value) if cash_row and cash_row.value else settings.paper_start_balance
+    fee_rate = float(fee_row.value) if fee_row and fee_row.value else settings.fee_rate
+    take_profit_pct = float(tp_row.value) if tp_row and tp_row.value else settings.take_profit_pct
+    stop_loss_pct = float(sl_row.value) if sl_row and sl_row.value else settings.stop_loss_pct
+
+    synced = 0
+    for candidate in candidates:
+        symbol = str(candidate["symbol"]).upper()
+        if symbol in open_symbols:
+            continue
+
+        entry_price = float(candidate["entry_price"])
+        quantity = float(candidate["quantity"])
+        if entry_price <= 0 or quantity <= 0:
+            continue
+
+        order_id = candidate.get("order_id", "-")
+        notional = entry_price * quantity
+        trade = Trade(
+            symbol=symbol,
+            entry_price=entry_price,
+            quantity=quantity,
+            status="open",
+            tp_price=entry_price * (1 + take_profit_pct),
+            sl_price=entry_price * (1 - stop_loss_pct),
+            entry_time=datetime.utcnow(),
+            highest_price=entry_price,
+            trailing_active=0,
+        )
+        db.add(trade)
+        db.flush()
+        register_live_link_for_trade(db, trade, symbol, quantity, order_id)
+        _set_trade_origin(db, trade.id, "manual_live")
+        paper_cash -= notional * (1 + fee_rate)
+        open_symbols.add(symbol)
+        synced += 1
+        db.add(
+            LogEntry(
+                event_type="MANUAL",
+                symbol=symbol,
+                message=(
+                    f"Synced Binance manual BUY orderId={order_id} "
+                    f"qty={quantity:.8f} entry={entry_price:.8f} quote={notional:.2f}"
+                ),
+            )
+        )
+
+    if synced:
+        if cash_row:
+            cash_row.value = f"{paper_cash:.8f}"
+        else:
+            db.add(Setting(key="paper_cash_balance", value=f"{paper_cash:.8f}"))
+        db.commit()
+
+    return synced
 
 
 def _apply_ai_chat_actions(db, provider: str, action_payload: dict | None) -> list[str]:
@@ -592,6 +668,24 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
         db.close()
 
 
+@app.get("/live-manual/refresh")
+async def live_manual_refresh() -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        try:
+            synced = _sync_manual_live_from_binance(db)
+            if synced:
+                db.add(LogEntry(event_type="MANUAL", symbol="-", message=f"Live manual refresh synced {synced} trade(s) from Binance"))
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            db.add(LogEntry(event_type="MANUAL", symbol="-", message=f"Live manual refresh failed: {exc}"))
+            db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/live-manual", status_code=303)
+
+
 @app.post("/live-manual/open")
 async def live_manual_open(request: Request) -> RedirectResponse:
     form = await request.form()
@@ -691,7 +785,7 @@ async def live_manual_open(request: Request) -> RedirectResponse:
         db.commit()
     finally:
         db.close()
-    return RedirectResponse("/live-manual", status_code=303)
+    return RedirectResponse("/live-manual/refresh", status_code=303)
 
 
 @app.get("/live-manual/close/{trade_id}")

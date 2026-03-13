@@ -46,7 +46,11 @@
           <h1>{% block page_title %}Dashboard{% endblock %}</h1>
           <p>Last update: {{ last_update }}</p>
         </div>
-        <button type="button" class="btn ghost refresh-btn" onclick="window.location.reload()">Refresh</button>
+        <button
+          type="button"
+          class="btn ghost refresh-btn"
+          onclick="{% if active_page == 'live_manual' %}window.location.href='/live-manual/refresh'{% else %}window.location.reload(){% endif %}"
+        >Refresh</button>
       </header>
 
       {% block content %}{% endblock %}
@@ -55,7 +59,11 @@
   {% if active_page in ['overview', 'symbols', 'trades', 'logs', 'statistics', 'advisor', 'ai_trading', 'strategy', 'live_manual'] %}
   <script>
     setTimeout(function () {
+      {% if active_page == 'live_manual' %}
+      window.location.href = '/live-manual/refresh';
+      {% else %}
       window.location.reload();
+      {% endif %}
     }, 20000);
   </script>
   {% endif %}
