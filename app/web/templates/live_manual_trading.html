@@ -68,8 +68,10 @@
           <th>Entry Price</th>
           <th>Current Price</th>
           <th>Notional</th>
+          <th>Buy Fee</th>
           <th>PnL %</th>
-          <th>PnL USDT</th>
+          <th>Gross PnL</th>
+          <th>Net PnL</th>
           <th>TP Target</th>
           <th>SL</th>
           <th>Trailing</th>
@@ -84,8 +86,10 @@
           <td>{{ t.entry }}</td>
           <td>{{ t.current }}</td>
           <td>{{ t.entry_usdt }}</td>
+          <td>{{ "%.4f"|format(t.entry_fee_usdt) }}</td>
           <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
           <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
+          <td class="{% if t.net_pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.net_pnl_usdt) }}</td>
           <td>{{ t.tp }}</td>
           <td>{{ t.sl }}</td>
           <td>{{ t.trailing }}</td>
@@ -111,7 +115,10 @@
           <th>Entry Time</th>
           <th>Exit Time</th>
           <th>Entry USDT</th>
-          <th>PnL USDT</th>
+          <th>Buy Fee</th>
+          <th>Sell Fee</th>
+          <th>Total Fees</th>
+          <th>Net PnL</th>
           <th>PnL %</th>
           <th>Exit Reason</th>
         </tr>
@@ -124,6 +131,9 @@
           <td>{{ t.entry_time }}</td>
           <td>{{ t.exit_time }}</td>
           <td>{{ t.entry_usdt }}</td>
+          <td>{{ "%.4f"|format(t.entry_fee_usdt) }}</td>
+          <td>{{ "%.4f"|format(t.exit_fee_usdt) }}</td>
+          <td>{{ "%.4f"|format(t.total_fee_usdt) }}</td>
           <td class="{% if t.pnl_usdt < 0 %}down{% else %}up{% endif %}">{{ "%+.4f"|format(t.pnl_usdt) }}</td>
           <td class="{% if t.pnl_pct < 0 %}down{% else %}up{% endif %}">{{ "%+.2f"|format(t.pnl_pct) }}%</td>
           <td>{{ t.reason }}</td>

@@ -24,6 +24,7 @@ from app.services.binance_live import (
     infer_manual_live_spot_buys,
     is_configured as live_binance_configured,
     place_market_buy_quote,
+    summarize_order,
 )
 from app.services.paper_engine import (
     init_defaults,
@@ -218,6 +219,25 @@ def _manual_trade_context(db) -> dict:
     return {"manual_ids": manual_ids, "open_rows": open_rows, "closed_rows": closed_rows}
 
 
+def _trade_fee_value(value: float | None) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _trade_entry_fee_usdt(trade: Trade) -> float:
+    if getattr(trade, "live_entry_fee_usdt", None) is not None:
+        return _trade_fee_value(trade.live_entry_fee_usdt)
+    return 0.0
+
+
+def _trade_exit_fee_usdt(trade: Trade) -> float:
+    if getattr(trade, "live_exit_fee_usdt", None) is not None:
+        return _trade_fee_value(trade.live_exit_fee_usdt)
+    return 0.0
+
+
 def _sync_manual_live_from_binance(db) -> int:
     if not live_binance_configured():
         return 0
@@ -264,12 +284,14 @@ def _sync_manual_live_from_binance(db) -> int:
             entry_time=datetime.utcnow(),
             highest_price=entry_price,
             trailing_active=0,
+            live_entry_fee_usdt=float(candidate.get("fee_usdt", 0.0) or 0.0),
+            live_entry_order_id=str(order_id),
         )
         db.add(trade)
         db.flush()
         register_live_link_for_trade(db, trade, symbol, quantity, order_id)
         _set_trade_origin(db, trade.id, "manual_live")
-        paper_cash -= notional * (1 + fee_rate)
+        paper_cash -= notional + _trade_entry_fee_usdt(trade)
         open_symbols.add(symbol)
         synced += 1
         db.add(
@@ -587,7 +609,9 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
         for t in open_rows:
             current = float(prices.get(t.symbol, t.entry_price))
             pnl_pct = ((current - t.entry_price) / t.entry_price) * 100 if t.entry_price > 0 else 0.0
-            pnl_usdt = (current - t.entry_price) * t.quantity
+            gross_pnl_usdt = (current - t.entry_price) * t.quantity
+            entry_fee_usdt = _trade_entry_fee_usdt(t)
+            net_pnl_usdt = gross_pnl_usdt - entry_fee_usdt
             open_data.append(
                 {
                     "id": t.id,
@@ -597,7 +621,9 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
                     "current": f"{current:.6f}",
                     "entry_usdt": f"{(t.entry_price * t.quantity):.2f} USDT",
                     "pnl_pct": pnl_pct,
-                    "pnl_usdt": pnl_usdt,
+                    "pnl_usdt": gross_pnl_usdt,
+                    "entry_fee_usdt": entry_fee_usdt,
+                    "net_pnl_usdt": net_pnl_usdt,
                     "tp": f"{t.tp_price:.6f}",
                     "sl": f"{t.sl_price:.6f}",
                     "trailing": "Active" if int(t.trailing_active or 0) == 1 else "Not Active",
@@ -607,6 +633,11 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
         closed_data = []
         for t in closed_rows:
             pnl_pct = ((t.exit_price - t.entry_price) / t.entry_price * 100) if t.exit_price and t.entry_price else 0.0
+            entry_fee_usdt = _trade_entry_fee_usdt(t)
+            exit_fee_usdt = _trade_exit_fee_usdt(t)
+            total_fee_usdt = entry_fee_usdt + exit_fee_usdt
+            gross_pnl_usdt = ((float(t.exit_price or 0.0) - float(t.entry_price or 0.0)) * float(t.quantity or 0.0))
+            net_pnl_usdt = float(t.pnl if t.pnl is not None else (gross_pnl_usdt - total_fee_usdt))
             closed_data.append(
                 {
                     "id": t.id,
@@ -614,7 +645,10 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
                     "entry_time": _as_local(t.entry_time).strftime("%Y-%m-%d %H:%M"),
                     "exit_time": _as_local(t.exit_time).strftime("%Y-%m-%d %H:%M") if t.exit_time else "-",
                     "entry_usdt": f"{(t.entry_price * t.quantity):.2f}",
-                    "pnl_usdt": float(t.pnl or 0.0),
+                    "entry_fee_usdt": entry_fee_usdt,
+                    "exit_fee_usdt": exit_fee_usdt,
+                    "total_fee_usdt": total_fee_usdt,
+                    "pnl_usdt": net_pnl_usdt,
                     "pnl_pct": pnl_pct,
                     "reason": t.exit_reason or "-",
                 }
@@ -745,7 +779,8 @@ async def live_manual_open(request: Request) -> RedirectResponse:
             return RedirectResponse("/live-manual", status_code=303)
 
         entry_price = executed_quote / executed_qty
-        entry_fee = executed_quote * fee_rate
+        entry_summary = summarize_order(symbol, order_id)
+        entry_fee = float(entry_summary.get("fee_usdt", 0.0) or 0.0) if entry_summary else (executed_quote * fee_rate)
         trade = Trade(
             symbol=symbol,
             entry_price=entry_price,
@@ -756,6 +791,8 @@ async def live_manual_open(request: Request) -> RedirectResponse:
             entry_time=datetime.utcnow(),
             highest_price=entry_price,
             trailing_active=0,
+            live_entry_fee_usdt=entry_fee,
+            live_entry_order_id=str(order_id),
         )
         db.add(trade)
         db.flush()
@@ -811,16 +848,27 @@ async def live_manual_close(trade_id: int) -> RedirectResponse:
         current_cash = float(cash_row.value) if cash_row and cash_row.value else settings.paper_start_balance
 
         proceeds = trade.quantity * exit_price
-        exit_fee = proceeds * fee_rate
-        entry_fee = (trade.entry_price * trade.quantity) * fee_rate
-        pnl_value = (exit_price - trade.entry_price) * trade.quantity - entry_fee - exit_fee
+        exit_fee = _trade_exit_fee_usdt(trade) if getattr(trade, "live_exit_fee_usdt", None) is not None else (proceeds * fee_rate)
+        entry_fee = _trade_entry_fee_usdt(trade) if getattr(trade, "live_entry_fee_usdt", None) is not None else ((trade.entry_price * trade.quantity) * fee_rate)
 
         trade.status = "closed"
         trade.exit_price = exit_price
         trade.exit_time = datetime.utcnow()
-        trade.pnl = pnl_value
         trade.exit_reason = "Manual Live Close"
-        mirror_close_for_manual_action(db, trade, reason="Manual Live Close", force_live=True)
+        close_result = mirror_close_for_manual_action(db, trade, reason="Manual Live Close", force_live=True)
+        if close_result:
+            actual_exit_price = float(close_result.get("avg_price", 0.0) or 0.0)
+            actual_exit_fee = float(close_result.get("fee_usdt", 0.0) or 0.0)
+            actual_quote = float(close_result.get("executed_quote", 0.0) or 0.0)
+            if actual_exit_price > 0:
+                trade.exit_price = actual_exit_price
+                proceeds = trade.quantity * actual_exit_price
+            elif actual_quote > 0 and trade.quantity > 0:
+                proceeds = actual_quote
+                trade.exit_price = actual_quote / trade.quantity
+            exit_fee = actual_exit_fee
+        pnl_value = (float(trade.exit_price or 0.0) - trade.entry_price) * trade.quantity - entry_fee - exit_fee
+        trade.pnl = pnl_value
 
         new_cash = current_cash + proceeds - exit_fee
         if cash_row:

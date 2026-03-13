@@ -23,3 +23,7 @@ class Trade(Base):
     highest_price = Column(Float, nullable=True)
     trailing_active = Column(Integer, nullable=False, default=0)
     trailing_stop_price = Column(Float, nullable=True)
+    live_entry_fee_usdt = Column(Float, nullable=True)
+    live_exit_fee_usdt = Column(Float, nullable=True)
+    live_entry_order_id = Column(String(40), nullable=True)
+    live_exit_order_id = Column(String(40), nullable=True)

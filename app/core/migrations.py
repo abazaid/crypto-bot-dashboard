@@ -14,6 +14,10 @@ def apply_sqlite_migrations(engine: Engine) -> None:
         ("trades", "highest_price", "REAL"),
         ("trades", "trailing_active", "INTEGER NOT NULL DEFAULT 0"),
         ("trades", "trailing_stop_price", "REAL"),
+        ("trades", "live_entry_fee_usdt", "REAL"),
+        ("trades", "live_exit_fee_usdt", "REAL"),
+        ("trades", "live_entry_order_id", "VARCHAR(40)"),
+        ("trades", "live_exit_order_id", "VARCHAR(40)"),
     ]
     with engine.begin() as conn:
         for table, column, column_type in additions:

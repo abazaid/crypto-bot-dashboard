@@ -95,6 +95,42 @@ def _symbol_meta(symbol: str) -> tuple[str, float]:
     return base_asset, step_size
 
 
+def _symbol_assets(symbol: str) -> tuple[str, str]:
+    info = _get_exchange_symbols().get(symbol)
+    if not info:
+        raise RuntimeError(f"Symbol not found in Binance exchange info: {symbol}")
+    return str(info.get("baseAsset", "")).upper(), str(info.get("quoteAsset", "")).upper()
+
+
+def _get_last_price(symbol: str) -> float:
+    response = requests.get(f"{BASE_URL}/api/v3/ticker/price", params={"symbol": symbol.upper()}, timeout=TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    try:
+        return float(payload.get("price", "0") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _commission_to_usdt(symbol: str, commission_asset: str, commission_amount: float, trade_price: float) -> float:
+    asset = commission_asset.upper().strip()
+    if commission_amount <= 0 or not asset:
+        return 0.0
+    base_asset, quote_asset = _symbol_assets(symbol.upper())
+    if asset == quote_asset:
+        return commission_amount
+    if asset == base_asset:
+        return commission_amount * trade_price
+    if asset == "USDT":
+        return commission_amount
+    probe = f"{asset}USDT"
+    if probe in _get_exchange_symbols():
+        price = _get_last_price(probe)
+        if price > 0:
+            return commission_amount * price
+    return 0.0
+
+
 def get_free_asset_balance(asset: str) -> float:
     account = _request("GET", "/api/v3/account", signed=True)
     for row in account.get("balances", []):
@@ -137,6 +173,47 @@ def get_my_trades(symbol: str, limit: int = 50) -> list[dict[str, Any]]:
     raise RuntimeError("Unexpected Binance myTrades response format.")
 
 
+def summarize_order(symbol: str, order_id: int | str) -> dict[str, Any] | None:
+    try:
+        oid = int(str(order_id).strip())
+    except Exception:
+        return None
+
+    matches = [row for row in get_my_trades(symbol, limit=100) if int(row.get("orderId", 0) or 0) == oid]
+    if not matches:
+        return None
+
+    qty = 0.0
+    quote = 0.0
+    fee_usdt = 0.0
+    latest_time = 0
+    is_buyer = bool(matches[0].get("isBuyer", False))
+    for row in matches:
+        try:
+            trade_qty = float(row.get("qty", "0") or 0.0)
+            trade_quote = float(row.get("quoteQty", "0") or 0.0)
+            trade_price = float(row.get("price", "0") or 0.0)
+            commission = float(row.get("commission", "0") or 0.0)
+        except Exception:
+            continue
+        qty += trade_qty
+        quote += trade_quote
+        fee_usdt += _commission_to_usdt(symbol, str(row.get("commissionAsset", "")), commission, trade_price)
+        latest_time = max(latest_time, int(row.get("time", 0) or 0))
+
+    avg_price = (quote / qty) if qty > 0 else 0.0
+    return {
+        "order_id": str(order_id),
+        "symbol": symbol.upper(),
+        "qty": qty,
+        "quote_qty": quote,
+        "avg_price": avg_price,
+        "fee_usdt": fee_usdt,
+        "time": latest_time,
+        "is_buyer": is_buyer,
+    }
+
+
 def infer_manual_live_spot_buys(max_age_minutes: int = 180, min_notional_usdt: float = 10.0) -> list[dict[str, Any]]:
     stable_assets = {"USDT", "USDC", "FDUSD", "TUSD", "USDP", "DAI"}
     exchange_symbols = _get_exchange_symbols()
@@ -162,6 +239,7 @@ def infer_manual_live_spot_buys(max_age_minutes: int = 180, min_notional_usdt: f
         remaining = quantity
         accumulated_qty = 0.0
         accumulated_quote = 0.0
+        accumulated_fee_usdt = 0.0
         newest_buy_time = 0
         newest_buy_order_id = "-"
 
@@ -175,6 +253,8 @@ def infer_manual_live_spot_buys(max_age_minutes: int = 180, min_notional_usdt: f
             try:
                 trade_qty = float(trade.get("qty", "0") or 0.0)
                 trade_price = float(trade.get("price", "0") or 0.0)
+                trade_quote = float(trade.get("quoteQty", "0") or 0.0)
+                commission = float(trade.get("commission", "0") or 0.0)
             except Exception:
                 continue
             if trade_qty <= 0 or trade_price <= 0:
@@ -182,7 +262,11 @@ def infer_manual_live_spot_buys(max_age_minutes: int = 180, min_notional_usdt: f
 
             take_qty = min(remaining, trade_qty)
             accumulated_qty += take_qty
-            accumulated_quote += take_qty * trade_price
+            proportional_quote = trade_quote if trade_quote > 0 and take_qty == trade_qty else take_qty * trade_price
+            accumulated_quote += proportional_quote
+            fee_piece = _commission_to_usdt(symbol, str(trade.get("commissionAsset", "")), commission, trade_price)
+            if trade_qty > 0:
+                accumulated_fee_usdt += fee_piece * (take_qty / trade_qty)
             remaining -= take_qty
 
             trade_time = int(trade.get("time", 0) or 0)
@@ -214,6 +298,7 @@ def infer_manual_live_spot_buys(max_age_minutes: int = 180, min_notional_usdt: f
                 "order_id": newest_buy_order_id,
                 "trade_time_ms": newest_buy_time,
                 "notional_usdt": notional,
+                "fee_usdt": accumulated_fee_usdt,
             }
         )
 

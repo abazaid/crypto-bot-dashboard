@@ -29,6 +29,7 @@ from app.services.binance_live import (
     is_configured as binance_live_configured,
     place_market_buy_quote,
     place_market_sell_qty,
+    summarize_order,
 )
 from app.services.telegram_alerts import send_telegram_message
 
@@ -155,7 +156,11 @@ def _mirror_open_live(db: Session, trade: Trade, allocation_usdt: float) -> bool
         if executed_qty <= 0:
             _notify(db, "LIVE", f"entry failed: executedQty=0 orderId={order_id}", trade.symbol, telegram=True)
             return False
+        summary = summarize_order(trade.symbol, order_id)
         _set_live_link(db, trade.id, trade.symbol, executed_qty, order_id)
+        trade.live_entry_order_id = str(order_id)
+        if summary:
+            trade.live_entry_fee_usdt = float(summary.get("fee_usdt", 0.0) or 0.0)
         _notify(
             db,
             "LIVE",
@@ -169,13 +174,13 @@ def _mirror_open_live(db: Session, trade: Trade, allocation_usdt: float) -> bool
         return False
 
 
-def _mirror_close_live(db: Session, trade: Trade, reason: str, force_live: bool = False) -> None:
+def _mirror_close_live(db: Session, trade: Trade, reason: str, force_live: bool = False) -> dict[str, float | str] | None:
     if not _is_live_mode(db) and not force_live:
-        return
+        return None
     link = _get_live_link(db, trade.id)
     if not link:
         _notify(db, "LIVE", "close skipped: no live link found for paper trade", trade.symbol, telegram=True)
-        return
+        return None
     symbol, linked_qty, _ = link
     try:
         base_asset = get_base_asset(symbol)
@@ -189,10 +194,14 @@ def _mirror_close_live(db: Session, trade: Trade, reason: str, force_live: bool 
                 symbol,
                 telegram=True,
             )
-            return
+            return None
         order = place_market_sell_qty(symbol, sell_qty)
         order_id = order.get("orderId", "-")
         executed_qty = float(order.get("executedQty", "0") or 0.0)
+        summary = summarize_order(symbol, order_id)
+        trade.live_exit_order_id = str(order_id)
+        if summary:
+            trade.live_exit_fee_usdt = float(summary.get("fee_usdt", 0.0) or 0.0)
         _notify(
             db,
             "LIVE",
@@ -201,12 +210,20 @@ def _mirror_close_live(db: Session, trade: Trade, reason: str, force_live: bool 
             telegram=True,
         )
         _clear_live_link(db, trade.id)
+        return {
+            "order_id": str(order_id),
+            "executed_qty": float(summary.get("qty", executed_qty) if summary else executed_qty),
+            "executed_quote": float(summary.get("quote_qty", 0.0) if summary else 0.0),
+            "avg_price": float(summary.get("avg_price", 0.0) if summary else 0.0),
+            "fee_usdt": float(summary.get("fee_usdt", 0.0) if summary else 0.0),
+        }
     except Exception as exc:
         _notify(db, "LIVE", f"close failed: {exc}", symbol, telegram=True)
+        return None
 
 
-def mirror_close_for_manual_action(db: Session, trade: Trade, reason: str = "Manual Close", force_live: bool = False) -> None:
-    _mirror_close_live(db, trade, reason, force_live=force_live)
+def mirror_close_for_manual_action(db: Session, trade: Trade, reason: str = "Manual Close", force_live: bool = False) -> dict[str, float | str] | None:
+    return _mirror_close_live(db, trade, reason, force_live=force_live)
 
 
 def register_live_link_for_trade(db: Session, trade: Trade, symbol: str, quantity: float, order_id: int | str) -> None:
