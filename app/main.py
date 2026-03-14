@@ -101,6 +101,14 @@ def _as_check(value: str | None) -> str:
     return "-"
 
 
+def _to_float(value: str, default: float, min_value: float) -> float:
+    try:
+        cleaned = str(value).replace(",", "").replace("%", "")
+        return max(min_value, float(cleaned))
+    except (TypeError, ValueError):
+        return default
+
+
 def _entry_recommendation(signal: str, reason: str, score: str) -> str:
     signal_l = (signal or "").lower()
     reason_l = (reason or "").lower()
@@ -181,6 +189,30 @@ def _trade_origin_key(trade_id: int) -> str:
 
 def _set_trade_origin(db, trade_id: int, origin: str) -> None:
     _set_setting_value(db, _trade_origin_key(trade_id), origin[:80])
+
+
+def _manual_trade_trailing_key(trade_id: int) -> str:
+    return f"trade_manual_trailing_stop_pct_{trade_id}"
+
+
+def _set_manual_trade_trailing_stop_pct(db, trade_id: int, trailing_stop_pct: float) -> None:
+    _set_setting_value(db, _manual_trade_trailing_key(trade_id), f"{max(0.0, trailing_stop_pct):.8f}")
+
+
+def _get_manual_trade_trailing_stop_pct(db, trade_id: int, default: float) -> float:
+    row = db.query(Setting).filter(Setting.key == _manual_trade_trailing_key(trade_id)).first()
+    if not row:
+        return default
+    try:
+        return max(0.0, float(row.value))
+    except Exception:
+        return default
+
+
+def _clear_manual_trade_trailing_stop_pct(db, trade_id: int) -> None:
+    row = db.query(Setting).filter(Setting.key == _manual_trade_trailing_key(trade_id)).first()
+    if row:
+        db.delete(row)
 
 
 def _manual_trade_ids(db) -> set[int]:
@@ -600,6 +632,7 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
         closed_rows = ctx_state["closed_rows"]
         manual_ids = ctx_state["manual_ids"]
         settings_map = {s.key: s.value for s in db.query(Setting).all()}
+        default_trailing_stop_pct = float(settings_map.get("trailing_stop_pct", 0.01))
 
         from app.services.binance_public import get_prices
 
@@ -612,6 +645,7 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
             gross_pnl_usdt = (current - t.entry_price) * t.quantity
             entry_fee_usdt = _trade_entry_fee_usdt(t)
             net_pnl_usdt = gross_pnl_usdt - entry_fee_usdt
+            trailing_stop_pct = _get_manual_trade_trailing_stop_pct(db, t.id, default_trailing_stop_pct)
             open_data.append(
                 {
                     "id": t.id,
@@ -626,7 +660,12 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
                     "net_pnl_usdt": net_pnl_usdt,
                     "tp": f"{t.tp_price:.6f}",
                     "sl": f"{t.sl_price:.6f}",
-                    "trailing": "Active" if int(t.trailing_active or 0) == 1 else "Not Active",
+                    "trailing": (
+                        f"{trailing_stop_pct * 100:.2f}%"
+                        + (" (Active)" if int(t.trailing_active or 0) == 1 else "")
+                    )
+                    if trailing_stop_pct > 0
+                    else "Off",
                 }
             )
 
@@ -683,6 +722,7 @@ async def live_manual_trading_page(request: Request) -> HTMLResponse:
                     "manual_count_total": len(manual_ids),
                     "take_profit_pct": float(settings_map.get("take_profit_pct", settings.take_profit_pct)) * 100.0,
                     "stop_loss_pct": float(settings_map.get("stop_loss_pct", settings.stop_loss_pct)) * 100.0,
+                    "trailing_stop_pct": default_trailing_stop_pct * 100.0,
                 },
                 "open_trades": open_data,
                 "closed_trades": closed_data,
@@ -722,6 +762,13 @@ async def live_manual_refresh() -> RedirectResponse:
 
 @app.post("/live-manual/open")
 async def live_manual_open(request: Request) -> RedirectResponse:
+    def _to_pct(value: object, default_pct: float, min_pct: float = 0.0) -> float:
+        try:
+            cleaned = str(value).replace(",", "").replace("%", "").strip()
+            return max(min_pct, float(cleaned)) / 100.0
+        except Exception:
+            return default_pct
+
     form = await request.form()
     symbol = str(form.get("symbol", "")).upper().replace(" ", "")
     db = SessionLocal()
@@ -754,8 +801,13 @@ async def live_manual_open(request: Request) -> RedirectResponse:
         fee_rate = float(fee_row.value) if fee_row and fee_row.value else settings.fee_rate
         tp_row = db.query(Setting).filter(Setting.key == "take_profit_pct").first()
         sl_row = db.query(Setting).filter(Setting.key == "stop_loss_pct").first()
+        trailing_row = db.query(Setting).filter(Setting.key == "trailing_stop_pct").first()
         take_profit_pct = float(tp_row.value) if tp_row and tp_row.value else settings.take_profit_pct
         stop_loss_pct = float(sl_row.value) if sl_row and sl_row.value else settings.stop_loss_pct
+        trailing_stop_pct = float(trailing_row.value) if trailing_row and trailing_row.value else 0.01
+        take_profit_pct = _to_pct(form.get("take_profit_pct", take_profit_pct * 100.0), take_profit_pct, 0.1)
+        stop_loss_pct = _to_pct(form.get("stop_loss_pct", stop_loss_pct * 100.0), stop_loss_pct, 0.1)
+        trailing_stop_pct = _to_pct(form.get("trailing_stop_pct", trailing_stop_pct * 100.0), trailing_stop_pct, 0.0)
 
         expected_total = quote_usdt * (1 + fee_rate)
         if paper_cash < expected_total:
@@ -798,6 +850,7 @@ async def live_manual_open(request: Request) -> RedirectResponse:
         db.flush()
         register_live_link_for_trade(db, trade, symbol, executed_qty, order_id)
         _set_trade_origin(db, trade.id, "manual_live")
+        _set_manual_trade_trailing_stop_pct(db, trade.id, trailing_stop_pct)
 
         new_paper_cash = paper_cash - executed_quote - entry_fee
         if cash_row:
@@ -811,7 +864,8 @@ async def live_manual_open(request: Request) -> RedirectResponse:
                 symbol=symbol,
                 message=(
                     f"Manual mirrored BUY success orderId={order_id} qty={executed_qty:.8f} "
-                    f"entry={entry_price:.8f} quote={executed_quote:.2f}"
+                    f"entry={entry_price:.8f} quote={executed_quote:.2f} "
+                    f"tp={take_profit_pct*100:.2f}% sl={stop_loss_pct*100:.2f}% trailing={trailing_stop_pct*100:.2f}%"
                 ),
             )
         )
@@ -867,6 +921,7 @@ async def live_manual_close(trade_id: int) -> RedirectResponse:
                 proceeds = actual_quote
                 trade.exit_price = actual_quote / trade.quantity
             exit_fee = actual_exit_fee
+        _clear_manual_trade_trailing_stop_pct(db, trade.id)
         pnl_value = (float(trade.exit_price or 0.0) - trade.entry_price) * trade.quantity - entry_fee - exit_fee
         trade.pnl = pnl_value
 
@@ -971,13 +1026,6 @@ async def strategy_save(request: Request) -> RedirectResponse:
         except (TypeError, ValueError):
             return default
 
-    def _to_float(value: str, default: float, min_value: float) -> float:
-        try:
-            cleaned = str(value).replace(",", "").replace("%", "")
-            return max(min_value, float(cleaned))
-        except (TypeError, ValueError):
-            return default
-
     form = await request.form()
     to_bool = lambda key: str(form.get(key, "off")).lower() in {"on", "true", "1", "yes"}
     mapping = {
@@ -1020,13 +1068,6 @@ async def save_settings(request: Request) -> RedirectResponse:
     def _to_int(value: str, default: int, min_value: int) -> int:
         try:
             return max(min_value, int(float(value)))
-        except (TypeError, ValueError):
-            return default
-
-    def _to_float(value: str, default: float, min_value: float) -> float:
-        try:
-            cleaned = str(value).replace(",", "").replace("%", "")
-            return max(min_value, float(cleaned))
         except (TypeError, ValueError):
             return default
 

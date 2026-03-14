@@ -44,8 +44,16 @@
       <input type="text" name="entry_usdt" placeholder="20" required>
     </label>
     <label>
-      Current TP / SL
-      <input type="text" value="{{ '%.2f'|format(manual.take_profit_pct) }}% / {{ '%.2f'|format(manual.stop_loss_pct) }}%" disabled>
+      Current TP / SL (TP %)
+      <input type="number" name="take_profit_pct" value="{{ '%.2f'|format(manual.take_profit_pct) }}" min="0.1" step="0.1" required>
+    </label>
+    <label>
+      Current TP / SL (SL %)
+      <input type="number" name="stop_loss_pct" value="{{ '%.2f'|format(manual.stop_loss_pct) }}" min="0.1" step="0.1" required>
+    </label>
+    <label>
+      Trailing Stop %
+      <input type="number" name="trailing_stop_pct" value="{{ '%.2f'|format(manual.trailing_stop_pct) }}" min="0" step="0.1" required>
     </label>
     <div class="actions">
       <button type="submit" class="btn">Open Mirrored Trade</button>

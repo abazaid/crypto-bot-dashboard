@@ -113,6 +113,37 @@ def _live_link_key(trade_id: int) -> str:
     return f"live_link_trade_{trade_id}"
 
 
+def _trade_origin_key(trade_id: int) -> str:
+    return f"trade_origin_{trade_id}"
+
+
+def _manual_trade_trailing_key(trade_id: int) -> str:
+    return f"trade_manual_trailing_stop_pct_{trade_id}"
+
+
+def _trade_origin(db: Session, trade_id: int) -> str:
+    row = db.query(Setting).filter(Setting.key == _trade_origin_key(trade_id)).first()
+    return (row.value or "").strip().lower() if row and row.value else ""
+
+
+def _trade_trailing_stop_pct(db: Session, trade: Trade, default: float) -> float:
+    if _trade_origin(db, trade.id) != "manual_live":
+        return default
+    row = db.query(Setting).filter(Setting.key == _manual_trade_trailing_key(trade.id)).first()
+    if not row:
+        return default
+    try:
+        return max(0.0, float(row.value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clear_manual_trade_trailing_setting(db: Session, trade_id: int) -> None:
+    row = db.query(Setting).filter(Setting.key == _manual_trade_trailing_key(trade_id)).first()
+    if row:
+        db.delete(row)
+
+
 def _set_live_link(db: Session, trade_id: int, symbol: str, quantity: float, order_id: int | str) -> None:
     value = f"{symbol.upper()}|{quantity:.12f}|{order_id}"
     _set_setting(db, _live_link_key(trade_id), value[:200])
@@ -1644,13 +1675,14 @@ def _manage_open_positions(db: Session) -> None:
 
     fee_rate = _get_float(db, "fee_rate", settings.fee_rate)
     time_stop_minutes = _get_int(db, "time_stop_minutes", settings.time_stop_minutes)
-    trailing_stop_pct = _get_float(db, "trailing_stop_pct", 0.01)
+    default_trailing_stop_pct = _get_float(db, "trailing_stop_pct", 0.01)
     cash = _cash_balance(db)
 
     for t in open_trades:
         price = prices.get(t.symbol)
         if price is None:
             continue
+        trade_trailing_stop_pct = _trade_trailing_stop_pct(db, t, default_trailing_stop_pct)
         if t.symbol in EXCLUDED_SYMBOLS:
             reason = "Symbol Excluded"
             proceeds = t.quantity * price
@@ -1663,6 +1695,7 @@ def _manage_open_positions(db: Session) -> None:
             t.exit_time = datetime.utcnow()
             t.pnl = pnl_value
             t.exit_reason = reason
+            _clear_manual_trade_trailing_setting(db, t.id)
             _mirror_close_live(db, t, reason)
             _notify(
                 db,
@@ -1679,11 +1712,11 @@ def _manage_open_positions(db: Session) -> None:
         if not t.highest_price or price > t.highest_price:
             t.highest_price = price
 
-        if not t.trailing_active and price >= t.tp_price:
+        if trade_trailing_stop_pct > 0 and not t.trailing_active and price >= t.tp_price:
             t.trailing_active = 1
-            t.trailing_stop_price = price * (1 - trailing_stop_pct)
-        elif t.trailing_active:
-            new_trail = (t.highest_price or price) * (1 - trailing_stop_pct)
+            t.trailing_stop_price = price * (1 - trade_trailing_stop_pct)
+        elif t.trailing_active and trade_trailing_stop_pct > 0:
+            new_trail = (t.highest_price or price) * (1 - trade_trailing_stop_pct)
             t.trailing_stop_price = max(t.trailing_stop_price or 0.0, new_trail)
 
         age_minutes = (datetime.utcnow() - t.entry_time).total_seconds() / 60.0
@@ -1708,6 +1741,7 @@ def _manage_open_positions(db: Session) -> None:
         t.exit_time = datetime.utcnow()
         t.pnl = pnl_value
         t.exit_reason = reason
+        _clear_manual_trade_trailing_setting(db, t.id)
         _mirror_close_live(db, t, reason)
         _notify(
             db,
