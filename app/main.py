@@ -175,11 +175,16 @@ async def paper_dashboard(request: Request) -> HTMLResponse:
             items.append({"campaign": c, "stats": stats})
         logs = db.query(ActivityLog).order_by(desc(ActivityLog.id)).limit(50).all()
         return templates.TemplateResponse(
-            "paper_dashboard.html",
-            _context("paper", request=request, wallet=wallet, campaigns=items, logs=logs),
+            "paper_home.html",
+            _context("paper_home", request=request, wallet=wallet, campaigns=items, logs=logs),
         )
     finally:
         db.close()
+
+
+@app.get("/paper/create", response_class=HTMLResponse)
+async def paper_create_campaign_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("paper_create.html", _context("paper_create", request=request))
 
 
 @app.get("/live", response_class=HTMLResponse)
@@ -290,7 +295,7 @@ async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResp
         return templates.TemplateResponse(
             "paper_campaign.html",
             _context(
-                "paper",
+                "paper_campaign",
                 request=request,
                 campaign=campaign,
                 rules=rules,

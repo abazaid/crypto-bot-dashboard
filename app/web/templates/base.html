@@ -11,11 +11,12 @@
     <div class="wrap topbar-inner">
       <a class="brand" href="/">Crypto Bots v2</a>
       <nav class="nav">
-        <a class="{% if active_page == 'paper' %}active{% endif %}" href="/paper">Paper Trading</a>
+        <a class="{% if active_page in ['paper_home', 'paper_create', 'paper_campaign'] %}active{% endif %}" href="/paper">Paper Trading</a>
+        <a class="{% if active_page == 'paper_create' %}active{% endif %}" href="/paper/create">Create Campaign</a>
         <a class="{% if active_page == 'history' %}active{% endif %}" href="/paper/history">Trading History</a>
         <a class="{% if active_page == 'live' %}active{% endif %}" href="/live">Live Mode</a>
       </nav>
-      {% if active_page in ['paper', 'history'] %}
+      {% if active_page in ['paper_home', 'paper_campaign', 'history'] %}
       <div class="refresh-tools">
         <button id="refresh-now-btn" type="button" class="mini-btn">Refresh Now</button>
         <span id="refresh-countdown" class="refresh-text">Auto refresh in 15s</span>
@@ -31,7 +32,7 @@
   <footer class="wrap footer">
     <small>Last update: {{ now }} | Engine checks prices every {{ cycle_seconds }}s</small>
   </footer>
-  {% if active_page in ['paper', 'history'] %}
+  {% if active_page in ['paper_home', 'paper_campaign', 'history'] %}
   <script>
     const REFRESH_SECONDS = 15;
     let countdown = REFRESH_SECONDS;
