@@ -385,6 +385,13 @@ tbody tr:hover {
   background: #fff8f8;
 }
 
+.actions-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
 @media (max-width: 840px) {
   .topbar-inner {
     flex-wrap: wrap;

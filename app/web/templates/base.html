@@ -6,7 +6,7 @@
   <title>Crypto Bots Rebuild</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body data-page="{{ active_page }}">
   <header class="topbar">
     <div class="wrap topbar-inner">
       <a class="brand" href="/">Crypto Bots v2</a>
@@ -49,11 +49,47 @@
       refreshLabel.textContent = `Auto refresh in ${countdown}s`;
     }
 
-    function doReload() {
-      window.location.reload();
+    async function softRefresh() {
+      const response = await fetch(window.location.href, { headers: { "X-Soft-Refresh": "1" } });
+      if (!response.ok) {
+        throw new Error(`Soft refresh failed: ${response.status}`);
+      }
+      const html = await response.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      const currentMain = document.querySelector("main.wrap");
+      const nextMain = doc.querySelector("main.wrap");
+      if (currentMain && nextMain) {
+        currentMain.innerHTML = nextMain.innerHTML;
+      }
+
+      const currentFooter = document.querySelector("footer.wrap.footer");
+      const nextFooter = doc.querySelector("footer.wrap.footer");
+      if (currentFooter && nextFooter) {
+        currentFooter.innerHTML = nextFooter.innerHTML;
+      }
+
+      if (typeof window.initPaperCampaignPage === "function") {
+        window.initPaperCampaignPage();
+      }
+      if (typeof window.initPaperCreatePage === "function") {
+        window.initPaperCreatePage();
+      }
+
+      countdown = REFRESH_SECONDS;
+      renderCountdown();
     }
 
-    refreshButton?.addEventListener("click", doReload);
+    async function doRefresh() {
+      try {
+        await softRefresh();
+      } catch (e) {
+        window.location.reload();
+      }
+    }
+
+    refreshButton?.addEventListener("click", doRefresh);
 
     document.addEventListener("focusin", (e) => {
       const tag = (e.target?.tagName || "").toLowerCase();
@@ -69,7 +105,7 @@
       if (hasFocusInInput) return;
       countdown -= 1;
       if (countdown <= 0) {
-        doReload();
+        doRefresh();
         return;
       }
       renderCountdown();

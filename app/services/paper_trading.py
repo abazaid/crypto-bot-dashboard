@@ -479,12 +479,11 @@ def build_symbol_ai_dca_rules(
         return [(n, d, a, None) for n, d, a in fallback_rules[:3]]
 
     price = float(ctx["price"])
-    strong_supports = [
-        s for s in ctx["supports"] if float(s["score"]) >= settings.dca_support_score_threshold and s["price"] < price
-    ]
-    strong_supports.sort(key=lambda x: x["price"], reverse=True)
-
-    if len(strong_supports) < 3:
+    # Use symbol-specific supports even when score is below threshold.
+    # Execution gate still checks score threshold later, but levels remain per-symbol.
+    supports = [s for s in ctx["supports"] if s["price"] < price]
+    supports.sort(key=lambda x: x["price"], reverse=True)
+    if len(supports) < 3:
         return [(n, d, a, None) for n, d, a in fallback_rules[:3]]
 
     base_multipliers = [settings.dca_scale_1, settings.dca_scale_2, settings.dca_scale_3]
@@ -499,7 +498,7 @@ def build_symbol_ai_dca_rules(
         remaining -= use_m
 
     out = []
-    for idx, support in enumerate(strong_supports[:3]):
+    for idx, support in enumerate(supports[:3]):
         drop_pct = max(0.8, ((price - float(support["price"])) / price) * 100.0)
         alloc_pct = max(0.0, final_multipliers[idx] * 100.0)
         out.append((f"AI-DCA-{idx+1}", round(drop_pct, 2), round(alloc_pct, 2), float(support["score"])))
@@ -913,3 +912,72 @@ def run_cycle(db: Session) -> None:
     if changed:
         set_setting(db, "paper_cash", f"{cash:.8f}")
         db.commit()
+
+
+def recalculate_campaign_dca(db: Session, campaign: Campaign) -> tuple[int, int]:
+    if campaign.mode != "paper":
+        return 0, 0
+
+    rules = (
+        db.query(DcaRule)
+        .filter(DcaRule.campaign_id == campaign.id)
+        .order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc())
+        .all()
+    )
+    if not rules:
+        return 0, 0
+
+    rules_by_name = {r.name: r for r in rules}
+    fallback_ai_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct)) for r in rules]
+    ai_profile = campaign.ai_dca_profile or "neutral"
+
+    open_positions = db.query(Position).filter(Position.campaign_id == campaign.id, Position.status == "open").all()
+    touched_positions = 0
+    updated_states = 0
+
+    for pos in open_positions:
+        states = (
+            db.query(PositionDcaState)
+            .join(DcaRule, DcaRule.id == PositionDcaState.dca_rule_id)
+            .filter(PositionDcaState.position_id == pos.id)
+            .order_by(DcaRule.id.asc())
+            .all()
+        )
+        if not states:
+            continue
+
+        if campaign.ai_dca_enabled:
+            symbol_rules = build_symbol_ai_dca_rules(pos.symbol, ai_profile, fallback_ai_rules)
+        else:
+            symbol_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct), None) for r in rules[:3]]
+
+        symbol_rules_by_name = {name: (drop, alloc, score) for name, drop, alloc, score in symbol_rules}
+
+        changed_any = False
+        for st in states:
+            if st.executed:
+                continue
+            rule_name = st.rule.name
+            rule_data = symbol_rules_by_name.get(rule_name)
+            if not rule_data:
+                # Fallback by index-like rule names if names were reshuffled
+                if rule_name.startswith("AI-DCA-"):
+                    idx = int(rule_name.split("AI-DCA-")[1]) - 1
+                    if 0 <= idx < len(symbol_rules):
+                        _, d, a, sc = symbol_rules[idx]
+                        rule_data = (d, a, sc)
+            if not rule_data:
+                continue
+            drop_pct, alloc_pct, support_score = rule_data
+            st.custom_drop_pct = float(drop_pct)
+            st.custom_allocation_pct = float(alloc_pct)
+            st.custom_support_score = float(support_score) if support_score is not None else None
+            changed_any = True
+            updated_states += 1
+
+        if changed_any:
+            pos.dca_paused = False
+            pos.dca_pause_reason = None
+            touched_positions += 1
+
+    return touched_positions, updated_states

@@ -36,9 +36,16 @@
   {% if campaign.ai_dca_enabled and campaign.ai_dca_notes %}
   <p>AI Notes: <strong>{{ campaign.ai_dca_notes }}</strong></p>
   {% endif %}
-  <form method="post" action="/paper/campaigns/{{ campaign.id }}/toggle">
-    <button type="submit">{{ "Pause" if campaign.status == "active" else "Activate" }}</button>
-  </form>
+  <div class="actions-row">
+    <form method="post" action="/paper/campaigns/{{ campaign.id }}/toggle">
+      <button type="submit">{{ "Pause" if campaign.status == "active" else "Activate" }}</button>
+    </form>
+    {% if campaign.ai_dca_enabled %}
+    <form method="post" action="/paper/campaigns/{{ campaign.id }}/recalculate-dca" onsubmit="return confirm('Recalculate pending DCA levels for all open symbols in this campaign?');">
+      <button type="submit" class="mini-btn">Recalculate DCA Now</button>
+    </form>
+    {% endif %}
+  </div>
 </section>
 
 <section class="card">
@@ -150,6 +157,9 @@
         <th>Status</th>
         <th>Buy Price (Initial)</th>
         <th>Buy Price (Current Avg)</th>
+        <th>DCA Filled</th>
+        <th>New Average</th>
+        <th>New Target</th>
         <th>Target Sell (TP)</th>
         <th>Current/Close</th>
         <th>Invested</th>
@@ -164,12 +174,18 @@
       {% set mark = prices.get(p.symbol, p.close_price if p.close_price else p.average_price) %}
       {% set pnl = ((mark * p.total_qty) - p.total_invested_usdt) if p.status == "open" else (p.realized_pnl_usdt or 0.0) %}
       {% set pnl_pct = ((pnl / p.total_invested_usdt) * 100) if p.total_invested_usdt > 0 else 0 %}
+      {% set dca_count = executed_dca_counts.get(p.id, 0) %}
+      {% set new_avg = p.average_price if dca_count > 0 else p.initial_price %}
+      {% set new_target = (new_avg * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
       {% set tp_price = (p.average_price * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
       <tr>
         <td>{{ p.symbol }}</td>
         <td><span class="badge">{{ p.status }}</span></td>
         <td>{{ "%.6f"|format(p.initial_price) }}</td>
         <td>{{ "%.6f"|format(p.average_price) }}</td>
+        <td>{{ dca_count }}</td>
+        <td>{{ "%.6f"|format(new_avg) }}</td>
+        <td>{{ "%.6f"|format(new_target) if new_target is not none else "-" }}</td>
         <td>{{ "%.6f"|format(tp_price) if tp_price is not none else "-" }}</td>
         <td>{{ "%.6f"|format(mark) }}</td>
         <td>{{ "%.2f"|format(p.total_invested_usdt) }}</td>
@@ -213,45 +229,50 @@
 </section>
 
 <script>
-  const dcaPanel = document.getElementById("dca-position-panel");
-  const dcaPanelBody = document.getElementById("dca-panel-body");
-  const dcaPanelTitle = document.getElementById("dca-panel-title");
+  window.initPaperCampaignPage = function initPaperCampaignPage() {
+    const dcaPanel = document.getElementById("dca-position-panel");
+    const dcaPanelBody = document.getElementById("dca-panel-body");
+    const dcaPanelTitle = document.getElementById("dca-panel-title");
+    if (!dcaPanel || !dcaPanelBody || !dcaPanelTitle) return;
 
-  async function loadPositionDca(positionId, symbol) {
-    dcaPanel.style.display = "block";
-    dcaPanelTitle.textContent = `DCA for ${symbol}`;
-    dcaPanelBody.innerHTML = `<tr><td colspan="8">Loading...</td></tr>`;
-    const res = await fetch(`/api/paper/positions/${positionId}/dca`);
-    const data = await res.json();
-    const items = data.items || [];
-    if (!items.length) {
-      dcaPanelBody.innerHTML = `<tr><td colspan="8">No DCA rows for this position.</td></tr>`;
-      return;
+    async function loadPositionDca(positionId, symbol) {
+      dcaPanel.style.display = "block";
+      dcaPanelTitle.textContent = `DCA for ${symbol}`;
+      dcaPanelBody.innerHTML = `<tr><td colspan="8">Loading...</td></tr>`;
+      const res = await fetch(`/api/paper/positions/${positionId}/dca`);
+      const data = await res.json();
+      const items = data.items || [];
+      if (!items.length) {
+        dcaPanelBody.innerHTML = `<tr><td colspan="8">No DCA rows for this position.</td></tr>`;
+        return;
+      }
+      dcaPanelBody.innerHTML = "";
+      items.forEach((row) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${row.rule}</td>
+          <td>${Number(row.drop_pct).toFixed(2)}</td>
+          <td>${Number(row.allocation_pct).toFixed(2)}</td>
+          <td>${row.support_score ? Number(row.support_score).toFixed(1) : '-'}</td>
+          <td>${Number(row.trigger_price).toFixed(6)}</td>
+          <td>${row.source === 'symbol_specific' ? 'Per Symbol' : 'Campaign'}</td>
+          <td>${row.executed ? 'Executed' : 'Pending'}</td>
+          <td>${row.executed_price ? Number(row.executed_price).toFixed(6) : '-'}</td>
+        `;
+        dcaPanelBody.appendChild(tr);
+      });
     }
-    dcaPanelBody.innerHTML = "";
-    items.forEach((row) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${row.rule}</td>
-        <td>${Number(row.drop_pct).toFixed(2)}</td>
-        <td>${Number(row.allocation_pct).toFixed(2)}</td>
-        <td>${row.support_score ? Number(row.support_score).toFixed(1) : '-'}</td>
-        <td>${Number(row.trigger_price).toFixed(6)}</td>
-        <td>${row.source === 'symbol_specific' ? 'Per Symbol' : 'Campaign'}</td>
-        <td>${row.executed ? 'Executed' : 'Pending'}</td>
-        <td>${row.executed_price ? Number(row.executed_price).toFixed(6) : '-'}</td>
-      `;
-      dcaPanelBody.appendChild(tr);
-    });
-  }
 
-  document.querySelectorAll(".dca-view-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const positionId = btn.getAttribute("data-position-id");
-      const row = btn.closest("tr");
-      const symbol = row ? row.children[0].textContent.trim() : "position";
-      loadPositionDca(positionId, symbol);
+    document.querySelectorAll(".dca-view-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const positionId = btn.getAttribute("data-position-id");
+        const row = btn.closest("tr");
+        const symbol = row ? row.children[0].textContent.trim() : "position";
+        loadPositionDca(positionId, symbol);
+      });
     });
-  });
+  };
+
+  window.initPaperCampaignPage();
 </script>
 {% endblock %}

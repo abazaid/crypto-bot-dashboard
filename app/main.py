@@ -18,6 +18,7 @@ from app.services.paper_trading import (
     build_ai_dca_rules,
     create_campaign_positions,
     ensure_defaults,
+    recalculate_campaign_dca,
     run_cycle,
     suggest_top_symbols,
     wallet_snapshot,
@@ -306,6 +307,13 @@ async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResp
                 }
             )
         positions = db.query(Position).filter(Position.campaign_id == campaign.id).order_by(desc(Position.id)).all()
+        position_ids = [p.id for p in positions]
+        executed_dca_counts: dict[int, int] = {}
+        if position_ids:
+            dca_states = db.query(PositionDcaState).filter(PositionDcaState.position_id.in_(position_ids)).all()
+            for st in dca_states:
+                if bool(st.executed):
+                    executed_dca_counts[st.position_id] = int(executed_dca_counts.get(st.position_id, 0)) + 1
         open_symbols = [p.symbol for p in positions if p.status == "open"]
         prices = get_prices(open_symbols) if open_symbols else {}
         stats = _campaign_stats(db, campaign)
@@ -321,6 +329,7 @@ async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResp
                 ai_suggested_rows=ai_suggested_rows,
                 current_rows=current_rows,
                 positions=positions,
+                executed_dca_counts=executed_dca_counts,
                 prices=prices,
                 stats=stats,
             ),
@@ -480,6 +489,31 @@ async def toggle_paper_campaign(campaign_id: int) -> RedirectResponse:
                 )
             )
             db.commit()
+        return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/paper/campaigns/{campaign_id}/recalculate-dca")
+async def recalculate_campaign_dca_now(campaign_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "paper").first()
+        if not campaign:
+            return RedirectResponse("/paper", status_code=303)
+
+        touched_positions, updated_states = recalculate_campaign_dca(db, campaign)
+        db.add(
+            ActivityLog(
+                event_type="DCA_RECALC",
+                symbol="-",
+                message=(
+                    f"Campaign='{campaign.name}' | touched_positions={touched_positions} "
+                    f"| updated_pending_states={updated_states}"
+                ),
+            )
+        )
+        db.commit()
         return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
     finally:
         db.close()
