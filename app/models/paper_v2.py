@@ -16,6 +16,11 @@ class Campaign(Base):
     entry_amount_usdt: Mapped[float] = mapped_column(Float, nullable=False)
     tp_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     sl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_dca_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ai_dca_profile: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ai_dca_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_dca_suggested_rules_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trend_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     dca_rules: Mapped[list["DcaRule"]] = relationship("DcaRule", back_populates="campaign", cascade="all, delete-orphan")

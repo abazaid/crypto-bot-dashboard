@@ -1,4 +1,5 @@
 import threading
+import json
 from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -6,13 +7,21 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import text
 from sqlalchemy import desc
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.models.paper_v2 import ActivityLog, Campaign, DcaRule, Position, PositionDcaState
 from app.services.binance_public import get_prices, search_symbols
-from app.services.paper_trading import create_campaign_positions, ensure_defaults, run_cycle, wallet_snapshot
+from app.services.paper_trading import (
+    build_ai_dca_rules,
+    create_campaign_positions,
+    ensure_defaults,
+    run_cycle,
+    suggest_top_symbols,
+    wallet_snapshot,
+)
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -23,7 +32,11 @@ cycle_lock = threading.Lock()
 
 
 def _context(active: str, **kwargs) -> dict:
-    base = {"active_page": active, "now": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}
+    base = {
+        "active_page": active,
+        "now": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "cycle_seconds": max(settings.cycle_seconds, 3),
+    }
     base.update(kwargs)
     return base
 
@@ -45,6 +58,12 @@ def _campaign_stats(db, campaign: Campaign) -> dict:
     }
 
 
+def _pnl_pct(invested: float, pnl: float) -> float:
+    if invested <= 0:
+        return 0.0
+    return (pnl / invested) * 100.0
+
+
 def _safe_float(value: str | None, default: float | None = None) -> float | None:
     if value is None or str(value).strip() == "":
         return default
@@ -52,6 +71,60 @@ def _safe_float(value: str | None, default: float | None = None) -> float | None
         return float(str(value).replace("%", "").strip())
     except Exception:
         return default
+
+
+def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
+    open_positions = db.query(Position).filter(Position.campaign_id == campaign_id, Position.status == "open").all()
+    rules = db.query(DcaRule).filter(DcaRule.campaign_id == campaign_id).order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc()).all()
+    for pos in open_positions:
+        old_states = (
+            db.query(PositionDcaState)
+            .join(DcaRule, DcaRule.id == PositionDcaState.dca_rule_id)
+            .filter(PositionDcaState.position_id == pos.id)
+            .all()
+        )
+        executed_by_rule_name = {}
+        for st in old_states:
+            rule_name = st.rule.name
+            executed_by_rule_name[rule_name] = {
+                "executed": bool(st.executed),
+                "executed_at": st.executed_at,
+                "executed_price": st.executed_price,
+                "executed_qty": st.executed_qty,
+                "executed_usdt": st.executed_usdt,
+            }
+            db.delete(st)
+        db.flush()
+
+        for rule in rules:
+            keep = executed_by_rule_name.get(rule.name)
+            db.add(
+                PositionDcaState(
+                    position_id=pos.id,
+                    dca_rule_id=rule.id,
+                    executed=bool(keep and keep["executed"]),
+                    executed_at=keep["executed_at"] if keep and keep["executed"] else None,
+                    executed_price=keep["executed_price"] if keep and keep["executed"] else None,
+                    executed_qty=keep["executed_qty"] if keep and keep["executed"] else None,
+                    executed_usdt=keep["executed_usdt"] if keep and keep["executed"] else None,
+                )
+            )
+
+
+def _apply_schema_updates() -> None:
+    stmts = [
+        "ALTER TABLE campaigns ADD COLUMN ai_dca_enabled BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE campaigns ADD COLUMN ai_dca_profile VARCHAR(40)",
+        "ALTER TABLE campaigns ADD COLUMN ai_dca_notes TEXT",
+        "ALTER TABLE campaigns ADD COLUMN ai_dca_suggested_rules_json TEXT",
+        "ALTER TABLE campaigns ADD COLUMN trend_filter_enabled BOOLEAN NOT NULL DEFAULT 0",
+    ]
+    with engine.begin() as conn:
+        for stmt in stmts:
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass
 
 
 def _scheduled_cycle() -> None:
@@ -68,6 +141,7 @@ def _scheduled_cycle() -> None:
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    _apply_schema_updates()
     db = SessionLocal()
     try:
         ensure_defaults(db, settings.paper_start_balance)
@@ -113,6 +187,58 @@ async def live_dashboard(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("live_dashboard.html", _context("live", request=request))
 
 
+@app.get("/paper/history", response_class=HTMLResponse)
+async def paper_trading_history(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        closed_positions = (
+            db.query(Position)
+            .join(Campaign, Campaign.id == Position.campaign_id)
+            .filter(Position.status == "closed", Campaign.mode == "paper")
+            .order_by(desc(Position.closed_at), desc(Position.id))
+            .all()
+        )
+        rows = []
+        wins = 0
+        net_pnl = 0.0
+        for p in closed_positions:
+            invested = float(p.total_invested_usdt or 0.0)
+            pnl = float(p.realized_pnl_usdt or 0.0)
+            pnl_pct = _pnl_pct(invested, pnl)
+            if pnl > 0:
+                wins += 1
+            net_pnl += pnl
+            rows.append(
+                {
+                    "id": p.id,
+                    "campaign_name": p.campaign.name,
+                    "symbol": p.symbol,
+                    "opened_at": p.opened_at,
+                    "closed_at": p.closed_at,
+                    "invested": invested,
+                    "exit_value": float((p.close_price or 0.0) * (p.total_qty or 0.0)),
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "close_reason": p.close_reason or "-",
+                }
+            )
+        total = len(rows)
+        win_rate = (wins / total * 100.0) if total else 0.0
+        summary = {
+            "total_trades": total,
+            "wins": wins,
+            "losses": max(0, total - wins),
+            "win_rate": win_rate,
+            "net_pnl": net_pnl,
+        }
+        return templates.TemplateResponse(
+            "trading_history.html",
+            _context("history", request=request, summary=summary, rows=rows),
+        )
+    finally:
+        db.close()
+
+
 @app.get("/paper/campaigns/{campaign_id}", response_class=HTMLResponse)
 async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResponse:
     db = SessionLocal()
@@ -121,6 +247,42 @@ async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResp
         if not campaign:
             return RedirectResponse("/paper", status_code=303)
         rules = db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).order_by(DcaRule.drop_pct.asc()).all()
+        edit_rules = {r.name: r for r in rules}
+        edit_slots = rules[:3]
+        while len(edit_slots) < 3:
+            edit_slots.append(None)
+        ai_suggested_rows = []
+        if campaign.ai_dca_enabled:
+            try:
+                suggested = json.loads(campaign.ai_dca_suggested_rules_json or "[]")
+            except Exception:
+                suggested = []
+            if isinstance(suggested, list):
+                for row in suggested:
+                    try:
+                        name_rule = str(row.get("name", "AI-DCA")).strip() or "AI-DCA"
+                        drop_pct = float(row.get("drop_pct", 0.0))
+                        allocation_pct = float(row.get("allocation_pct", 0.0))
+                        ai_suggested_rows.append(
+                            {
+                                "name": name_rule,
+                                "drop_pct": drop_pct,
+                                "allocation_pct": allocation_pct,
+                                "suggested_usdt": campaign.entry_amount_usdt * (allocation_pct / 100.0),
+                            }
+                        )
+                    except Exception:
+                        continue
+        current_rows = []
+        for row in rules:
+            current_rows.append(
+                {
+                    "name": row.name,
+                    "drop_pct": float(row.drop_pct),
+                    "allocation_pct": float(row.allocation_pct),
+                    "current_usdt": campaign.entry_amount_usdt * (float(row.allocation_pct) / 100.0),
+                }
+            )
         positions = db.query(Position).filter(Position.campaign_id == campaign.id).order_by(desc(Position.id)).all()
         open_symbols = [p.symbol for p in positions if p.status == "open"]
         prices = get_prices(open_symbols) if open_symbols else {}
@@ -132,6 +294,10 @@ async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResp
                 request=request,
                 campaign=campaign,
                 rules=rules,
+                edit_rules=edit_rules,
+                edit_slots=edit_slots,
+                ai_suggested_rows=ai_suggested_rows,
+                current_rows=current_rows,
                 positions=positions,
                 prices=prices,
                 stats=stats,
@@ -155,6 +321,8 @@ async def create_paper_campaign(
     dca_alloc_2: str = Form(""),
     dca_drop_3: str = Form(""),
     dca_alloc_3: str = Form(""),
+    ai_dca_enabled: str | None = Form(None),
+    trend_filter_enabled: str | None = Form(None),
 ) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -163,6 +331,8 @@ async def create_paper_campaign(
             return RedirectResponse("/paper", status_code=303)
 
         picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
+        trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
         campaign = Campaign(
             name=name.strip() or "Paper Campaign",
             mode="paper",
@@ -170,28 +340,57 @@ async def create_paper_campaign(
             entry_amount_usdt=entry_amount,
             tp_pct=_safe_float(tp_pct, None),
             sl_pct=_safe_float(sl_pct, None),
+            ai_dca_enabled=ai_mode,
+            trend_filter_enabled=trend_mode,
         )
         db.add(campaign)
         db.flush()
 
-        dca_raw = [
-            ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
-            ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
-            ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
-        ]
-        for name_rule, drop_pct, alloc_pct in dca_raw:
-            if drop_pct is None or alloc_pct is None:
-                continue
-            if drop_pct <= 0 or alloc_pct <= 0:
-                continue
+        if ai_mode:
+            ai_rules, ai_profile, ai_note = build_ai_dca_rules(picked)
+            campaign.ai_dca_profile = ai_profile
+            campaign.ai_dca_notes = ai_note
+            campaign.ai_dca_suggested_rules_json = json.dumps(
+                [
+                    {"name": name_rule, "drop_pct": float(drop_pct), "allocation_pct": float(alloc_pct)}
+                    for name_rule, drop_pct, alloc_pct in ai_rules
+                ]
+            )
+            for name_rule, drop_pct, alloc_pct in ai_rules:
+                db.add(
+                    DcaRule(
+                        campaign_id=campaign.id,
+                        name=name_rule,
+                        drop_pct=drop_pct,
+                        allocation_pct=alloc_pct,
+                    )
+                )
             db.add(
-                DcaRule(
-                    campaign_id=campaign.id,
-                    name=name_rule,
-                    drop_pct=drop_pct,
-                    allocation_pct=alloc_pct,
+                ActivityLog(
+                    event_type="AI_DCA",
+                    symbol="-",
+                    message=f"Campaign '{campaign.name}' | {ai_note}",
                 )
             )
+        else:
+            dca_raw = [
+                ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
+                ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
+                ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
+            ]
+            for name_rule, drop_pct, alloc_pct in dca_raw:
+                if drop_pct is None or alloc_pct is None:
+                    continue
+                if drop_pct <= 0 or alloc_pct <= 0:
+                    continue
+                db.add(
+                    DcaRule(
+                        campaign_id=campaign.id,
+                        name=name_rule,
+                        drop_pct=drop_pct,
+                        allocation_pct=alloc_pct,
+                    )
+                )
         db.commit()
 
         opened, errors = create_campaign_positions(db, campaign, picked)
@@ -232,10 +431,85 @@ async def toggle_paper_campaign(campaign_id: int) -> RedirectResponse:
         db.close()
 
 
+@app.post("/paper/campaigns/{campaign_id}/edit")
+async def edit_paper_campaign(
+    campaign_id: int,
+    tp_pct: str = Form(""),
+    sl_pct: str = Form(""),
+    dca_drop_1: str = Form(""),
+    dca_alloc_1: str = Form(""),
+    dca_drop_2: str = Form(""),
+    dca_alloc_2: str = Form(""),
+    dca_drop_3: str = Form(""),
+    dca_alloc_3: str = Form(""),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "paper").first()
+        if not campaign:
+            return RedirectResponse("/paper", status_code=303)
+
+        campaign.tp_pct = _safe_float(tp_pct, None)
+        campaign.sl_pct = _safe_float(sl_pct, None)
+
+        incoming = [
+            ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
+            ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
+            ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
+        ]
+        existing = {r.name: r for r in db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).all()}
+        kept_rule_names: set[str] = set()
+        for name_rule, drop_pct, alloc_pct in incoming:
+            if drop_pct is None or alloc_pct is None or drop_pct <= 0 or alloc_pct <= 0:
+                continue
+            kept_rule_names.add(name_rule)
+            row = existing.get(name_rule)
+            if row:
+                row.drop_pct = drop_pct
+                row.allocation_pct = alloc_pct
+            else:
+                db.add(
+                    DcaRule(
+                        campaign_id=campaign.id,
+                        name=name_rule,
+                        drop_pct=drop_pct,
+                        allocation_pct=alloc_pct,
+                    )
+                )
+
+        for name_rule, row in existing.items():
+            if name_rule not in kept_rule_names:
+                db.delete(row)
+
+        db.flush()
+        _sync_open_positions_dca_states(db, campaign.id)
+        db.add(
+            ActivityLog(
+                event_type="CAMPAIGN_EDIT",
+                symbol="-",
+                message=(
+                    f"Campaign '{campaign.name}' updated: TP={campaign.tp_pct}, SL={campaign.sl_pct}, "
+                    f"DCA rules={sorted(kept_rule_names)}"
+                ),
+            )
+        )
+        db.commit()
+        return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
 @app.get("/api/binance/symbols")
 async def api_symbol_search(q: str = "") -> JSONResponse:
     data = search_symbols(q, limit=40)
     return JSONResponse({"items": data})
+
+
+@app.get("/api/paper/suggestions")
+async def api_paper_suggestions(limit: int = 5) -> JSONResponse:
+    safe_limit = min(max(int(limit), 1), 10)
+    data = suggest_top_symbols(safe_limit)
+    return JSONResponse(data)
 
 
 @app.get("/api/paper/positions/{position_id}/dca")

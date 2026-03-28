@@ -12,8 +12,15 @@
       <a class="brand" href="/">Crypto Bots v2</a>
       <nav class="nav">
         <a class="{% if active_page == 'paper' %}active{% endif %}" href="/paper">Paper Trading</a>
+        <a class="{% if active_page == 'history' %}active{% endif %}" href="/paper/history">Trading History</a>
         <a class="{% if active_page == 'live' %}active{% endif %}" href="/live">Live Mode</a>
       </nav>
+      {% if active_page in ['paper', 'history'] %}
+      <div class="refresh-tools">
+        <button id="refresh-now-btn" type="button" class="mini-btn">Refresh Now</button>
+        <span id="refresh-countdown" class="refresh-text">Auto refresh in 15s</span>
+      </div>
+      {% endif %}
     </div>
   </header>
 
@@ -22,7 +29,53 @@
   </main>
 
   <footer class="wrap footer">
-    <small>Last update: {{ now }}</small>
+    <small>Last update: {{ now }} | Engine checks prices every {{ cycle_seconds }}s</small>
   </footer>
+  {% if active_page in ['paper', 'history'] %}
+  <script>
+    const REFRESH_SECONDS = 15;
+    let countdown = REFRESH_SECONDS;
+    let hasFocusInInput = false;
+    const refreshLabel = document.getElementById("refresh-countdown");
+    const refreshButton = document.getElementById("refresh-now-btn");
+
+    function renderCountdown() {
+      if (!refreshLabel) return;
+      if (hasFocusInInput) {
+        refreshLabel.textContent = "Auto refresh paused while editing";
+        return;
+      }
+      refreshLabel.textContent = `Auto refresh in ${countdown}s`;
+    }
+
+    function doReload() {
+      window.location.reload();
+    }
+
+    refreshButton?.addEventListener("click", doReload);
+
+    document.addEventListener("focusin", (e) => {
+      const tag = (e.target?.tagName || "").toLowerCase();
+      hasFocusInInput = ["input", "textarea", "select"].includes(tag);
+      renderCountdown();
+    });
+    document.addEventListener("focusout", () => {
+      hasFocusInInput = false;
+      renderCountdown();
+    });
+
+    setInterval(() => {
+      if (hasFocusInInput) return;
+      countdown -= 1;
+      if (countdown <= 0) {
+        doReload();
+        return;
+      }
+      renderCountdown();
+    }, 1000);
+
+    renderCountdown();
+  </script>
+  {% endif %}
 </body>
 </html>

@@ -16,11 +16,11 @@
   </article>
   <article class="card stat">
     <h3>Realized</h3>
-    <p>{{ "%.2f"|format(stats.realized_pnl) }} USDT</p>
+    <p class="{{ 'pnl-pos' if stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.realized_pnl) }} USDT</p>
   </article>
   <article class="card stat">
     <h3>Unrealized</h3>
-    <p>{{ "%.2f"|format(stats.unrealized_pnl) }} USDT</p>
+    <p class="{{ 'pnl-pos' if stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.unrealized_pnl) }} USDT</p>
   </article>
 </section>
 
@@ -29,13 +29,77 @@
   <p>Entry per symbol: <strong>{{ "%.2f"|format(campaign.entry_amount_usdt) }} USDT</strong></p>
   <p>Take Profit: <strong>{{ campaign.tp_pct if campaign.tp_pct is not none else "-" }}%</strong></p>
   <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
+  <p>DCA Mode: <strong>{{ "AI DCA" if campaign.ai_dca_enabled else "Manual DCA" }}</strong></p>
+  <p>Trend Filter: <strong>{{ "Enabled" if campaign.trend_filter_enabled else "Disabled" }}</strong></p>
+  {% if campaign.ai_dca_enabled and campaign.ai_dca_notes %}
+  <p>AI Notes: <strong>{{ campaign.ai_dca_notes }}</strong></p>
+  {% endif %}
   <form method="post" action="/paper/campaigns/{{ campaign.id }}/toggle">
     <button type="submit">{{ "Pause" if campaign.status == "active" else "Activate" }}</button>
   </form>
 </section>
 
 <section class="card">
+  <h2>Edit Campaign</h2>
+  <p>Allowed edits: Take Profit, Stop Loss, and DCA rules. Entry amount and symbols are locked.</p>
+  <form method="post" action="/paper/campaigns/{{ campaign.id }}/edit" class="form-grid">
+    <label>Take Profit %
+      <input name="tp_pct" type="number" step="0.01" min="0" value="{{ campaign.tp_pct if campaign.tp_pct is not none else '' }}">
+    </label>
+    <label>Stop Loss %
+      <input name="sl_pct" type="number" step="0.01" min="0" value="{{ campaign.sl_pct if campaign.sl_pct is not none else '' }}">
+    </label>
+
+    <label>DCA-1 Drop %
+      <input name="dca_drop_1" type="number" step="0.01" min="0" value="{{ edit_slots[0].drop_pct if edit_slots[0] else '' }}">
+    </label>
+    <label>DCA-1 Allocation %
+      <input name="dca_alloc_1" type="number" step="0.01" min="0" value="{{ edit_slots[0].allocation_pct if edit_slots[0] else '' }}">
+    </label>
+    <label>DCA-2 Drop %
+      <input name="dca_drop_2" type="number" step="0.01" min="0" value="{{ edit_slots[1].drop_pct if edit_slots[1] else '' }}">
+    </label>
+    <label>DCA-2 Allocation %
+      <input name="dca_alloc_2" type="number" step="0.01" min="0" value="{{ edit_slots[1].allocation_pct if edit_slots[1] else '' }}">
+    </label>
+    <label>DCA-3 Drop %
+      <input name="dca_drop_3" type="number" step="0.01" min="0" value="{{ edit_slots[2].drop_pct if edit_slots[2] else '' }}">
+    </label>
+    <label>DCA-3 Allocation %
+      <input name="dca_alloc_3" type="number" step="0.01" min="0" value="{{ edit_slots[2].allocation_pct if edit_slots[2] else '' }}">
+    </label>
+    <div class="full">
+      <button type="submit">Save Campaign Changes</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
   <h2>DCA Rules</h2>
+  {% if campaign.ai_dca_enabled and ai_suggested_rows %}
+  <h3>AI Suggested DCA (Original)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Rule</th>
+        <th>Drop %</th>
+        <th>Allocation %</th>
+        <th>Suggested Amount (USDT)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in ai_suggested_rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        <td>{{ "%.2f"|format(row.drop_pct) }}</td>
+        <td>{{ "%.2f"|format(row.allocation_pct) }}</td>
+        <td>{{ "%.2f"|format(row.suggested_usdt) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <h3>Current DCA (Editable)</h3>
+  {% endif %}
   {% if rules %}
   <table>
     <thead>
@@ -43,14 +107,16 @@
         <th>Rule</th>
         <th>Drop %</th>
         <th>Allocation %</th>
+        <th>Current Amount (USDT)</th>
       </tr>
     </thead>
     <tbody>
-      {% for rule in rules %}
+      {% for row in current_rows %}
       <tr>
-        <td>{{ rule.name }}</td>
-        <td>{{ "%.2f"|format(rule.drop_pct) }}</td>
-        <td>{{ "%.2f"|format(rule.allocation_pct) }}</td>
+        <td>{{ row.name }}</td>
+        <td>{{ "%.2f"|format(row.drop_pct) }}</td>
+        <td>{{ "%.2f"|format(row.allocation_pct) }}</td>
+        <td>{{ "%.2f"|format(row.current_usdt) }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -68,7 +134,9 @@
       <tr>
         <th>Symbol</th>
         <th>Status</th>
-        <th>Avg Price</th>
+        <th>Buy Price (Initial)</th>
+        <th>Buy Price (Current Avg)</th>
+        <th>Target Sell (TP)</th>
         <th>Current/Close</th>
         <th>Invested</th>
         <th>Qty</th>
@@ -79,14 +147,18 @@
       {% for p in positions %}
       {% set mark = prices.get(p.symbol, p.close_price if p.close_price else p.average_price) %}
       {% set pnl = ((mark * p.total_qty) - p.total_invested_usdt) if p.status == "open" else (p.realized_pnl_usdt or 0.0) %}
+      {% set pnl_pct = ((pnl / p.total_invested_usdt) * 100) if p.total_invested_usdt > 0 else 0 %}
+      {% set tp_price = (p.average_price * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
       <tr>
         <td>{{ p.symbol }}</td>
-        <td>{{ p.status }}</td>
+        <td><span class="badge">{{ p.status }}</span></td>
+        <td>{{ "%.6f"|format(p.initial_price) }}</td>
         <td>{{ "%.6f"|format(p.average_price) }}</td>
+        <td>{{ "%.6f"|format(tp_price) if tp_price is not none else "-" }}</td>
         <td>{{ "%.6f"|format(mark) }}</td>
         <td>{{ "%.2f"|format(p.total_invested_usdt) }}</td>
         <td>{{ "%.8f"|format(p.total_qty) }}</td>
-        <td>{{ "%.2f"|format(pnl) }}</td>
+        <td class="{{ 'pnl-pos' if pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(pnl) }} ({{ "%+.2f"|format(pnl_pct) }}%)</td>
       </tr>
       {% endfor %}
     </tbody>

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero-gradient">
+  <h1>Trading History</h1>
+  <p>Complete closed trades journal with percentage and amount performance.</p>
+</section>
+
+<section class="cards four">
+  <article class="card stat glow">
+    <h3>Total Trades</h3>
+    <p>{{ summary.total_trades }}</p>
+  </article>
+  <article class="card stat glow">
+    <h3>Win Rate</h3>
+    <p class="{{ 'pnl-pos' if summary.win_rate >= 50 else 'pnl-neg' }}">{{ "%.2f"|format(summary.win_rate) }}%</p>
+  </article>
+  <article class="card stat glow">
+    <h3>Wins / Losses</h3>
+    <p>{{ summary.wins }} / {{ summary.losses }}</p>
+  </article>
+  <article class="card stat glow">
+    <h3>Net PnL</h3>
+    <p class="{{ 'pnl-pos' if summary.net_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(summary.net_pnl) }} USDT</p>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Closed Positions</h2>
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Campaign</th>
+        <th>Symbol</th>
+        <th>Open Time</th>
+        <th>Close Time</th>
+        <th>Invested</th>
+        <th>Exit Value</th>
+        <th>PnL (USDT)</th>
+        <th>PnL (%)</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>#{{ row.id }}</td>
+        <td>{{ row.campaign_name }}</td>
+        <td>{{ row.symbol }}</td>
+        <td>{{ row.opened_at.strftime("%Y-%m-%d %H:%M") if row.opened_at else "-" }}</td>
+        <td>{{ row.closed_at.strftime("%Y-%m-%d %H:%M") if row.closed_at else "-" }}</td>
+        <td>{{ "%.2f"|format(row.invested) }}</td>
+        <td>{{ "%.2f"|format(row.exit_value) }}</td>
+        <td class="{{ 'pnl-pos' if row.pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl) }}</td>
+        <td class="{{ 'pnl-pos' if row.pnl_pct >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl_pct) }}%</td>
+        <td><span class="badge">{{ row.close_reason }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No closed trades yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
