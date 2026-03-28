@@ -22,6 +22,8 @@ class Campaign(Base):
     ai_dca_suggested_rules_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     trend_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_reentry_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    loop_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    loop_target_count: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     dca_rules: Mapped[list["DcaRule"]] = relationship("DcaRule", back_populates="campaign", cascade="all, delete-orphan")

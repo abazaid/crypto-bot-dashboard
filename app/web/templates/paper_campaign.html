@@ -30,6 +30,10 @@
   <p>Take Profit: <strong>{{ campaign.tp_pct if campaign.tp_pct is not none else "-" }}%</strong></p>
   <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
   <p>DCA Mode: <strong>{{ "AI DCA" if campaign.ai_dca_enabled else "Manual DCA" }}</strong></p>
+  <p>Campaign Type: <strong>{{ "Loop AI" if campaign.loop_enabled else "Standard" }}</strong></p>
+  {% if campaign.loop_enabled %}
+  <p>Loop Target Open Symbols: <strong>{{ campaign.loop_target_count }}</strong></p>
+  {% endif %}
   <p>Trend Filter: <strong>{{ "Enabled" if campaign.trend_filter_enabled else "Disabled" }}</strong></p>
   <p>Auto Re-entry: <strong>{{ "Enabled" if campaign.auto_reentry_enabled else "Disabled" }}</strong></p>
   <p><strong>Pause behavior:</strong> stops new buys only. TP/SL exits and manual sell remain active.</p>
@@ -88,6 +92,18 @@
     </label>
     <label>DCA-3 Allocation %
       <input name="dca_alloc_3" type="number" step="0.01" min="0" value="{{ edit_slots[2].allocation_pct if edit_slots[2] else '' }}">
+    </label>
+    <label>DCA-4 Drop %
+      <input name="dca_drop_4" type="number" step="0.01" min="0" value="{{ edit_slots[3].drop_pct if edit_slots[3] else '' }}">
+    </label>
+    <label>DCA-4 Allocation %
+      <input name="dca_alloc_4" type="number" step="0.01" min="0" value="{{ edit_slots[3].allocation_pct if edit_slots[3] else '' }}">
+    </label>
+    <label>DCA-5 Drop %
+      <input name="dca_drop_5" type="number" step="0.01" min="0" value="{{ edit_slots[4].drop_pct if edit_slots[4] else '' }}">
+    </label>
+    <label>DCA-5 Allocation %
+      <input name="dca_alloc_5" type="number" step="0.01" min="0" value="{{ edit_slots[4].allocation_pct if edit_slots[4] else '' }}">
     </label>
     <div class="full">
       <button type="submit">Save Campaign Changes</button>
@@ -234,6 +250,7 @@
     const dcaPanelBody = document.getElementById("dca-panel-body");
     const dcaPanelTitle = document.getElementById("dca-panel-title");
     if (!dcaPanel || !dcaPanelBody || !dcaPanelTitle) return;
+    window.__openDcaState = window.__openDcaState || null;
 
     async function loadPositionDca(positionId, symbol) {
       dcaPanel.style.display = "block";
@@ -261,6 +278,7 @@
         `;
         dcaPanelBody.appendChild(tr);
       });
+      window.__openDcaState = { positionId, symbol };
     }
 
     document.querySelectorAll(".dca-view-btn").forEach((btn) => {
@@ -271,6 +289,10 @@
         loadPositionDca(positionId, symbol);
       });
     });
+
+    if (window.__openDcaState && window.__openDcaState.positionId) {
+      loadPositionDca(window.__openDcaState.positionId, window.__openDcaState.symbol || "position");
+    }
   };
 
   window.initPaperCampaignPage();

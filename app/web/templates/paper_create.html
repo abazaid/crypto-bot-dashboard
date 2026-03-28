@@ -34,6 +34,12 @@
             <span>Enable Auto DCA from support levels</span>
           </span>
         </label>
+        <label>Loop Campaign (Top 5 AI)
+          <span class="inline-check">
+            <input id="loop_enabled" name="loop_enabled" type="checkbox">
+            <span>Always keep 5 open symbols from top score. AI-only and auto-rotation after close.</span>
+          </span>
+        </label>
         <label>Trend Filter (BTC)
           <span class="inline-check">
             <input id="trend_filter_enabled" name="trend_filter_enabled" type="checkbox">
@@ -64,6 +70,18 @@
         </label>
         <label>DCA-3 Allocation % of Entry
           <input class="manual-dca" name="dca_alloc_3" type="number" step="0.01" min="0" placeholder="100">
+        </label>
+        <label>DCA-4 Drop %
+          <input class="manual-dca" name="dca_drop_4" type="number" step="0.01" min="0" placeholder="10">
+        </label>
+        <label>DCA-4 Allocation % of Entry
+          <input class="manual-dca" name="dca_alloc_4" type="number" step="0.01" min="0" placeholder="120">
+        </label>
+        <label>DCA-5 Drop %
+          <input class="manual-dca" name="dca_drop_5" type="number" step="0.01" min="0" placeholder="14">
+        </label>
+        <label>DCA-5 Allocation % of Entry
+          <input class="manual-dca" name="dca_alloc_5" type="number" step="0.01" min="0" placeholder="150">
         </label>
 
         <div class="full">
@@ -110,6 +128,8 @@
   const suggestMeta = document.getElementById("suggest-meta");
   const suggestionsBoard = document.getElementById("suggestions-board");
   const aiDcaToggle = document.getElementById("ai_dca_enabled");
+  const loopToggle = document.getElementById("loop_enabled");
+  const autoReentryToggle = document.getElementById("auto_reentry_enabled");
   const manualDcaFields = document.querySelectorAll(".manual-dca");
 
   function appendSymbol(symbol) {
@@ -162,18 +182,42 @@
   }
 
   function syncDcaMode() {
-    const disabled = aiDcaToggle.checked;
+    const isLoop = loopToggle.checked;
+    if (isLoop) {
+      aiDcaToggle.checked = true;
+      aiDcaToggle.disabled = true;
+      autoReentryToggle.checked = false;
+      autoReentryToggle.disabled = true;
+    } else {
+      aiDcaToggle.disabled = false;
+      autoReentryToggle.disabled = false;
+    }
+    const disabled = aiDcaToggle.checked || isLoop;
     manualDcaFields.forEach((field) => {
       field.disabled = disabled;
       if (disabled) {
         field.value = "";
       }
     });
+    const symbolsLocked = isLoop;
+    symbolsInput.disabled = symbolsLocked;
+    queryInput.disabled = symbolsLocked;
+    searchButton.disabled = symbolsLocked;
+    suggestButton.disabled = symbolsLocked;
+    if (symbolsLocked) {
+      symbolsInput.value = "";
+      resultBox.innerHTML = "";
+      suggestionsBoard.innerHTML = "";
+      suggestMeta.textContent = "Loop mode picks top 5 automatically at runtime.";
+    } else if (!suggestMeta.textContent.includes("BTC trend state")) {
+      suggestMeta.textContent = "";
+    }
   }
 
   searchButton.addEventListener("click", searchSymbols);
   suggestButton.addEventListener("click", suggestTop5);
   aiDcaToggle.addEventListener("change", syncDcaMode);
+  loopToggle.addEventListener("change", syncDcaMode);
   queryInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();

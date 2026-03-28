@@ -126,6 +126,8 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE campaigns ADD COLUMN ai_dca_suggested_rules_json TEXT",
         "ALTER TABLE campaigns ADD COLUMN trend_filter_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN auto_reentry_enabled BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE campaigns ADD COLUMN loop_enabled BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE campaigns ADD COLUMN loop_target_count INTEGER NOT NULL DEFAULT 5",
         "ALTER TABLE position_dca_states ADD COLUMN custom_drop_pct FLOAT",
         "ALTER TABLE position_dca_states ADD COLUMN custom_allocation_pct FLOAT",
         "ALTER TABLE position_dca_states ADD COLUMN custom_support_score FLOAT",
@@ -271,8 +273,8 @@ async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResp
             return RedirectResponse("/paper", status_code=303)
         rules = db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).order_by(DcaRule.drop_pct.asc()).all()
         edit_rules = {r.name: r for r in rules}
-        edit_slots = rules[:3]
-        while len(edit_slots) < 3:
+        edit_slots = rules[:5]
+        while len(edit_slots) < 5:
             edit_slots.append(None)
         ai_suggested_rows = []
         if campaign.ai_dca_enabled:
@@ -343,7 +345,7 @@ async def create_paper_campaign(
     request: Request,
     name: str = Form(...),
     entry_amount_usdt: str = Form(...),
-    symbols: str = Form(...),
+    symbols: str = Form(""),
     tp_pct: str = Form(""),
     sl_pct: str = Form(""),
     dca_drop_1: str = Form(""),
@@ -352,9 +354,14 @@ async def create_paper_campaign(
     dca_alloc_2: str = Form(""),
     dca_drop_3: str = Form(""),
     dca_alloc_3: str = Form(""),
+    dca_drop_4: str = Form(""),
+    dca_alloc_4: str = Form(""),
+    dca_drop_5: str = Form(""),
+    dca_alloc_5: str = Form(""),
     ai_dca_enabled: str | None = Form(None),
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
+    loop_enabled: str | None = Form(None),
 ) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -363,9 +370,18 @@ async def create_paper_campaign(
             return RedirectResponse("/paper", status_code=303)
 
         picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        loop_mode = str(loop_enabled or "").lower() in {"on", "true", "1", "yes"}
         ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
         trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
         reentry_mode = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
+        if loop_mode:
+            ai_mode = True
+            reentry_mode = False
+            scan = suggest_top_symbols(15)
+            picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
+            picked = picked[:5]
+        if not picked:
+            return RedirectResponse("/paper/create", status_code=303)
         campaign = Campaign(
             name=name.strip() or "Paper Campaign",
             mode="paper",
@@ -376,6 +392,8 @@ async def create_paper_campaign(
             ai_dca_enabled=ai_mode,
             trend_filter_enabled=trend_mode,
             auto_reentry_enabled=reentry_mode,
+            loop_enabled=loop_mode,
+            loop_target_count=5 if loop_mode else 0,
         )
         db.add(campaign)
         db.flush()
@@ -411,6 +429,8 @@ async def create_paper_campaign(
                 ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
                 ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
                 ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
+                ("DCA-4", _safe_float(dca_drop_4, None), _safe_float(dca_alloc_4, None)),
+                ("DCA-5", _safe_float(dca_drop_5, None), _safe_float(dca_alloc_5, None)),
             ]
             for name_rule, drop_pct, alloc_pct in dca_raw:
                 if drop_pct is None or alloc_pct is None:
@@ -581,6 +601,10 @@ async def edit_paper_campaign(
     dca_alloc_2: str = Form(""),
     dca_drop_3: str = Form(""),
     dca_alloc_3: str = Form(""),
+    dca_drop_4: str = Form(""),
+    dca_alloc_4: str = Form(""),
+    dca_drop_5: str = Form(""),
+    dca_alloc_5: str = Form(""),
 ) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -597,6 +621,8 @@ async def edit_paper_campaign(
             ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
             ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
             ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
+            ("DCA-4", _safe_float(dca_drop_4, None), _safe_float(dca_alloc_4, None)),
+            ("DCA-5", _safe_float(dca_drop_5, None), _safe_float(dca_alloc_5, None)),
         ]
         existing = {r.name: r for r in db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).all()}
         kept_rule_names: set[str] = set()

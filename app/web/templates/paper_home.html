@@ -37,6 +37,7 @@
           <tr>
             <th>Name</th>
             <th>Status</th>
+            <th>Type</th>
             <th>DCA Mode</th>
             <th>Trend Filter</th>
             <th>Auto Re-entry</th>
@@ -52,6 +53,7 @@
           <tr>
             <td>{{ item.campaign.name }}</td>
             <td>{{ item.campaign.status }}</td>
+            <td>{{ "Loop AI" if item.campaign.loop_enabled else "Standard" }}</td>
             <td>{{ "AI" if item.campaign.ai_dca_enabled else "Manual" }}</td>
             <td>{{ "On" if item.campaign.trend_filter_enabled else "Off" }}</td>
             <td>{{ "On" if item.campaign.auto_reentry_enabled else "Off" }}</td>
