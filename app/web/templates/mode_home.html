@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>Trading Modes</h1>
+  <p>Platform restructured. Each mode now has an isolated section.</p>
+  <div class="cards two">
+    <a class="card mode" href="/paper">
+      <h2>Paper Trading</h2>
+      <p>Create campaigns, open positions instantly, and automate DCA + TP/SL.</p>
+    </a>
+    <a class="card mode" href="/live">
+      <h2>Live Mode</h2>
+      <p>Reserved for the production trading flow after Paper validation.</p>
+    </a>
+  </div>
+</section>
+{% endblock %}

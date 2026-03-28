@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>Paper Trading</h1>
+  <p>Campaign-based simulation with instant entry, DCA automation, and TP/SL exits.</p>
+</section>
+
+<section class="cards three">
+  <article class="card stat">
+    <h3>Cash</h3>
+    <p>{{ "%.2f"|format(wallet.cash) }} USDT</p>
+  </article>
+  <article class="card stat">
+    <h3>Equity</h3>
+    <p>{{ "%.2f"|format(wallet.equity) }} USDT</p>
+  </article>
+  <article class="card stat">
+    <h3>PnL</h3>
+    <p>{{ "%.2f"|format(wallet.realized_pnl + wallet.unrealized_pnl) }} USDT</p>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Create Campaign</h2>
+  <form method="post" action="/paper/campaigns" class="form-grid">
+    <label>Campaign Name
+      <input name="name" required placeholder="Example: Dip Hunter 1">
+    </label>
+    <label>Entry Amount / Coin (USDT)
+      <input name="entry_amount_usdt" type="number" step="0.01" min="1" required placeholder="100">
+    </label>
+    <label>Take Profit % (Optional)
+      <input name="tp_pct" type="number" step="0.01" min="0" placeholder="3.5">
+    </label>
+    <label>Stop Loss % (Optional)
+      <input name="sl_pct" type="number" step="0.01" min="0" placeholder="5">
+    </label>
+
+    <label>DCA-1 Drop %
+      <input name="dca_drop_1" type="number" step="0.01" min="0" placeholder="2">
+    </label>
+    <label>DCA-1 Allocation % of Entry
+      <input name="dca_alloc_1" type="number" step="0.01" min="0" placeholder="50">
+    </label>
+    <label>DCA-2 Drop %
+      <input name="dca_drop_2" type="number" step="0.01" min="0" placeholder="4">
+    </label>
+    <label>DCA-2 Allocation % of Entry
+      <input name="dca_alloc_2" type="number" step="0.01" min="0" placeholder="50">
+    </label>
+    <label>DCA-3 Drop %
+      <input name="dca_drop_3" type="number" step="0.01" min="0" placeholder="7">
+    </label>
+    <label>DCA-3 Allocation % of Entry
+      <input name="dca_alloc_3" type="number" step="0.01" min="0" placeholder="100">
+    </label>
+
+    <div class="full">
+      <label>Search Binance Symbols</label>
+      <div class="symbol-search">
+        <input id="symbol-query" type="text" placeholder="Search e.g. BTC, ETH, SOL...">
+        <button type="button" id="symbol-search-btn">Search</button>
+      </div>
+      <div id="symbol-results" class="chips"></div>
+      <label>Selected Symbols (CSV)</label>
+      <input id="symbols" name="symbols" required placeholder="BTCUSDT,ETHUSDT">
+    </div>
+
+    <div class="full">
+      <button type="submit">Start Campaign (Buy Now)</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Campaigns</h2>
+  {% if campaigns %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Status</th>
+        <th>Open</th>
+        <th>Closed</th>
+        <th>Realized</th>
+        <th>Unrealized</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in campaigns %}
+      <tr>
+        <td>{{ item.campaign.name }}</td>
+        <td>{{ item.campaign.status }}</td>
+        <td>{{ item.stats.open_count }}</td>
+        <td>{{ item.stats.closed_count }}</td>
+        <td>{{ "%.2f"|format(item.stats.realized_pnl) }}</td>
+        <td>{{ "%.2f"|format(item.stats.unrealized_pnl) }}</td>
+        <td><a href="/paper/campaigns/{{ item.campaign.id }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No campaigns yet.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Activity Log</h2>
+  <div class="log-list">
+    {% for log in logs %}
+    <div class="log-item">
+      <span>{{ log.created_at.strftime("%H:%M:%S") }}</span>
+      <strong>{{ log.event_type }}</strong>
+      <span>{{ log.symbol }}</span>
+      <p>{{ log.message }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<script>
+  const queryInput = document.getElementById("symbol-query");
+  const resultBox = document.getElementById("symbol-results");
+  const symbolsInput = document.getElementById("symbols");
+  const searchButton = document.getElementById("symbol-search-btn");
+
+  function appendSymbol(symbol) {
+    const current = symbolsInput.value.split(",").map(v => v.trim()).filter(Boolean);
+    if (!current.includes(symbol)) {
+      current.push(symbol);
+    }
+    symbolsInput.value = current.join(",");
+  }
+
+  async function searchSymbols() {
+    const q = encodeURIComponent(queryInput.value || "");
+    const res = await fetch(`/api/binance/symbols?q=${q}`);
+    const data = await res.json();
+    resultBox.innerHTML = "";
+    data.items.forEach(symbol => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
+      btn.textContent = symbol;
+      btn.onclick = () => appendSymbol(symbol);
+      resultBox.appendChild(btn);
+    });
+  }
+
+  searchButton.addEventListener("click", searchSymbols);
+  queryInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      searchSymbols();
+    }
+  });
+</script>
+{% endblock %}

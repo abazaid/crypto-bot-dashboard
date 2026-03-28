@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>{{ campaign.name }}</h1>
+  <p>Paper campaign details and live DCA state.</p>
+</section>
+
+<section class="cards four">
+  <article class="card stat">
+    <h3>Status</h3>
+    <p>{{ campaign.status }}</p>
+  </article>
+  <article class="card stat">
+    <h3>Open</h3>
+    <p>{{ stats.open_count }}</p>
+  </article>
+  <article class="card stat">
+    <h3>Realized</h3>
+    <p>{{ "%.2f"|format(stats.realized_pnl) }} USDT</p>
+  </article>
+  <article class="card stat">
+    <h3>Unrealized</h3>
+    <p>{{ "%.2f"|format(stats.unrealized_pnl) }} USDT</p>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Risk Config</h2>
+  <p>Entry per symbol: <strong>{{ "%.2f"|format(campaign.entry_amount_usdt) }} USDT</strong></p>
+  <p>Take Profit: <strong>{{ campaign.tp_pct if campaign.tp_pct is not none else "-" }}%</strong></p>
+  <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
+  <form method="post" action="/paper/campaigns/{{ campaign.id }}/toggle">
+    <button type="submit">{{ "Pause" if campaign.status == "active" else "Activate" }}</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>DCA Rules</h2>
+  {% if rules %}
+  <table>
+    <thead>
+      <tr>
+        <th>Rule</th>
+        <th>Drop %</th>
+        <th>Allocation %</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rule in rules %}
+      <tr>
+        <td>{{ rule.name }}</td>
+        <td>{{ "%.2f"|format(rule.drop_pct) }}</td>
+        <td>{{ "%.2f"|format(rule.allocation_pct) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No DCA rules.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Positions</h2>
+  {% if positions %}
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Status</th>
+        <th>Avg Price</th>
+        <th>Current/Close</th>
+        <th>Invested</th>
+        <th>Qty</th>
+        <th>PnL</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in positions %}
+      {% set mark = prices.get(p.symbol, p.close_price if p.close_price else p.average_price) %}
+      {% set pnl = ((mark * p.total_qty) - p.total_invested_usdt) if p.status == "open" else (p.realized_pnl_usdt or 0.0) %}
+      <tr>
+        <td>{{ p.symbol }}</td>
+        <td>{{ p.status }}</td>
+        <td>{{ "%.6f"|format(p.average_price) }}</td>
+        <td>{{ "%.6f"|format(mark) }}</td>
+        <td>{{ "%.2f"|format(p.total_invested_usdt) }}</td>
+        <td>{{ "%.8f"|format(p.total_qty) }}</td>
+        <td>{{ "%.2f"|format(pnl) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No positions in this campaign.</p>
+  {% endif %}
+</section>
+{% endblock %}

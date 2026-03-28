@@ -1,71 +1,28 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}Crypto Bot Dashboard{% endblock %}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crypto Bots Rebuild</title>
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div class="app-bg"></div>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-dot"></div>
-        <div>
-          <strong>Crypto Bot</strong>
-          <p>Control Center</p>
-        </div>
-      </div>
-
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="/">Crypto Bots v2</a>
       <nav class="nav">
-        <a href="/" class="{% if active_page == 'overview' %}active{% endif %}">Overview</a>
-        <a href="/symbols" class="{% if active_page == 'symbols' %}active{% endif %}">Symbols</a>
-        <a href="/trades" class="{% if active_page == 'trades' %}active{% endif %}">Trades</a>
-        <a href="/statistics" class="{% if active_page == 'statistics' %}active{% endif %}">Statistics</a>
-        <a href="/advisor" class="{% if active_page == 'advisor' %}active{% endif %}">Advisor</a>
-        <a href="/ai-trading" class="{% if active_page == 'ai_trading' %}active{% endif %}">AI Trading</a>
-        <a href="/strategy" class="{% if active_page == 'strategy' %}active{% endif %}">Strategy</a>
-        <a href="/live-manual" class="{% if active_page == 'live_manual' %}active{% endif %}">Live Manual</a>
-        <a href="/settings" class="{% if active_page == 'settings' %}active{% endif %}">Settings</a>
-        <a href="/logs" class="{% if active_page == 'logs' %}active{% endif %}">Logs</a>
+        <a class="{% if active_page == 'paper' %}active{% endif %}" href="/paper">Paper Trading</a>
+        <a class="{% if active_page == 'live' %}active{% endif %}" href="/live">Live Mode</a>
       </nav>
+    </div>
+  </header>
 
-      <div class="mode">
-        <span>Mode</span>
-        <strong>{{ mode_label or 'Paper Trading' }}</strong>
-      </div>
-    </aside>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
 
-    <main class="content">
-      <header class="topbar">
-        <div>
-          <h1>{% block page_title %}Dashboard{% endblock %}</h1>
-          <p>Last update: {{ last_update }}</p>
-        </div>
-        <button
-          type="button"
-          class="btn ghost refresh-btn"
-          onclick="{% if active_page == 'live_manual' %}window.location.href='/live-manual/refresh'{% else %}window.location.reload(){% endif %}"
-        >Refresh</button>
-      </header>
-
-      {% block content %}{% endblock %}
-    </main>
-  </div>
-  {% if active_page in ['overview', 'symbols', 'trades', 'logs', 'statistics', 'advisor', 'ai_trading', 'strategy', 'live_manual'] %}
-  <script>
-    setTimeout(function () {
-      {% if active_page == 'live_manual' %}
-      window.location.href = '/live-manual/refresh';
-      {% else %}
-      window.location.reload();
-      {% endif %}
-    }, 20000);
-  </script>
-  {% endif %}
+  <footer class="wrap footer">
+    <small>Last update: {{ now }}</small>
+  </footer>
 </body>
 </html>
