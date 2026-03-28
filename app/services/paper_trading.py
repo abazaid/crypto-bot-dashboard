@@ -317,6 +317,13 @@ def _dca_scale_allocations_pct(max_levels: int = 5) -> list[float]:
         settings.dca_scale_5,
     ][:max_levels]
     safe_scale = [max(0.0, float(s)) for s in raw_scale]
+    # If later scales are missing/zero, auto-expand progressively
+    # so DCA-4/5 are not dead by default.
+    if safe_scale and safe_scale[0] <= 0:
+        safe_scale[0] = 1.0
+    for i in range(1, len(safe_scale)):
+        if safe_scale[i] <= 0 and safe_scale[i - 1] > 0:
+            safe_scale[i] = round(safe_scale[i - 1] * 1.2, 4)
     budget = max(0.0, settings.dca_max_symbol_allocation_x - 1.0)
     total_requested = sum(safe_scale)
     if budget <= 0.0 or total_requested <= 0.0:
@@ -327,6 +334,30 @@ def _dca_scale_allocations_pct(max_levels: int = 5) -> list[float]:
         ratio = budget / total_requested
         final_scale = [s * ratio for s in safe_scale]
     return [round(x * 100.0, 2) for x in final_scale]
+
+
+def _sl_drop_cap(sl_pct: float | None) -> float | None:
+    if sl_pct is None:
+        return None
+    try:
+        sl = float(sl_pct)
+    except Exception:
+        return None
+    if sl <= 0:
+        return None
+    return max(0.8, sl)
+
+
+def _cap_drop_levels_to_sl(levels: list[float], sl_pct: float | None) -> list[float]:
+    cap = _sl_drop_cap(sl_pct)
+    if cap is None:
+        return [round(max(0.8, float(x)), 2) for x in levels]
+    out = [round(max(0.8, min(float(x), cap)), 2) for x in levels]
+    out.sort()
+    for i in range(1, len(out)):
+        if out[i] <= out[i - 1]:
+            out[i] = round(min(cap, out[i - 1] + 0.05), 2)
+    return out
 
 
 def suggest_top_symbols(limit: int = 5) -> dict:
@@ -438,11 +469,11 @@ def _symbol_ai_support_drops(symbol: str) -> list[float]:
     return uniq[:8]
 
 
-def build_ai_dca_rules(symbols: list[str]) -> tuple[list[tuple[str, float, float]], str, str]:
+def build_ai_dca_rules(symbols: list[str], sl_pct: float | None = None) -> tuple[list[tuple[str, float, float]], str, str]:
     picked = [s.strip().upper() for s in symbols if s and s.strip()]
     sample = picked[:12]
     allocations = _dca_scale_allocations_pct(max_levels=5)
-    fallback_drops = [2.0, 4.5, 8.0, 12.0, 16.0]
+    fallback_drops = _cap_drop_levels_to_sl([2.0, 4.5, 8.0, 12.0, 16.0], sl_pct)
     if not sample:
         rules = [(f"AI-DCA-{i+1}", fallback_drops[i], allocations[i]) for i in range(5)]
         return rules, "neutral", "Fallback AI DCA."
@@ -474,7 +505,7 @@ def build_ai_dca_rules(symbols: list[str]) -> tuple[list[tuple[str, float, float
     for i, q in enumerate(qs):
         d = all_flat[max(0, int(n * q) - 1)]
         levels.append(max(floors[i], d))
-    levels = sorted(levels)
+    levels = _cap_drop_levels_to_sl(sorted(levels), sl_pct)
     rules = [(f"AI-DCA-{i+1}", round(levels[i], 2), allocations[i]) for i in range(5)]
     note = (
         f"AI DCA from supports (Pivot+EMA) over {len(symbol_drops)} symbols. "
@@ -484,10 +515,10 @@ def build_ai_dca_rules(symbols: list[str]) -> tuple[list[tuple[str, float, float
 
 
 def build_symbol_ai_dca_rules(
-    symbol: str, profile: str, fallback_rules: list[tuple[str, float, float]]
+    symbol: str, profile: str, fallback_rules: list[tuple[str, float, float]], sl_pct: float | None = None
 ) -> list[tuple[str, float, float, float | None]]:
     ctx = _support_engine(symbol)
-    fallback_drops = [2.0, 4.5, 8.0, 12.0, 16.0]
+    fallback_drops = _cap_drop_levels_to_sl([2.0, 4.5, 8.0, 12.0, 16.0], sl_pct)
     fallback_allocs = _dca_scale_allocations_pct(max_levels=5)
     base_fallback = [
         (
@@ -509,16 +540,23 @@ def build_symbol_ai_dca_rules(
         return [(n, d, a, None) for n, d, a in base_fallback]
 
     out = []
+    raw_symbol_drops: list[float] = []
+    raw_symbol_scores: list[float | None] = []
+    for idx in range(5):
+        if idx < len(supports):
+            support = supports[idx]
+            raw_symbol_drops.append(max(0.8, ((price - float(support["price"])) / price) * 100.0))
+            raw_symbol_scores.append(float(support["score"]))
+        else:
+            _, drop_pct, _ = base_fallback[idx]
+            raw_symbol_drops.append(float(drop_pct))
+            raw_symbol_scores.append(None)
+    symbol_drops = _cap_drop_levels_to_sl(raw_symbol_drops, sl_pct)
+
     for idx in range(5):
         name_rule = base_fallback[idx][0]
         alloc_pct = fallback_allocs[idx]
-        if idx < len(supports):
-            support = supports[idx]
-            drop_pct = max(0.8, ((price - float(support["price"])) / price) * 100.0)
-            out.append((name_rule, round(drop_pct, 2), round(alloc_pct, 2), float(support["score"])))
-        else:
-            _, drop_pct, _ = base_fallback[idx]
-            out.append((name_rule, float(drop_pct), round(alloc_pct, 2), None))
+        out.append((name_rule, float(symbol_drops[idx]), round(alloc_pct, 2), raw_symbol_scores[idx]))
     return out
 
 
@@ -648,7 +686,7 @@ def _open_position_with_rules(
     db.add(pos)
     db.flush()
     if campaign.ai_dca_enabled:
-        symbol_rules = build_symbol_ai_dca_rules(symbol, ai_profile, fallback_ai_rules)
+        symbol_rules = build_symbol_ai_dca_rules(symbol, ai_profile, fallback_ai_rules, campaign.sl_pct)
         for name_rule, drop_pct, alloc_pct, support_score in symbol_rules:
             rule_ref = rules_by_name.get(name_rule) or (rules[0] if rules else None)
             if not rule_ref:
@@ -756,7 +794,27 @@ def run_cycle(db: Session) -> None:
         if price <= 0:
             continue
         campaign = pos.campaign
-        if pos.dca_paused:
+        tp_hit = campaign.tp_pct is not None and price >= (pos.average_price * (1 + (campaign.tp_pct / 100.0)))
+        sl_hit = campaign.sl_pct is not None and price <= (pos.average_price * (1 - (campaign.sl_pct / 100.0)))
+        if tp_hit or sl_hit:
+            proceeds = pos.total_qty * price
+            pnl = proceeds - pos.total_invested_usdt
+            pos.status = "closed"
+            pos.closed_at = now
+            pos.close_price = price
+            pos.realized_pnl_usdt = pnl
+            pos.close_reason = "TP" if tp_hit else "SL"
+            cash += proceeds
+            changed = True
+            add_log(
+                db,
+                "CLOSE",
+                pos.symbol,
+                (
+                    f"Campaign={campaign.name} | Reason={pos.close_reason} | Close={price:.6f} "
+                    f"| Invested={pos.total_invested_usdt:.2f} | Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
+                ),
+            )
             continue
 
         states = (
@@ -766,7 +824,7 @@ def run_cycle(db: Session) -> None:
             .order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc())
             .all()
         )
-        if campaign.status == "active":
+        if campaign.status == "active" and not pos.dca_paused:
             for state in states:
                 if state.executed:
                     continue
@@ -848,30 +906,6 @@ def run_cycle(db: Session) -> None:
                         f"| Avg={pos.average_price:.6f}"
                     ),
                 )
-
-        tp_hit = campaign.tp_pct is not None and price >= (pos.average_price * (1 + (campaign.tp_pct / 100.0)))
-        sl_hit = campaign.sl_pct is not None and price <= (pos.average_price * (1 - (campaign.sl_pct / 100.0)))
-        if not tp_hit and not sl_hit:
-            continue
-
-        proceeds = pos.total_qty * price
-        pnl = proceeds - pos.total_invested_usdt
-        pos.status = "closed"
-        pos.closed_at = now
-        pos.close_price = price
-        pos.realized_pnl_usdt = pnl
-        pos.close_reason = "TP" if tp_hit else "SL"
-        cash += proceeds
-        changed = True
-        add_log(
-            db,
-            "CLOSE",
-            pos.symbol,
-            (
-                f"Campaign={campaign.name} | Reason={pos.close_reason} | Close={price:.6f} "
-                f"| Invested={pos.total_invested_usdt:.2f} | Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
-            ),
-        )
 
     # Loop mode: keep target open count with best-score symbols at all times.
     for campaign in campaigns:
@@ -1014,7 +1048,7 @@ def recalculate_campaign_dca(db: Session, campaign: Campaign) -> tuple[int, int]
             continue
 
         if campaign.ai_dca_enabled:
-            symbol_rules = build_symbol_ai_dca_rules(pos.symbol, ai_profile, fallback_ai_rules)
+            symbol_rules = build_symbol_ai_dca_rules(pos.symbol, ai_profile, fallback_ai_rules, campaign.sl_pct)
         else:
             symbol_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct), None) for r in rules]
 

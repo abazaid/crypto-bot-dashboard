@@ -74,6 +74,11 @@
         <span>Reopen symbol automatically after close while campaign active.</span>
       </span>
     </label>
+    {% if campaign.loop_enabled %}
+    <label>Loop Target Symbols (N)
+      <input name="loop_target_count" type="number" min="1" max="30" step="1" value="{{ campaign.loop_target_count }}">
+    </label>
+    {% endif %}
 
     <label>DCA-1 Drop %
       <input name="dca_drop_1" type="number" step="0.01" min="0" value="{{ edit_slots[0].drop_pct if edit_slots[0] else '' }}">
@@ -115,6 +120,7 @@
   <h2>DCA Rules</h2>
   {% if campaign.ai_dca_enabled and ai_suggested_rows %}
   <h3>AI Suggested DCA (Original)</h3>
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -135,9 +141,11 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   <h3>Current DCA (Editable)</h3>
   {% endif %}
   {% if rules %}
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -158,6 +166,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p>No DCA rules.</p>
   {% endif %}
@@ -166,6 +175,7 @@
 <section class="card">
   <h2>Positions</h2>
   {% if positions %}
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -221,8 +231,10 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   <div id="dca-position-panel" class="card dca-panel" style="display:none;">
     <h3 id="dca-panel-title">Symbol DCA</h3>
+    <div class="table-scroll">
     <table>
       <thead>
         <tr>
@@ -238,6 +250,7 @@
       </thead>
       <tbody id="dca-panel-body"></tbody>
     </table>
+    </div>
   </div>
   {% else %}
   <p>No positions in this campaign.</p>

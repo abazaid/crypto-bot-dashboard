@@ -15,7 +15,7 @@
 
     <section class="card">
       <h2>New Campaign</h2>
-      <form method="post" action="/paper/campaigns" class="form-grid">
+      <form id="create-campaign-form" method="post" action="/paper/campaigns" class="form-grid">
         <label>Campaign Name
           <input name="name" required placeholder="Example: Dip Hunter 1">
         </label>
@@ -34,11 +34,14 @@
             <span>Enable Auto DCA from support levels</span>
           </span>
         </label>
-        <label>Loop Campaign (Top 5 AI)
+        <label>Loop Campaign (Top N AI)
           <span class="inline-check">
             <input id="loop_enabled" name="loop_enabled" type="checkbox">
-            <span>Always keep 5 open symbols from top score. AI-only and auto-rotation after close.</span>
+            <span>Always keep N open symbols from top score. AI-only and auto-rotation after close.</span>
           </span>
+        </label>
+        <label>Symbols Count (Suggest + Loop)
+          <input id="suggest-limit" name="loop_target_count" type="number" min="1" max="30" step="1" value="5">
         </label>
         <label>Trend Filter (BTC)
           <span class="inline-check">
@@ -89,7 +92,7 @@
           <div class="symbol-search">
             <input id="symbol-query" type="text" placeholder="Search e.g. BTC, ETH, SOL...">
             <button type="button" id="symbol-search-btn">Search</button>
-            <button type="button" id="suggest-top5-btn">Suggest Top 5</button>
+            <button type="button" id="suggest-top-btn">Suggest Top N</button>
           </div>
           <p id="suggest-meta" class="muted-line"></p>
           <div id="suggestions-board" class="chips"></div>
@@ -99,7 +102,10 @@
         </div>
 
         <div class="full">
-          <button type="submit">Start Campaign (Buy Now)</button>
+          <button id="start-campaign-btn" type="submit">Start Campaign (Buy Now)</button>
+          <p id="create-waiting-msg" class="muted-line" style="display:none; margin-top:8px;">
+            Please wait... creating campaign.
+          </p>
         </div>
       </form>
     </section>
@@ -124,13 +130,18 @@
   const resultBox = document.getElementById("symbol-results");
   const symbolsInput = document.getElementById("symbols");
   const searchButton = document.getElementById("symbol-search-btn");
-  const suggestButton = document.getElementById("suggest-top5-btn");
+  const suggestButton = document.getElementById("suggest-top-btn");
+  const suggestLimitInput = document.getElementById("suggest-limit");
   const suggestMeta = document.getElementById("suggest-meta");
   const suggestionsBoard = document.getElementById("suggestions-board");
   const aiDcaToggle = document.getElementById("ai_dca_enabled");
   const loopToggle = document.getElementById("loop_enabled");
   const autoReentryToggle = document.getElementById("auto_reentry_enabled");
   const manualDcaFields = document.querySelectorAll(".manual-dca");
+  const createForm = document.getElementById("create-campaign-form");
+  const startCampaignBtn = document.getElementById("start-campaign-btn");
+  const waitingMsg = document.getElementById("create-waiting-msg");
+  let submitLocked = false;
 
   function appendSymbol(symbol) {
     const current = symbolsInput.value.split(",").map(v => v.trim()).filter(Boolean);
@@ -159,10 +170,17 @@
     symbolsInput.value = symbols.join(",");
   }
 
-  async function suggestTop5() {
+  function selectedLimit() {
+    const raw = parseInt(suggestLimitInput.value || "5", 10);
+    if (Number.isNaN(raw)) return 5;
+    return Math.min(30, Math.max(1, raw));
+  }
+
+  async function suggestTopN() {
+    const limit = selectedLimit();
     suggestMeta.textContent = "Scanning market...";
     suggestionsBoard.innerHTML = "";
-    const res = await fetch(`/api/paper/suggestions?limit=5`);
+    const res = await fetch(`/api/paper/suggestions?limit=${limit}`);
     const data = await res.json();
     const items = data.items || [];
     if (!items.length) {
@@ -208,16 +226,30 @@
       symbolsInput.value = "";
       resultBox.innerHTML = "";
       suggestionsBoard.innerHTML = "";
-      suggestMeta.textContent = "Loop mode picks top 5 automatically at runtime.";
+      suggestMeta.textContent = `Loop mode picks top ${selectedLimit()} automatically at runtime.`;
     } else if (!suggestMeta.textContent.includes("BTC trend state")) {
       suggestMeta.textContent = "";
     }
   }
 
   searchButton.addEventListener("click", searchSymbols);
-  suggestButton.addEventListener("click", suggestTop5);
+  suggestButton.addEventListener("click", suggestTopN);
+  suggestLimitInput.addEventListener("change", syncDcaMode);
   aiDcaToggle.addEventListener("change", syncDcaMode);
   loopToggle.addEventListener("change", syncDcaMode);
+  createForm.addEventListener("submit", () => {
+    if (submitLocked) return false;
+    submitLocked = true;
+    const isLoop = loopToggle.checked;
+    const n = selectedLimit();
+    startCampaignBtn.disabled = true;
+    startCampaignBtn.textContent = isLoop ? `Searching Top ${n}...` : "Creating...";
+    waitingMsg.style.display = "block";
+    waitingMsg.textContent = isLoop
+      ? `Loop campaign is running symbol scan for Top ${n}. Please wait...`
+      : "Creating campaign and opening positions. Please wait...";
+    return true;
+  });
   queryInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();

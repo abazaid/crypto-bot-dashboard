@@ -304,6 +304,17 @@ table {
   border-spacing: 0;
 }
 
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll table {
+  min-width: 1100px;
+}
+
 th, td {
   border-bottom: 1px solid #e8eef6;
   text-align: left;

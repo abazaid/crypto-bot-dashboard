@@ -50,10 +50,17 @@ def _campaign_stats(db, campaign: Campaign) -> dict:
     prices = get_prices(symbols) if symbols else {}
     unrealized = sum((float(prices.get(p.symbol, p.average_price)) * p.total_qty) - p.total_invested_usdt for p in open_positions)
     realized = sum(float(p.realized_pnl_usdt or 0.0) for p in closed_positions)
+    dca_done_count = (
+        db.query(PositionDcaState)
+        .join(Position, Position.id == PositionDcaState.position_id)
+        .filter(Position.campaign_id == campaign.id, PositionDcaState.executed == True)
+        .count()
+    )
 
     return {
         "open_count": len(open_positions),
         "closed_count": len(closed_positions),
+        "dca_done_count": dca_done_count,
         "realized_pnl": realized,
         "unrealized_pnl": unrealized,
     }
@@ -362,6 +369,7 @@ async def create_paper_campaign(
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
     loop_enabled: str | None = Form(None),
+    loop_target_count: str = Form("5"),
 ) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -371,15 +379,17 @@ async def create_paper_campaign(
 
         picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
         loop_mode = str(loop_enabled or "").lower() in {"on", "true", "1", "yes"}
+        loop_target = int(_safe_float(loop_target_count, 5.0) or 5.0)
+        loop_target = min(max(loop_target, 1), 30)
         ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
         trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
         reentry_mode = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
         if loop_mode:
             ai_mode = True
             reentry_mode = False
-            scan = suggest_top_symbols(15)
+            scan = suggest_top_symbols(max(loop_target, 10))
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
-            picked = picked[:5]
+            picked = picked[:loop_target]
         if not picked:
             return RedirectResponse("/paper/create", status_code=303)
         campaign = Campaign(
@@ -393,13 +403,13 @@ async def create_paper_campaign(
             trend_filter_enabled=trend_mode,
             auto_reentry_enabled=reentry_mode,
             loop_enabled=loop_mode,
-            loop_target_count=5 if loop_mode else 0,
+            loop_target_count=loop_target if loop_mode else 0,
         )
         db.add(campaign)
         db.flush()
 
         if ai_mode:
-            ai_rules, ai_profile, ai_note = build_ai_dca_rules(picked)
+            ai_rules, ai_profile, ai_note = build_ai_dca_rules(picked, campaign.sl_pct)
             campaign.ai_dca_profile = ai_profile
             campaign.ai_dca_notes = ai_note
             campaign.ai_dca_suggested_rules_json = json.dumps(
@@ -595,6 +605,7 @@ async def edit_paper_campaign(
     sl_pct: str = Form(""),
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
+    loop_target_count: str = Form(""),
     dca_drop_1: str = Form(""),
     dca_alloc_1: str = Form(""),
     dca_drop_2: str = Form(""),
@@ -616,6 +627,9 @@ async def edit_paper_campaign(
         campaign.sl_pct = _safe_float(sl_pct, None)
         campaign.trend_filter_enabled = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
         campaign.auto_reentry_enabled = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
+        if campaign.loop_enabled:
+            desired = int(_safe_float(loop_target_count, float(campaign.loop_target_count or 5)) or 5)
+            campaign.loop_target_count = min(max(desired, 1), 30)
 
         incoming = [
             ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
