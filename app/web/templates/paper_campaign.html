@@ -31,6 +31,7 @@
   <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
   <p>DCA Mode: <strong>{{ "AI DCA" if campaign.ai_dca_enabled else "Manual DCA" }}</strong></p>
   <p>Trend Filter: <strong>{{ "Enabled" if campaign.trend_filter_enabled else "Disabled" }}</strong></p>
+  <p>Auto Re-entry: <strong>{{ "Enabled" if campaign.auto_reentry_enabled else "Disabled" }}</strong></p>
   <p><strong>Pause behavior:</strong> stops new buys only. TP/SL exits and manual sell remain active.</p>
   {% if campaign.ai_dca_enabled and campaign.ai_dca_notes %}
   <p>AI Notes: <strong>{{ campaign.ai_dca_notes }}</strong></p>
@@ -49,6 +50,18 @@
     </label>
     <label>Stop Loss %
       <input name="sl_pct" type="number" step="0.01" min="0" value="{{ campaign.sl_pct if campaign.sl_pct is not none else '' }}">
+    </label>
+    <label>Trend Filter (BTC)
+      <span class="inline-check">
+        <input name="trend_filter_enabled" type="checkbox" {% if campaign.trend_filter_enabled %}checked{% endif %}>
+        <span>Reduce/block DCA buys in bearish BTC trend.</span>
+      </span>
+    </label>
+    <label>Auto Re-entry
+      <span class="inline-check">
+        <input name="auto_reentry_enabled" type="checkbox" {% if campaign.auto_reentry_enabled %}checked{% endif %}>
+        <span>Reopen symbol automatically after close while campaign active.</span>
+      </span>
     </label>
 
     <label>DCA-1 Drop %
@@ -184,6 +197,7 @@
           <th>Rule</th>
           <th>Drop %</th>
           <th>Allocation %</th>
+          <th>Support Score</th>
           <th>Trigger Price</th>
           <th>Mode</th>
           <th>Status</th>
@@ -206,12 +220,12 @@
   async function loadPositionDca(positionId, symbol) {
     dcaPanel.style.display = "block";
     dcaPanelTitle.textContent = `DCA for ${symbol}`;
-    dcaPanelBody.innerHTML = `<tr><td colspan="7">Loading...</td></tr>`;
+    dcaPanelBody.innerHTML = `<tr><td colspan="8">Loading...</td></tr>`;
     const res = await fetch(`/api/paper/positions/${positionId}/dca`);
     const data = await res.json();
     const items = data.items || [];
     if (!items.length) {
-      dcaPanelBody.innerHTML = `<tr><td colspan="7">No DCA rows for this position.</td></tr>`;
+      dcaPanelBody.innerHTML = `<tr><td colspan="8">No DCA rows for this position.</td></tr>`;
       return;
     }
     dcaPanelBody.innerHTML = "";
@@ -221,6 +235,7 @@
         <td>${row.rule}</td>
         <td>${Number(row.drop_pct).toFixed(2)}</td>
         <td>${Number(row.allocation_pct).toFixed(2)}</td>
+        <td>${row.support_score ? Number(row.support_score).toFixed(1) : '-'}</td>
         <td>${Number(row.trigger_price).toFixed(6)}</td>
         <td>${row.source === 'symbol_specific' ? 'Per Symbol' : 'Campaign'}</td>
         <td>${row.executed ? 'Executed' : 'Pending'}</td>

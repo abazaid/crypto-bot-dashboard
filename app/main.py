@@ -90,6 +90,7 @@ def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
                 "executed": bool(st.executed),
                 "custom_drop_pct": st.custom_drop_pct,
                 "custom_allocation_pct": st.custom_allocation_pct,
+                "custom_support_score": st.custom_support_score,
                 "executed_at": st.executed_at,
                 "executed_price": st.executed_price,
                 "executed_qty": st.executed_qty,
@@ -107,6 +108,7 @@ def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
                     executed=bool(keep and keep["executed"]),
                     custom_drop_pct=keep["custom_drop_pct"] if keep else None,
                     custom_allocation_pct=keep["custom_allocation_pct"] if keep else None,
+                    custom_support_score=keep["custom_support_score"] if keep else None,
                     executed_at=keep["executed_at"] if keep and keep["executed"] else None,
                     executed_price=keep["executed_price"] if keep and keep["executed"] else None,
                     executed_qty=keep["executed_qty"] if keep and keep["executed"] else None,
@@ -122,8 +124,12 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE campaigns ADD COLUMN ai_dca_notes TEXT",
         "ALTER TABLE campaigns ADD COLUMN ai_dca_suggested_rules_json TEXT",
         "ALTER TABLE campaigns ADD COLUMN trend_filter_enabled BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE campaigns ADD COLUMN auto_reentry_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE position_dca_states ADD COLUMN custom_drop_pct FLOAT",
         "ALTER TABLE position_dca_states ADD COLUMN custom_allocation_pct FLOAT",
+        "ALTER TABLE position_dca_states ADD COLUMN custom_support_score FLOAT",
+        "ALTER TABLE positions ADD COLUMN dca_paused BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE positions ADD COLUMN dca_pause_reason VARCHAR(160)",
     ]
     with engine.begin() as conn:
         for stmt in stmts:
@@ -210,6 +216,7 @@ async def paper_trading_history(request: Request) -> HTMLResponse:
             .all()
         )
         rows = []
+        symbol_totals: dict[str, float] = {}
         wins = 0
         net_pnl = 0.0
         for p in closed_positions:
@@ -219,11 +226,13 @@ async def paper_trading_history(request: Request) -> HTMLResponse:
             if pnl > 0:
                 wins += 1
             net_pnl += pnl
+            symbol_key = str(p.symbol or "").upper()
+            symbol_totals[symbol_key] = float(symbol_totals.get(symbol_key, 0.0)) + pnl
             rows.append(
                 {
                     "id": p.id,
                     "campaign_name": p.campaign.name,
-                    "symbol": p.symbol,
+                    "symbol": symbol_key,
                     "opened_at": p.opened_at,
                     "closed_at": p.closed_at,
                     "invested": invested,
@@ -233,6 +242,8 @@ async def paper_trading_history(request: Request) -> HTMLResponse:
                     "close_reason": p.close_reason or "-",
                 }
             )
+        for row in rows:
+            row["symbol_total_pnl"] = float(symbol_totals.get(row["symbol"], 0.0))
         total = len(rows)
         win_rate = (wins / total * 100.0) if total else 0.0
         summary = {
@@ -334,6 +345,7 @@ async def create_paper_campaign(
     dca_alloc_3: str = Form(""),
     ai_dca_enabled: str | None = Form(None),
     trend_filter_enabled: str | None = Form(None),
+    auto_reentry_enabled: str | None = Form(None),
 ) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -344,6 +356,7 @@ async def create_paper_campaign(
         picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
         ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
         trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
+        reentry_mode = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
         campaign = Campaign(
             name=name.strip() or "Paper Campaign",
             mode="paper",
@@ -353,6 +366,7 @@ async def create_paper_campaign(
             sl_pct=_safe_float(sl_pct, None),
             ai_dca_enabled=ai_mode,
             trend_filter_enabled=trend_mode,
+            auto_reentry_enabled=reentry_mode,
         )
         db.add(campaign)
         db.flush()
@@ -525,6 +539,8 @@ async def edit_paper_campaign(
     campaign_id: int,
     tp_pct: str = Form(""),
     sl_pct: str = Form(""),
+    trend_filter_enabled: str | None = Form(None),
+    auto_reentry_enabled: str | None = Form(None),
     dca_drop_1: str = Form(""),
     dca_alloc_1: str = Form(""),
     dca_drop_2: str = Form(""),
@@ -540,6 +556,8 @@ async def edit_paper_campaign(
 
         campaign.tp_pct = _safe_float(tp_pct, None)
         campaign.sl_pct = _safe_float(sl_pct, None)
+        campaign.trend_filter_enabled = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
+        campaign.auto_reentry_enabled = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
 
         incoming = [
             ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
@@ -625,6 +643,7 @@ async def api_position_dca(position_id: int) -> JSONResponse:
                     "rule": st.rule.name,
                     "drop_pct": drop_pct,
                     "allocation_pct": alloc_pct,
+                    "support_score": st.custom_support_score,
                     "trigger_price": trigger_price,
                     "source": "symbol_specific" if st.custom_drop_pct is not None else "campaign_default",
                     "executed": st.executed,

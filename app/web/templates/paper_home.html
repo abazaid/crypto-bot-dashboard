@@ -39,6 +39,7 @@
             <th>Status</th>
             <th>DCA Mode</th>
             <th>Trend Filter</th>
+            <th>Auto Re-entry</th>
             <th>Open</th>
             <th>Closed</th>
             <th>Realized</th>
@@ -53,6 +54,7 @@
             <td>{{ item.campaign.status }}</td>
             <td>{{ "AI" if item.campaign.ai_dca_enabled else "Manual" }}</td>
             <td>{{ "On" if item.campaign.trend_filter_enabled else "Off" }}</td>
+            <td>{{ "On" if item.campaign.auto_reentry_enabled else "Off" }}</td>
             <td>{{ item.stats.open_count }}</td>
             <td>{{ item.stats.closed_count }}</td>
             <td class="{{ 'pnl-pos' if item.stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.realized_pnl) }}</td>

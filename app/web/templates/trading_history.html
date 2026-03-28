@@ -47,7 +47,12 @@
       <tr>
         <td>#{{ row.id }}</td>
         <td>{{ row.campaign_name }}</td>
-        <td>{{ row.symbol }}</td>
+        <td>
+          {{ row.symbol }}
+          <span class="{{ 'pnl-pos' if row.symbol_total_pnl >= 0 else 'pnl-neg' }}" style="margin-left:6px;">
+            {{ "%+.2f"|format(row.symbol_total_pnl) }}
+          </span>
+        </td>
         <td>{{ row.opened_at.strftime("%Y-%m-%d %H:%M") if row.opened_at else "-" }}</td>
         <td>{{ row.closed_at.strftime("%Y-%m-%d %H:%M") if row.closed_at else "-" }}</td>
         <td>{{ "%.2f"|format(row.invested) }}</td>

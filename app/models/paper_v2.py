@@ -21,6 +21,7 @@ class Campaign(Base):
     ai_dca_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_dca_suggested_rules_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     trend_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_reentry_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     dca_rules: Mapped[list["DcaRule"]] = relationship("DcaRule", back_populates="campaign", cascade="all, delete-orphan")
@@ -62,6 +63,8 @@ class Position(Base):
     close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
     realized_pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dca_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    dca_pause_reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
     campaign: Mapped["Campaign"] = relationship("Campaign", back_populates="positions")
     dca_states: Mapped[list["PositionDcaState"]] = relationship(
@@ -78,6 +81,7 @@ class PositionDcaState(Base):
     executed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     custom_drop_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     custom_allocation_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    custom_support_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     executed_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     executed_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
