@@ -12,7 +12,7 @@ from sqlalchemy import desc
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
-from app.models.paper_v2 import ActivityLog, Campaign, DcaRule, Position, PositionDcaState
+from app.models.paper_v2 import ActivityLog, AppSetting, Campaign, DcaRule, Position, PositionDcaState
 from app.services.binance_public import get_prices, search_symbols
 from app.services.paper_trading import (
     build_ai_dca_rules,
@@ -88,6 +88,8 @@ def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
             rule_name = st.rule.name
             executed_by_rule_name[rule_name] = {
                 "executed": bool(st.executed),
+                "custom_drop_pct": st.custom_drop_pct,
+                "custom_allocation_pct": st.custom_allocation_pct,
                 "executed_at": st.executed_at,
                 "executed_price": st.executed_price,
                 "executed_qty": st.executed_qty,
@@ -103,6 +105,8 @@ def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
                     position_id=pos.id,
                     dca_rule_id=rule.id,
                     executed=bool(keep and keep["executed"]),
+                    custom_drop_pct=keep["custom_drop_pct"] if keep else None,
+                    custom_allocation_pct=keep["custom_allocation_pct"] if keep else None,
                     executed_at=keep["executed_at"] if keep and keep["executed"] else None,
                     executed_price=keep["executed_price"] if keep and keep["executed"] else None,
                     executed_qty=keep["executed_qty"] if keep and keep["executed"] else None,
@@ -118,6 +122,8 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE campaigns ADD COLUMN ai_dca_notes TEXT",
         "ALTER TABLE campaigns ADD COLUMN ai_dca_suggested_rules_json TEXT",
         "ALTER TABLE campaigns ADD COLUMN trend_filter_enabled BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE position_dca_states ADD COLUMN custom_drop_pct FLOAT",
+        "ALTER TABLE position_dca_states ADD COLUMN custom_allocation_pct FLOAT",
     ]
     with engine.begin() as conn:
         for stmt in stmts:
@@ -416,6 +422,35 @@ async def create_paper_campaign(
         db.close()
 
 
+@app.post("/paper/reset")
+async def reset_paper_data(confirm_text: str = Form("")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        if str(confirm_text).strip().upper() != "RESET":
+            db.add(
+                ActivityLog(
+                    event_type="RESET_BLOCKED",
+                    symbol="-",
+                    message="Paper reset blocked: invalid confirmation text.",
+                )
+            )
+            db.commit()
+            return RedirectResponse("/paper/create", status_code=303)
+
+        db.query(PositionDcaState).delete()
+        db.query(Position).delete()
+        db.query(DcaRule).delete()
+        db.query(Campaign).delete()
+        db.query(ActivityLog).delete()
+        db.query(AppSetting).delete()
+        db.commit()
+
+        ensure_defaults(db, settings.paper_start_balance)
+        return RedirectResponse("/paper/create", status_code=303)
+    finally:
+        db.close()
+
+
 @app.post("/paper/campaigns/{campaign_id}/toggle")
 async def toggle_paper_campaign(campaign_id: int) -> RedirectResponse:
     db = SessionLocal()
@@ -431,6 +466,55 @@ async def toggle_paper_campaign(campaign_id: int) -> RedirectResponse:
                 )
             )
             db.commit()
+        return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/paper/positions/{position_id}/sell")
+async def manual_sell_position(position_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pos = (
+            db.query(Position)
+            .join(Campaign, Campaign.id == Position.campaign_id)
+            .filter(Position.id == position_id, Position.status == "open", Campaign.mode == "paper")
+            .first()
+        )
+        if not pos:
+            return RedirectResponse("/paper", status_code=303)
+
+        campaign_id = pos.campaign_id
+        prices = get_prices([pos.symbol])
+        price = float(prices.get(pos.symbol, pos.average_price))
+        proceeds = float(pos.total_qty) * price
+        pnl = proceeds - float(pos.total_invested_usdt)
+
+        pos.status = "closed"
+        pos.closed_at = datetime.utcnow()
+        pos.close_price = price
+        pos.realized_pnl_usdt = pnl
+        pos.close_reason = "MANUAL_SELL"
+
+        cash_row = db.query(AppSetting).filter(AppSetting.key == "paper_cash").first()
+        cash = float(cash_row.value) if cash_row and cash_row.value else 0.0
+        cash += proceeds
+        if cash_row:
+            cash_row.value = f"{cash:.8f}"
+        else:
+            db.add(AppSetting(key="paper_cash", value=f"{cash:.8f}"))
+
+        db.add(
+            ActivityLog(
+                event_type="MANUAL_SELL",
+                symbol=pos.symbol,
+                message=(
+                    f"Campaign={pos.campaign.name} | Close={price:.6f} | Qty={pos.total_qty:.8f} "
+                    f"| Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
+                ),
+            )
+        )
+        db.commit()
         return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
     finally:
         db.close()
@@ -521,6 +605,9 @@ async def api_paper_suggestions(limit: int = 5) -> JSONResponse:
 async def api_position_dca(position_id: int) -> JSONResponse:
     db = SessionLocal()
     try:
+        position = db.query(Position).filter(Position.id == position_id).first()
+        if not position:
+            return JSONResponse({"items": []})
         states = (
             db.query(PositionDcaState)
             .join(DcaRule, DcaRule.id == PositionDcaState.dca_rule_id)
@@ -530,11 +617,16 @@ async def api_position_dca(position_id: int) -> JSONResponse:
         )
         items = []
         for st in states:
+            drop_pct = float(st.custom_drop_pct if st.custom_drop_pct is not None else st.rule.drop_pct)
+            alloc_pct = float(st.custom_allocation_pct if st.custom_allocation_pct is not None else st.rule.allocation_pct)
+            trigger_price = float(position.initial_price) * (1 - (drop_pct / 100.0))
             items.append(
                 {
                     "rule": st.rule.name,
-                    "drop_pct": st.rule.drop_pct,
-                    "allocation_pct": st.rule.allocation_pct,
+                    "drop_pct": drop_pct,
+                    "allocation_pct": alloc_pct,
+                    "trigger_price": trigger_price,
+                    "source": "symbol_specific" if st.custom_drop_pct is not None else "campaign_default",
                     "executed": st.executed,
                     "executed_price": st.executed_price,
                 }

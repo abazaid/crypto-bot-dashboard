@@ -79,6 +79,19 @@
         </div>
       </form>
     </section>
+
+    <section class="card danger-card">
+      <h2>Reset Paper</h2>
+      <p>This will delete all paper campaigns, positions, logs, and restore starting capital.</p>
+      <form method="post" action="/paper/reset" onsubmit="return confirm('Are you sure? This will delete all paper data.');" class="form-grid">
+        <label>Type RESET to confirm
+          <input name="confirm_text" placeholder="RESET" required>
+        </label>
+        <div class="full">
+          <button type="submit" class="sell-btn">Reset</button>
+        </div>
+      </form>
+    </section>
   </div>
 </section>
 

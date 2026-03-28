@@ -316,6 +316,29 @@ def build_ai_dca_rules(symbols: list[str]) -> tuple[list[tuple[str, float, float
     return rules, profile, note
 
 
+def build_symbol_ai_dca_rules(symbol: str, profile: str, fallback_rules: list[tuple[str, float, float]]) -> list[tuple[str, float, float]]:
+    if profile == "bearish":
+        allocations = [20.0, 30.0, 50.0]
+    elif profile == "bullish":
+        allocations = [30.0, 35.0, 35.0]
+    else:
+        allocations = [25.0, 35.0, 40.0]
+
+    drops = _symbol_ai_support_drops(symbol)
+    if len(drops) >= 3:
+        n = len(drops)
+        d1 = drops[max(0, int(n * 0.25) - 1)]
+        d2 = drops[max(0, int(n * 0.50) - 1)]
+        d3 = drops[max(0, int(n * 0.75) - 1)]
+        levels = sorted([max(0.8, d1), max(1.2, d2), max(1.8, d3)])
+        return [
+            ("AI-DCA-1", round(levels[0], 2), allocations[0]),
+            ("AI-DCA-2", round(levels[1], 2), allocations[1]),
+            ("AI-DCA-3", round(levels[2], 2), allocations[2]),
+        ]
+    return fallback_rules[:3]
+
+
 def _is_hammer(candle: list[float]) -> bool:
     o, h, l, c = candle
     body = abs(c - o)
@@ -411,6 +434,9 @@ def create_campaign_positions(db: Session, campaign: Campaign, symbols: list[str
         .order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc())
         .all()
     )
+    rules_by_name = {r.name: r for r in rules}
+    fallback_ai_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct)) for r in rules]
+    ai_profile = campaign.ai_dca_profile or "neutral"
 
     opened = 0
     for symbol in valid:
@@ -427,8 +453,24 @@ def create_campaign_positions(db: Session, campaign: Campaign, symbols: list[str
         )
         db.add(pos)
         db.flush()
-        for rule in rules:
-            db.add(PositionDcaState(position_id=pos.id, dca_rule_id=rule.id, executed=False))
+        if campaign.ai_dca_enabled:
+            symbol_rules = build_symbol_ai_dca_rules(symbol, ai_profile, fallback_ai_rules)
+            for name_rule, drop_pct, alloc_pct in symbol_rules:
+                rule_ref = rules_by_name.get(name_rule) or (rules[0] if rules else None)
+                if not rule_ref:
+                    continue
+                db.add(
+                    PositionDcaState(
+                        position_id=pos.id,
+                        dca_rule_id=rule_ref.id,
+                        executed=False,
+                        custom_drop_pct=drop_pct,
+                        custom_allocation_pct=alloc_pct,
+                    )
+                )
+        else:
+            for rule in rules:
+                db.add(PositionDcaState(position_id=pos.id, dca_rule_id=rule.id, executed=False))
         add_log(
             db,
             "OPEN",
@@ -447,14 +489,14 @@ def create_campaign_positions(db: Session, campaign: Campaign, symbols: list[str
 
 
 def run_cycle(db: Session) -> None:
-    campaigns = db.query(Campaign).filter(Campaign.mode == "paper", Campaign.status == "active").all()
+    campaigns = db.query(Campaign).filter(Campaign.mode == "paper").all()
     if not campaigns:
         return
 
     open_positions = (
         db.query(Position)
         .join(Campaign, Campaign.id == Position.campaign_id)
-        .filter(Position.status == "open", Campaign.status == "active", Campaign.mode == "paper")
+        .filter(Position.status == "open", Campaign.mode == "paper")
         .all()
     )
     if not open_positions:
@@ -484,68 +526,73 @@ def run_cycle(db: Session) -> None:
             .order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc())
             .all()
         )
-        for state in states:
-            if state.executed:
-                continue
-            rule = state.rule
-            trigger_price = pos.initial_price * (1 - (float(rule.drop_pct) / 100.0))
-            if price > trigger_price:
-                continue
-
-            usdt = campaign.entry_amount_usdt * (float(rule.allocation_pct) / 100.0)
-            if usdt <= 0 or cash < usdt:
-                continue
-
-            if campaign.trend_filter_enabled:
-                if btc_state == "strong_bearish":
-                    add_log(
-                        db,
-                        "TREND_FILTER_SKIP",
-                        pos.symbol,
-                        (
-                            f"Campaign={campaign.name} | Rule={rule.name} | "
-                            "BTC trend is strong bearish, DCA buy blocked."
-                        ),
-                    )
+        if campaign.status == "active":
+            for state in states:
+                if state.executed:
                     continue
-                if btc_state == "bearish":
-                    usdt = usdt * 0.5
-
-            if campaign.ai_dca_enabled:
-                if pos.symbol not in ai_filter_cache:
-                    ai_filter_cache[pos.symbol] = _ai_dca_confirm(pos.symbol)
-                allowed, debug_reason = ai_filter_cache[pos.symbol]
-                if not allowed:
-                    add_log(
-                        db,
-                        "AI_DCA_SKIP",
-                        pos.symbol,
-                        f"Campaign={campaign.name} | Rule={rule.name} | {debug_reason}",
-                    )
+                rule = state.rule
+                drop_pct = float(state.custom_drop_pct if state.custom_drop_pct is not None else rule.drop_pct)
+                alloc_pct = float(
+                    state.custom_allocation_pct if state.custom_allocation_pct is not None else rule.allocation_pct
+                )
+                trigger_price = pos.initial_price * (1 - (drop_pct / 100.0))
+                if price > trigger_price:
                     continue
 
-            qty = usdt / price
-            pos.total_invested_usdt += usdt
-            pos.total_qty += qty
-            pos.average_price = pos.total_invested_usdt / pos.total_qty
-            state.executed = True
-            state.executed_at = now
-            state.executed_price = price
-            state.executed_qty = qty
-            state.executed_usdt = usdt
-            cash -= usdt
-            changed = True
-            add_log(
-                db,
-                "AI_DCA" if campaign.ai_dca_enabled else "DCA",
-                pos.symbol,
-                (
-                    f"Campaign={campaign.name} | Rule={rule.name} | Drop={rule.drop_pct:.2f}% "
-                    f"| Buy at {price:.6f} | Qty={qty:.8f} | USDT={usdt:.2f} "
-                    f"| TrendFilter={'on' if campaign.trend_filter_enabled else 'off'} ({btc_state}) "
-                    f"| Avg={pos.average_price:.6f}"
-                ),
-            )
+                usdt = campaign.entry_amount_usdt * (alloc_pct / 100.0)
+                if usdt <= 0 or cash < usdt:
+                    continue
+
+                if campaign.trend_filter_enabled:
+                    if btc_state == "strong_bearish":
+                        add_log(
+                            db,
+                            "TREND_FILTER_SKIP",
+                            pos.symbol,
+                            (
+                                f"Campaign={campaign.name} | Rule={rule.name} | "
+                                "BTC trend is strong bearish, DCA buy blocked."
+                            ),
+                        )
+                        continue
+                    if btc_state == "bearish":
+                        usdt = usdt * 0.5
+
+                if campaign.ai_dca_enabled:
+                    if pos.symbol not in ai_filter_cache:
+                        ai_filter_cache[pos.symbol] = _ai_dca_confirm(pos.symbol)
+                    allowed, debug_reason = ai_filter_cache[pos.symbol]
+                    if not allowed:
+                        add_log(
+                            db,
+                            "AI_DCA_SKIP",
+                            pos.symbol,
+                            f"Campaign={campaign.name} | Rule={rule.name} | {debug_reason}",
+                        )
+                        continue
+
+                qty = usdt / price
+                pos.total_invested_usdt += usdt
+                pos.total_qty += qty
+                pos.average_price = pos.total_invested_usdt / pos.total_qty
+                state.executed = True
+                state.executed_at = now
+                state.executed_price = price
+                state.executed_qty = qty
+                state.executed_usdt = usdt
+                cash -= usdt
+                changed = True
+                add_log(
+                    db,
+                    "AI_DCA" if campaign.ai_dca_enabled else "DCA",
+                    pos.symbol,
+                    (
+                        f"Campaign={campaign.name} | Rule={rule.name} | Drop={drop_pct:.2f}% "
+                        f"| Buy at {price:.6f} | Qty={qty:.8f} | USDT={usdt:.2f} "
+                        f"| TrendFilter={'on' if campaign.trend_filter_enabled else 'off'} ({btc_state}) "
+                        f"| Avg={pos.average_price:.6f}"
+                    ),
+                )
 
         tp_hit = campaign.tp_pct is not None and price >= (pos.average_price * (1 + (campaign.tp_pct / 100.0)))
         sl_hit = campaign.sl_pct is not None and price <= (pos.average_price * (1 - (campaign.sl_pct / 100.0)))

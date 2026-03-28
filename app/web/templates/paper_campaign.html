@@ -31,6 +31,7 @@
   <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
   <p>DCA Mode: <strong>{{ "AI DCA" if campaign.ai_dca_enabled else "Manual DCA" }}</strong></p>
   <p>Trend Filter: <strong>{{ "Enabled" if campaign.trend_filter_enabled else "Disabled" }}</strong></p>
+  <p><strong>Pause behavior:</strong> stops new buys only. TP/SL exits and manual sell remain active.</p>
   {% if campaign.ai_dca_enabled and campaign.ai_dca_notes %}
   <p>AI Notes: <strong>{{ campaign.ai_dca_notes }}</strong></p>
   {% endif %}
@@ -141,6 +142,8 @@
         <th>Invested</th>
         <th>Qty</th>
         <th>PnL</th>
+        <th>DCA</th>
+        <th>Manual Exit</th>
       </tr>
     </thead>
     <tbody>
@@ -159,12 +162,81 @@
         <td>{{ "%.2f"|format(p.total_invested_usdt) }}</td>
         <td>{{ "%.8f"|format(p.total_qty) }}</td>
         <td class="{{ 'pnl-pos' if pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(pnl) }} ({{ "%+.2f"|format(pnl_pct) }}%)</td>
+        <td><button type="button" class="mini-btn dca-view-btn" data-position-id="{{ p.id }}">View</button></td>
+        <td>
+          {% if p.status == "open" %}
+          <form method="post" action="/paper/positions/{{ p.id }}/sell" onsubmit="return confirm('Sell {{ p.symbol }} now and close this position?');">
+            <button type="submit" class="mini-btn sell-btn">Sell</button>
+          </form>
+          {% else %}
+          <span class="badge">Closed</span>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <div id="dca-position-panel" class="card dca-panel" style="display:none;">
+    <h3 id="dca-panel-title">Symbol DCA</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Rule</th>
+          <th>Drop %</th>
+          <th>Allocation %</th>
+          <th>Trigger Price</th>
+          <th>Mode</th>
+          <th>Status</th>
+          <th>Executed Price</th>
+        </tr>
+      </thead>
+      <tbody id="dca-panel-body"></tbody>
+    </table>
+  </div>
   {% else %}
   <p>No positions in this campaign.</p>
   {% endif %}
 </section>
+
+<script>
+  const dcaPanel = document.getElementById("dca-position-panel");
+  const dcaPanelBody = document.getElementById("dca-panel-body");
+  const dcaPanelTitle = document.getElementById("dca-panel-title");
+
+  async function loadPositionDca(positionId, symbol) {
+    dcaPanel.style.display = "block";
+    dcaPanelTitle.textContent = `DCA for ${symbol}`;
+    dcaPanelBody.innerHTML = `<tr><td colspan="7">Loading...</td></tr>`;
+    const res = await fetch(`/api/paper/positions/${positionId}/dca`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) {
+      dcaPanelBody.innerHTML = `<tr><td colspan="7">No DCA rows for this position.</td></tr>`;
+      return;
+    }
+    dcaPanelBody.innerHTML = "";
+    items.forEach((row) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${row.rule}</td>
+        <td>${Number(row.drop_pct).toFixed(2)}</td>
+        <td>${Number(row.allocation_pct).toFixed(2)}</td>
+        <td>${Number(row.trigger_price).toFixed(6)}</td>
+        <td>${row.source === 'symbol_specific' ? 'Per Symbol' : 'Campaign'}</td>
+        <td>${row.executed ? 'Executed' : 'Pending'}</td>
+        <td>${row.executed_price ? Number(row.executed_price).toFixed(6) : '-'}</td>
+      `;
+      dcaPanelBody.appendChild(tr);
+    });
+  }
+
+  document.querySelectorAll(".dca-view-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const positionId = btn.getAttribute("data-position-id");
+      const row = btn.closest("tr");
+      const symbol = row ? row.children[0].textContent.trim() : "position";
+      loadPositionDca(positionId, symbol);
+    });
+  });
+</script>
 {% endblock %}

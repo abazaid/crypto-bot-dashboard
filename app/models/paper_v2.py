@@ -76,6 +76,8 @@ class PositionDcaState(Base):
     position_id: Mapped[int] = mapped_column(ForeignKey("positions.id"), nullable=False, index=True)
     dca_rule_id: Mapped[int] = mapped_column(ForeignKey("dca_rules.id"), nullable=False, index=True)
     executed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    custom_drop_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    custom_allocation_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     executed_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     executed_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
