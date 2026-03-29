@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy import desc
+from sqlalchemy import or_
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
@@ -214,6 +215,15 @@ def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> d
     }
 
 
+def _dashboard_logs(db, mode: str, limit: int = 80) -> list[ActivityLog]:
+    q = db.query(ActivityLog)
+    if mode == "live":
+        q = q.filter(or_(ActivityLog.event_type.like("LIVE_%"), ActivityLog.event_type == "SYSTEM"))
+    else:
+        q = q.filter(~ActivityLog.event_type.like("LIVE_%"))
+    return q.order_by(desc(ActivityLog.id)).limit(limit).all()
+
+
 def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
     open_positions = db.query(Position).filter(Position.campaign_id == campaign_id, Position.status == "open").all()
     rules = db.query(DcaRule).filter(DcaRule.campaign_id == campaign_id).order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc()).all()
@@ -373,7 +383,7 @@ async def paper_dashboard(request: Request) -> HTMLResponse:
             key=lambda x: x["amount"],
             reverse=True,
         )
-        logs = db.query(ActivityLog).order_by(desc(ActivityLog.id)).limit(50).all()
+        logs = _dashboard_logs(db, "paper")
         return templates.TemplateResponse(
             "paper_home.html",
             _context(
@@ -422,7 +432,7 @@ async def live_dashboard(request: Request) -> HTMLResponse:
         for c in campaigns:
             stats = _campaign_stats(db, c)
             items.append({"campaign": c, "stats": stats})
-        logs = db.query(ActivityLog).order_by(desc(ActivityLog.id)).limit(50).all()
+        logs = _dashboard_logs(db, "live")
         return templates.TemplateResponse(
             "live_home.html",
             _context("live_home", request=request, wallet=wallet, campaigns=items, logs=logs, live_error=live_error),
