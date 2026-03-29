@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 import requests
 
 from app.core.config import settings
-from app.services.binance_public import get_exchange_info
+from app.services.binance_public import get_book_tickers, get_exchange_info
 
 BASE_URL = "https://api.binance.com"
 TIMEOUT = 15
@@ -117,6 +117,22 @@ def _round_step_down(value: float, step: float) -> float:
     return math.floor(value / step) * step
 
 
+def _precision_from_step(step: float) -> int:
+    if step <= 0:
+        return 8
+    s = f"{step:.16f}".rstrip("0")
+    if "." not in s:
+        return 0
+    return max(0, len(s.split(".")[1]))
+
+
+def _fmt_with_step(value: float, step: float) -> str:
+    p = _precision_from_step(step)
+    if p <= 0:
+        return str(int(math.floor(value)))
+    return f"{value:.{p}f}"
+
+
 def _order_summary(raw: dict) -> dict[str, float]:
     executed_qty = float(raw.get("executedQty", 0.0))
     quote_qty = float(raw.get("cummulativeQuoteQty", 0.0))
@@ -152,6 +168,68 @@ def place_market_buy_quote(symbol: str, quote_usdt: float) -> dict[str, float]:
     return _order_summary(raw)
 
 
+def _best_ask(symbol: str) -> float:
+    rows = get_book_tickers()
+    sym = symbol.upper()
+    row = next((x for x in rows if str(x.get("symbol", "")).upper() == sym), None)
+    if not row:
+        raise RuntimeError(f"No book ticker for {sym}")
+    ask = float(row.get("askPrice", 0.0))
+    if ask <= 0:
+        raise RuntimeError(f"Invalid ask price for {sym}")
+    return ask
+
+
+def place_limit_buy_quote(
+    symbol: str,
+    quote_usdt: float,
+    price_buffer_pct: float = 0.03,
+    time_in_force: str = "IOC",
+) -> dict[str, float]:
+    if quote_usdt <= 0:
+        raise RuntimeError("quote_usdt must be > 0")
+    _load_symbol_filters()
+    sym = symbol.upper()
+    filters = _SYMBOL_FILTER_CACHE.get(sym, {})
+    step = float(filters.get("step_size", 0.0))
+    min_qty = float(filters.get("min_qty", 0.0))
+    min_notional = float(filters.get("min_notional", 0.0))
+    tick = float(filters.get("tick_size", 0.0))
+
+    ask = _best_ask(sym)
+    px = ask * (1.0 + max(0.0, float(price_buffer_pct)) / 100.0)
+    px = _round_step_down(px, tick)
+    if px <= 0:
+        raise RuntimeError(f"Invalid limit buy price for {sym}: {px}")
+
+    qty = float(quote_usdt) / px
+    qty = _round_step_down(qty, step)
+    if qty <= 0 or qty < min_qty:
+        raise RuntimeError(f"quantity below min lot size for {sym}: {qty}")
+    if min_notional > 0 and (qty * px) < min_notional:
+        raise RuntimeError(f"order below min notional for {sym}: {qty * px}")
+
+    qty_str = _fmt_with_step(qty, step)
+    px_str = _fmt_with_step(px, tick)
+    raw = _signed_request(
+        "POST",
+        "/api/v3/order",
+        {
+            "symbol": sym,
+            "side": "BUY",
+            "type": "LIMIT",
+            "timeInForce": str(time_in_force or "IOC").upper(),
+            "quantity": qty_str,
+            "price": px_str,
+        },
+    )
+    out = _order_summary(raw)
+    out["order_id"] = int(raw.get("orderId", 0))
+    out["limit_price"] = float(raw.get("price", px) or px)
+    out["status"] = str(raw.get("status", ""))
+    return out
+
+
 def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
     if quantity <= 0:
         raise RuntimeError("quantity must be > 0")
@@ -165,6 +243,7 @@ def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
     qty = _round_step_down(qty, step)
     if qty <= 0 or qty < min_qty:
         raise RuntimeError(f"quantity below min lot size for {symbol}: {qty}")
+    qty_str = _fmt_with_step(qty, step)
     raw = _signed_request(
         "POST",
         "/api/v3/order",
@@ -172,7 +251,7 @@ def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
             "symbol": symbol.upper(),
             "side": "SELL",
             "type": "MARKET",
-            "quantity": f"{qty:.8f}",
+            "quantity": qty_str,
         },
     )
     return _order_summary(raw)
@@ -200,6 +279,8 @@ def place_limit_sell_qty(symbol: str, quantity: float, price: float) -> dict[str
         raise RuntimeError(f"invalid limit price for {symbol}: {px}")
     if min_notional > 0 and (qty * px) < min_notional:
         raise RuntimeError(f"order below min notional for {symbol}: {qty * px}")
+    qty_str = _fmt_with_step(qty, step)
+    px_str = _fmt_with_step(px, tick)
     raw = _signed_request(
         "POST",
         "/api/v3/order",
@@ -208,8 +289,8 @@ def place_limit_sell_qty(symbol: str, quantity: float, price: float) -> dict[str
             "side": "SELL",
             "type": "LIMIT",
             "timeInForce": "GTC",
-            "quantity": f"{qty:.8f}",
-            "price": f"{px:.8f}",
+            "quantity": qty_str,
+            "price": px_str,
         },
     )
     return {

@@ -114,3 +114,36 @@ class ActivityLog(Base):
     symbol: Mapped[str] = mapped_column(String(30), default="-", nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SmartRuntimeState(Base):
+    __tablename__ = "smart_runtime_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), nullable=False, unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="paper")
+    execution_zones_locked: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    recalc_recommended: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    recalc_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    market_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ema200: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dynamic_zones_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_medium_refresh_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_slow_recalc_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class MarketSnapshot(Base):
+    __tablename__ = "market_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    campaign_id: Mapped[int | None] = mapped_column(ForeignKey("campaigns.id"), nullable=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="paper")
+    market_state: Mapped[str] = mapped_column(String(30), nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    ema200: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)

@@ -6,6 +6,7 @@
     <a class="side-link" href="/paper">Campaigns Home</a>
     <a class="side-link" href="/paper/create">Create Campaign</a>
     <a class="side-link active" href="/paper/smart-create">Smart DCA</a>
+    <a class="side-link" href="/paper/backtest">Smart Backtest</a>
   </aside>
 
   <div class="paper-main">
@@ -25,6 +26,9 @@
         </label>
         <label>Entry Amount (USDT)
           <input id="entry_amount_usdt" name="entry_amount_usdt" type="number" step="0.01" min="1" required value="15">
+        </label>
+        <label>Total Budget (Optional)
+          <input id="total_budget_usdt" type="number" step="0.01" min="1" placeholder="e.g. 500">
         </label>
         <label>Take Profit % (Optional)
           <input id="tp_pct" name="tp_pct" type="number" step="0.01" min="0" placeholder="1.5">
@@ -132,12 +136,26 @@
           <p id="plan-required-capital">-</p>
         </article>
         <article class="card stat">
+          <h3>Typical Usage</h3>
+          <p id="plan-typical-usage">-</p>
+        </article>
+        <article class="card stat">
           <h3>Expected Drawdown</h3>
           <p id="plan-drawdown">-</p>
         </article>
+      </div>
+      <div class="cards three">
         <article class="card stat">
           <h3>Risk Level</h3>
           <p id="plan-risk-level">-</p>
+        </article>
+        <article class="card stat">
+          <h3>Input Mode</h3>
+          <p id="plan-input-mode">-</p>
+        </article>
+        <article class="card stat">
+          <h3>Drawdown Coverage</h3>
+          <p id="plan-coverage">-</p>
         </article>
       </div>
       <div class="table-scroll">
@@ -163,6 +181,7 @@
   (function initPaperSmartCreatePage() {
     const symbolInput = document.getElementById("symbol");
     const entryInput = document.getElementById("entry_amount_usdt");
+    const budgetInput = document.getElementById("total_budget_usdt");
     const tpInput = document.getElementById("tp_pct");
     const slInput = document.getElementById("sl_pct");
     const strategyInput = document.getElementById("strategy_mode");
@@ -174,8 +193,11 @@
     const planTotalFormula = document.getElementById("plan-total-formula");
     const planAvgTarget = document.getElementById("plan-avg-target");
     const planRequiredCapital = document.getElementById("plan-required-capital");
+    const planTypicalUsage = document.getElementById("plan-typical-usage");
     const planDrawdown = document.getElementById("plan-drawdown");
     const planRiskLevel = document.getElementById("plan-risk-level");
+    const planInputMode = document.getElementById("plan-input-mode");
+    const planCoverage = document.getElementById("plan-coverage");
     const calcBtn = document.getElementById("calc-plan-btn");
     const createBtn = document.getElementById("create-smart-btn");
     const form = document.getElementById("smart-campaign-form");
@@ -220,8 +242,9 @@
     async function calculatePlan() {
       const symbol = (symbolInput.value || "").trim().toUpperCase();
       const entry = parseFloat(entryInput.value || "0");
-      if (!symbol || !(entry > 0)) {
-        statusLine.textContent = "Please set symbol and entry amount first.";
+      const budget = parseFloat(budgetInput.value || "0");
+      if (!symbol || !(entry > 0 || budget > 0)) {
+        statusLine.textContent = "Please set symbol and either entry amount or total budget.";
         return;
       }
       statusLine.textContent = "Calculating SMART plan...";
@@ -229,7 +252,8 @@
       try {
         const params = new URLSearchParams();
         params.set("symbol", symbol);
-        params.set("entry_amount_usdt", String(entry));
+        if (entry > 0) params.set("entry_amount_usdt", String(entry));
+        if (budget > 0) params.set("total_budget_usdt", String(budget));
         const tpRaw = optionalFieldValue(tpInput);
         const slRaw = optionalFieldValue(slInput);
         if (tpRaw !== null) params.set("tp_pct", tpRaw);
@@ -244,9 +268,10 @@
         }
 
         const rows = data.rules || [];
+        const usedEntry = Number(data.entry_amount_usdt || entry || 0);
         planRows.innerHTML = "";
         rows.forEach((r) => {
-          const dcaAmount = entry * (Number(r.allocation_pct || 0) / 100);
+          const dcaAmount = usedEntry * (Number(r.allocation_pct || 0) / 100);
           const tr = document.createElement("tr");
           tr.innerHTML = `
             <td>${r.name}</td>
@@ -262,16 +287,20 @@
         planEntryPrice.textContent = `${f6(data.entry_price)} USDT`;
         planTotalEstimated.textContent = `${f2(data.estimate.total_if_all_filled_usdt)} USDT`;
         planTotalFormula.textContent =
-          `Total = ${f2(entry)} + ${f2(data.estimate.dca_total_usdt)} = ${f2(data.estimate.total_if_all_filled_usdt)} USDT`;
+          `Total = ${f2(usedEntry)} + ${f2(data.estimate.dca_total_usdt)} = ${f2(data.estimate.total_if_all_filled_usdt)} USDT`;
+        entryInput.value = usedEntry > 0 ? String(usedEntry.toFixed(2)) : entryInput.value;
         const avg = f6(data.estimate.estimated_avg_price_if_all_filled);
         const tp = data.estimate.estimated_target_price_if_all_filled;
         planAvgTarget.textContent = tp ? `${avg} / ${f6(tp)}` : `${avg} / -`;
         const cp = data.capital_planning || {};
-        const req = Number(cp.theoretical_total_required_usdt || data.estimate.total_if_all_filled_usdt || 0);
+        const req = Number(cp.max_reserved_capital_usdt || cp.theoretical_total_required_usdt || data.estimate.total_if_all_filled_usdt || 0);
         const withBuf = Number(cp.suggested_total_with_buffer_usdt || req);
         planRequiredCapital.textContent = `${f2(req)} USDT (10% buffer: ${f2(withBuf)})`;
+        planTypicalUsage.textContent = `${f2(cp.estimated_typical_usage_low_usdt || req)} - ${f2(cp.estimated_typical_usage_high_usdt || req)} USDT`;
         planDrawdown.textContent = `${f2(cp.expected_drawdown_pct || 0)}% (deepest DCA: ${f2(cp.deepest_dca_drop_pct || 0)}%)`;
         planRiskLevel.textContent = String(cp.risk_level || "-").toUpperCase();
+        planInputMode.textContent = String(cp.input_mode || "base_entry");
+        planCoverage.textContent = `${f2(cp.planned_drawdown_coverage_pct || 0)}%`;
         planCard.style.display = "block";
         statusLine.textContent = `Plan ready (${String(data.strategy_mode || "balanced")}). Market state: ${data.market_state || "unknown"}.`;
       } catch (e) {

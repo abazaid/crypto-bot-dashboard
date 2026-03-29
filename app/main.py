@@ -31,6 +31,8 @@ from app.services.live_trading import (
     recalculate_live_campaign_dca,
     run_live_cycle,
 )
+from app.services.smart_runtime import refresh_smart_medium, refresh_smart_slow
+from app.services.backtesting import run_smart_backtest
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -39,13 +41,17 @@ templates = Jinja2Templates(directory="app/web/templates")
 scheduler = BackgroundScheduler(timezone="UTC")
 cycle_lock = threading.Lock()
 live_cycle_lock = threading.Lock()
+medium_lock = threading.Lock()
+slow_lock = threading.Lock()
 
 
 def _context(active: str, **kwargs) -> dict:
+    inferred_mode = "live" if str(active).startswith("live") else "paper"
     base = {
         "active_page": active,
+        "mode": inferred_mode,
         "now": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-        "cycle_seconds": max(settings.cycle_seconds, 3),
+        "cycle_seconds": max(settings.fast_loop_seconds, 3),
     }
     base.update(kwargs)
     return base
@@ -332,6 +338,28 @@ def _scheduled_live_cycle() -> None:
         live_cycle_lock.release()
 
 
+def _scheduled_medium_refresh() -> None:
+    if not medium_lock.acquire(blocking=False):
+        return
+    db = SessionLocal()
+    try:
+        refresh_smart_medium(db)
+    finally:
+        db.close()
+        medium_lock.release()
+
+
+def _scheduled_slow_recalc() -> None:
+    if not slow_lock.acquire(blocking=False):
+        return
+    db = SessionLocal()
+    try:
+        refresh_smart_slow(db)
+    finally:
+        db.close()
+        slow_lock.release()
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -342,9 +370,33 @@ def on_startup() -> None:
     finally:
         db.close()
 
-    scheduler.add_job(_scheduled_cycle, "interval", seconds=max(settings.cycle_seconds, 3), id="paper_cycle", replace_existing=True)
     scheduler.add_job(
-        _scheduled_live_cycle, "interval", seconds=max(settings.cycle_seconds, 3), id="live_cycle", replace_existing=True
+        _scheduled_cycle,
+        "interval",
+        seconds=max(settings.fast_loop_seconds, 3),
+        id="paper_cycle",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _scheduled_live_cycle,
+        "interval",
+        seconds=max(settings.fast_loop_seconds, 3),
+        id="live_cycle",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _scheduled_medium_refresh,
+        "interval",
+        seconds=max(settings.medium_refresh_seconds, 60),
+        id="smart_medium_refresh",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _scheduled_slow_recalc,
+        "interval",
+        seconds=max(settings.slow_recalc_seconds, 900),
+        id="smart_slow_recalc",
+        replace_existing=True,
     )
     scheduler.start()
 
@@ -418,6 +470,11 @@ async def paper_smart_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("paper_smart_create.html", _context("paper_smart_create", request=request))
 
 
+@app.get("/paper/backtest", response_class=HTMLResponse)
+async def paper_backtest_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("smart_backtest.html", _context("smart_backtest", request=request, mode="paper"))
+
+
 @app.get("/live", response_class=HTMLResponse)
 async def live_dashboard(request: Request) -> HTMLResponse:
     db = SessionLocal()
@@ -462,6 +519,11 @@ async def live_create_campaign_page(request: Request) -> HTMLResponse:
 @app.get("/live/smart-create", response_class=HTMLResponse)
 async def live_smart_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("live_smart_create.html", _context("live_smart_create", request=request))
+
+
+@app.get("/live/backtest", response_class=HTMLResponse)
+async def live_backtest_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("smart_backtest.html", _context("smart_backtest", request=request, mode="live"))
 
 
 @app.get("/live/history", response_class=HTMLResponse)
@@ -1572,19 +1634,44 @@ async def api_live_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
 @app.get("/api/live/smart-plan")
 async def api_live_smart_plan(
     symbol: str,
-    entry_amount_usdt: float,
+    entry_amount_usdt: float = 0.0,
+    total_budget_usdt: float | None = None,
     tp_pct: float | None = None,
     sl_pct: float | None = None,
     strategy_mode: str = "balanced",
 ) -> JSONResponse:
+    entry = float(entry_amount_usdt or 0.0)
+    budget = float(total_budget_usdt or 0.0)
+    if budget > 0 and entry <= 0:
+        seed_entry = 100.0
+        seed = build_smart_dca_plan(
+            symbol=symbol,
+            entry_amount_usdt=seed_entry,
+            tp_pct=tp_pct,
+            sl_pct=sl_pct,
+            max_levels=5,
+            strategy_mode=strategy_mode,
+        )
+        if not seed.get("ok"):
+            return JSONResponse(seed)
+        mult = float(seed.get("capital_planning", {}).get("total_multiplier_sum", 0.0))
+        if mult <= 0:
+            return JSONResponse({"ok": False, "error": "Could not derive entry from total budget."})
+        entry = budget / mult
     plan = build_smart_dca_plan(
         symbol=symbol,
-        entry_amount_usdt=float(entry_amount_usdt or 0.0),
+        entry_amount_usdt=entry,
         tp_pct=tp_pct,
         sl_pct=sl_pct,
         max_levels=5,
         strategy_mode=strategy_mode,
     )
+    if plan.get("ok") and budget > 0:
+        plan["capital_planning"]["requested_total_budget_usdt"] = round(budget, 4)
+        plan["capital_planning"]["derived_entry_from_budget_usdt"] = round(entry, 4)
+        plan["capital_planning"]["input_mode"] = "total_budget"
+    elif plan.get("ok"):
+        plan["capital_planning"]["input_mode"] = "base_entry"
     return JSONResponse(plan)
 
 
@@ -1634,6 +1721,28 @@ async def api_symbol_search(q: str = "") -> JSONResponse:
     return JSONResponse({"items": data})
 
 
+@app.get("/api/smart-backtest")
+async def api_smart_backtest(
+    symbol: str,
+    strategy_mode: str = "balanced",
+    entry_amount_usdt: float = 15.0,
+    tp_pct: float = 1.5,
+    sl_pct: float | None = 5.0,
+    interval: str = "1h",
+    candles: int = 700,
+) -> JSONResponse:
+    res = run_smart_backtest(
+        symbol=symbol,
+        strategy_mode=strategy_mode,
+        entry_amount_usdt=entry_amount_usdt,
+        tp_pct=tp_pct,
+        sl_pct=sl_pct,
+        interval=interval,
+        candles=candles,
+    )
+    return JSONResponse(res)
+
+
 @app.get("/api/paper/suggestions")
 async def api_paper_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
     safe_limit = min(max(int(limit), 1), 10)
@@ -1644,19 +1753,44 @@ async def api_paper_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
 @app.get("/api/paper/smart-plan")
 async def api_paper_smart_plan(
     symbol: str,
-    entry_amount_usdt: float,
+    entry_amount_usdt: float = 0.0,
+    total_budget_usdt: float | None = None,
     tp_pct: float | None = None,
     sl_pct: float | None = None,
     strategy_mode: str = "balanced",
 ) -> JSONResponse:
+    entry = float(entry_amount_usdt or 0.0)
+    budget = float(total_budget_usdt or 0.0)
+    if budget > 0 and entry <= 0:
+        seed_entry = 100.0
+        seed = build_smart_dca_plan(
+            symbol=symbol,
+            entry_amount_usdt=seed_entry,
+            tp_pct=tp_pct,
+            sl_pct=sl_pct,
+            max_levels=5,
+            strategy_mode=strategy_mode,
+        )
+        if not seed.get("ok"):
+            return JSONResponse(seed)
+        mult = float(seed.get("capital_planning", {}).get("total_multiplier_sum", 0.0))
+        if mult <= 0:
+            return JSONResponse({"ok": False, "error": "Could not derive entry from total budget."})
+        entry = budget / mult
     plan = build_smart_dca_plan(
         symbol=symbol,
-        entry_amount_usdt=float(entry_amount_usdt or 0.0),
+        entry_amount_usdt=entry,
         tp_pct=tp_pct,
         sl_pct=sl_pct,
         max_levels=5,
         strategy_mode=strategy_mode,
     )
+    if plan.get("ok") and budget > 0:
+        plan["capital_planning"]["requested_total_budget_usdt"] = round(budget, 4)
+        plan["capital_planning"]["derived_entry_from_budget_usdt"] = round(entry, 4)
+        plan["capital_planning"]["input_mode"] = "total_budget"
+    elif plan.get("ok"):
+        plan["capital_planning"]["input_mode"] = "base_entry"
     return JSONResponse(plan)
 
 

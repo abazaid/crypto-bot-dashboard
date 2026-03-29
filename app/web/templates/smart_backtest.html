@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>{{ "Live Menu" if mode == "live" else "Paper Menu" }}</h3>
+    {% if mode == "live" %}
+    <a class="side-link" href="/live">Campaigns Home</a>
+    <a class="side-link" href="/live/create">Create Campaign</a>
+    <a class="side-link" href="/live/smart-create">Smart DCA</a>
+    <a class="side-link active" href="/live/backtest">Smart Backtest</a>
+    <a class="side-link" href="/live/history">Live History</a>
+    {% else %}
+    <a class="side-link" href="/paper">Campaigns Home</a>
+    <a class="side-link" href="/paper/create">Create Campaign</a>
+    <a class="side-link" href="/paper/smart-create">Smart DCA</a>
+    <a class="side-link active" href="/paper/backtest">Smart Backtest</a>
+    <a class="side-link" href="/paper/history">Paper History</a>
+    {% endif %}
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>SMART DCA Backtesting</h1>
+      <p>Standalone module for ROI, Max Drawdown (MDD), and Recovery metrics per strategy profile.</p>
+    </section>
+
+    <section class="card">
+      <h2>Run Backtest</h2>
+      <form id="bt-form" class="form-grid" onsubmit="return false;">
+        <label>Symbol
+          <input id="bt-symbol" value="BTCUSDT" placeholder="BTCUSDT">
+        </label>
+        <label>Strategy Mode
+          <select id="bt-mode">
+            <option value="aggressive">Aggressive</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="conservative">Conservative</option>
+          </select>
+        </label>
+        <label>Entry Amount (USDT)
+          <input id="bt-entry" type="number" step="0.01" min="1" value="15">
+        </label>
+        <label>TP %
+          <input id="bt-tp" type="number" step="0.01" min="0" value="1.5">
+        </label>
+        <label>SL % (optional)
+          <input id="bt-sl" type="number" step="0.01" min="0" value="5">
+        </label>
+        <label>Interval
+          <select id="bt-interval">
+            <option value="15m">15m</option>
+            <option value="1h" selected>1h</option>
+            <option value="4h">4h</option>
+          </select>
+        </label>
+        <label>Candles
+          <input id="bt-candles" type="number" step="1" min="300" max="1000" value="700">
+        </label>
+        <div class="full">
+          <button id="bt-run-btn" type="button">Run Backtest</button>
+          <p id="bt-status" class="muted-line"></p>
+        </div>
+      </form>
+    </section>
+
+    <section id="bt-results" class="card" style="display:none;">
+      <h2>Backtest Results</h2>
+      <div class="cards four">
+        <article class="card stat"><h3>Total Trades</h3><p id="s-total">-</p></article>
+        <article class="card stat"><h3>Win Rate</h3><p id="s-win">-</p></article>
+        <article class="card stat"><h3>Net PnL</h3><p id="s-pnl">-</p></article>
+        <article class="card stat"><h3>ROI (Reserved)</h3><p id="s-roi-r">-</p></article>
+      </div>
+      <div class="cards four">
+        <article class="card stat"><h3>ROI (Invested)</h3><p id="s-roi-i">-</p></article>
+        <article class="card stat"><h3>Max Drawdown</h3><p id="s-mdd">-</p></article>
+        <article class="card stat"><h3>Recovery</h3><p id="s-rec">-</p></article>
+        <article class="card stat"><h3>Avg Trade Hours</h3><p id="s-avg-h">-</p></article>
+      </div>
+      <p id="s-note" class="muted-line"></p>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Open</th>
+              <th>Close</th>
+              <th>Entry</th>
+              <th>Avg</th>
+              <th>Exit</th>
+              <th>Invested</th>
+              <th>PnL</th>
+              <th>DCA</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="bt-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</section>
+
+<script>
+  (function () {
+    const status = document.getElementById("bt-status");
+    const runBtn = document.getElementById("bt-run-btn");
+    const card = document.getElementById("bt-results");
+    const rows = document.getElementById("bt-rows");
+
+    function g(id){ return document.getElementById(id); }
+    function f2(v){ return Number(v || 0).toFixed(2); }
+    function f3(v){ return Number(v || 0).toFixed(3); }
+    function f6(v){ return Number(v || 0).toFixed(6); }
+
+    async function runBacktest() {
+      const symbol = (g("bt-symbol").value || "").trim().toUpperCase();
+      if (!symbol) {
+        status.textContent = "Please set a symbol.";
+        return;
+      }
+      status.textContent = "Running backtest...";
+      runBtn.disabled = true;
+      try {
+        const params = new URLSearchParams();
+        params.set("symbol", symbol);
+        params.set("strategy_mode", g("bt-mode").value || "balanced");
+        params.set("entry_amount_usdt", g("bt-entry").value || "15");
+        params.set("tp_pct", g("bt-tp").value || "1.5");
+        const slRaw = (g("bt-sl").value || "").trim();
+        if (slRaw !== "") params.set("sl_pct", slRaw);
+        params.set("interval", g("bt-interval").value || "1h");
+        params.set("candles", g("bt-candles").value || "700");
+
+        const res = await fetch(`/api/smart-backtest?${params.toString()}`);
+        const data = await res.json();
+        if (!data.ok) {
+          card.style.display = "none";
+          status.textContent = data.error || "Backtest failed.";
+          return;
+        }
+
+        const s = data.summary || {};
+        g("s-total").textContent = `${s.total_trades ?? 0}`;
+        g("s-win").textContent = `${f2(s.win_rate_pct)}% (${s.wins ?? 0}/${s.losses ?? 0})`;
+        g("s-pnl").textContent = `${f2(s.net_pnl_usdt)} USDT`;
+        g("s-roi-r").textContent = `${f3(s.roi_reserved_pct)}%`;
+        g("s-roi-i").textContent = `${f3(s.roi_invested_pct)}%`;
+        g("s-mdd").textContent = `${f3(s.max_drawdown_pct)}% / ${f2(s.max_drawdown_usdt)} USDT`;
+        g("s-rec").textContent = `${s.recovery_bars ?? 0} bars`;
+        g("s-avg-h").textContent = `${f2(s.avg_trade_hours)} h`;
+        g("s-note").textContent = s.recovery_note || "";
+
+        rows.innerHTML = "";
+        (data.trade_rows || []).forEach((r) => {
+          const tr = document.createElement("tr");
+          const pnl = Number(r.pnl_usdt || 0);
+          const pnlClass = pnl >= 0 ? "pnl-pos" : "pnl-neg";
+          tr.innerHTML = `
+            <td>${r.opened_at}</td>
+            <td>${r.closed_at}</td>
+            <td>${f6(r.entry_price)}</td>
+            <td>${f6(r.avg_price)}</td>
+            <td>${f6(r.exit_price)}</td>
+            <td>${f2(r.invested)}</td>
+            <td><span class="${pnlClass}">${pnl >= 0 ? "+" : ""}${f2(r.pnl_usdt)} (${pnl >= 0 ? "+" : ""}${f2(r.pnl_pct)}%)</span></td>
+            <td>${r.dca_used}</td>
+            <td>${r.close_reason}</td>
+          `;
+          rows.appendChild(tr);
+        });
+
+        card.style.display = "block";
+        status.textContent = `Backtest ready: ${data.symbol} | ${data.strategy_mode} | ${data.interval} | candles=${data.candles}`;
+      } catch (e) {
+        status.textContent = "Backtest request failed.";
+      } finally {
+        runBtn.disabled = false;
+      }
+    }
+
+    runBtn.addEventListener("click", runBacktest);
+  })();
+</script>
+{% endblock %}

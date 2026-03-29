@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 from sqlalchemy.orm import Session
 
@@ -9,6 +10,7 @@ from app.services.binance_live import (
     get_balances,
     get_order,
     get_usdt_free,
+    place_limit_buy_quote,
     place_limit_sell_qty,
     place_market_buy_quote,
     place_market_sell_qty,
@@ -125,7 +127,56 @@ def _open_live_position(
             add_live_log(db, "LIVE_LOOP_SKIP", symbol, f"Campaign={campaign.name} | reason=duplicate_open_symbol")
             return False
 
-    order = place_market_buy_quote(symbol, campaign.entry_amount_usdt)
+    try:
+        order = place_limit_buy_quote(
+            symbol,
+            campaign.entry_amount_usdt,
+            price_buffer_pct=max(0.0, float(settings.live_entry_limit_buffer_pct)),
+        )
+        if float(order.get("quote_qty", 0.0)) <= 0.0:
+            if settings.live_entry_limit_fallback_market:
+                order = place_market_buy_quote(symbol, campaign.entry_amount_usdt)
+                add_live_log(
+                    db,
+                    "LIVE_ENTRY_FALLBACK",
+                    symbol,
+                    f"Campaign={campaign.name} | limit buy got no fill -> fallback market buy.",
+                )
+            else:
+                add_live_log(
+                    db,
+                    "LIVE_ENTRY_SKIP",
+                    symbol,
+                    f"Campaign={campaign.name} | limit buy got no fill and fallback is disabled.",
+                )
+                return False
+        else:
+            add_live_log(
+                db,
+                "LIVE_ENTRY_LIMIT",
+                symbol,
+                (
+                    f"Campaign={campaign.name} | status={order.get('status','')} "
+                    f"| limit_price={float(order.get('limit_price') or 0.0):.8f}"
+                ),
+            )
+    except Exception:
+        if settings.live_entry_limit_fallback_market:
+            order = place_market_buy_quote(symbol, campaign.entry_amount_usdt)
+            add_live_log(
+                db,
+                "LIVE_ENTRY_FALLBACK",
+                symbol,
+                f"Campaign={campaign.name} | limit buy failed -> fallback market buy.",
+            )
+        else:
+            add_live_log(
+                db,
+                "LIVE_ENTRY_SKIP",
+                symbol,
+                f"Campaign={campaign.name} | limit buy failed and fallback is disabled.",
+            )
+            return False
     qty = float(order["executed_qty"])
     spent = float(order["quote_qty"])
     avg = float(order["avg_price"])
@@ -145,7 +196,22 @@ def _open_live_position(
     db.flush()
 
     if campaign.ai_dca_enabled:
-        symbol_rules = build_symbol_ai_dca_rules(symbol, ai_profile, fallback_ai_rules, campaign.sl_pct)
+        if bool(campaign.smart_dca_enabled):
+            score_by_name: dict[str, float | None] = {}
+            try:
+                parsed = json.loads(campaign.ai_dca_suggested_rules_json or "[]")
+                if isinstance(parsed, list):
+                    for row in parsed:
+                        n = str(row.get("name", "")).strip()
+                        if not n:
+                            continue
+                        sc = row.get("support_score")
+                        score_by_name[n] = float(sc) if sc is not None else None
+            except Exception:
+                score_by_name = {}
+            symbol_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct), score_by_name.get(r.name)) for r in rules]
+        else:
+            symbol_rules = build_symbol_ai_dca_rules(symbol, ai_profile, fallback_ai_rules, campaign.sl_pct)
         for name_rule, drop_pct, alloc_pct, support_score in symbol_rules:
             rule_ref = rules_by_name.get(name_rule) or (rules[0] if rules else None)
             if not rule_ref:
@@ -370,10 +436,58 @@ def run_live_cycle(db: Session) -> None:
                 if not allowed:
                     continue
             try:
-                buy = place_market_buy_quote(pos.symbol, usdt)
+                buy = place_limit_buy_quote(
+                    pos.symbol,
+                    usdt,
+                    price_buffer_pct=max(0.0, float(settings.live_entry_limit_buffer_pct)),
+                )
+                if float(buy.get("quote_qty", 0.0)) <= 0.0:
+                    if settings.live_entry_limit_fallback_market:
+                        buy = place_market_buy_quote(pos.symbol, usdt)
+                        add_live_log(
+                            db,
+                            "LIVE_DCA_FALLBACK",
+                            pos.symbol,
+                            f"Campaign={campaign.name} | Rule={rule.name} | limit buy no fill -> market fallback.",
+                        )
+                    else:
+                        add_live_log(
+                            db,
+                            "LIVE_DCA_SKIP",
+                            pos.symbol,
+                            f"Campaign={campaign.name} | Rule={rule.name} | limit buy no fill and fallback disabled.",
+                        )
+                        continue
+                else:
+                    add_live_log(
+                        db,
+                        "LIVE_DCA_LIMIT",
+                        pos.symbol,
+                        (
+                            f"Campaign={campaign.name} | Rule={rule.name} | status={buy.get('status','')} "
+                            f"| limit_price={float(buy.get('limit_price') or 0.0):.8f}"
+                        ),
+                    )
             except Exception as e:
-                add_live_log(db, "LIVE_DCA_FAIL", pos.symbol, f"Campaign={campaign.name} | Rule={rule.name} | error={e}")
-                continue
+                if settings.live_entry_limit_fallback_market:
+                    try:
+                        buy = place_market_buy_quote(pos.symbol, usdt)
+                        add_live_log(
+                            db,
+                            "LIVE_DCA_FALLBACK",
+                            pos.symbol,
+                            f"Campaign={campaign.name} | Rule={rule.name} | limit failed ({e}) -> market fallback.",
+                        )
+                    except Exception as ex:
+                        add_live_log(
+                            db, "LIVE_DCA_FAIL", pos.symbol, f"Campaign={campaign.name} | Rule={rule.name} | error={ex}"
+                        )
+                        continue
+                else:
+                    add_live_log(
+                        db, "LIVE_DCA_SKIP", pos.symbol, f"Campaign={campaign.name} | Rule={rule.name} | limit failed: {e}"
+                    )
+                    continue
             qty = float(buy["executed_qty"])
             spent = float(buy["quote_qty"])
             if qty <= 0 or spent <= 0:
@@ -525,7 +639,22 @@ def recalculate_live_campaign_dca(db: Session, campaign: Campaign) -> tuple[int,
         if not states:
             continue
         if campaign.ai_dca_enabled:
-            symbol_rules = build_symbol_ai_dca_rules(pos.symbol, ai_profile, fallback_ai_rules, campaign.sl_pct)
+            if bool(campaign.smart_dca_enabled):
+                score_by_name: dict[str, float | None] = {}
+                try:
+                    parsed = json.loads(campaign.ai_dca_suggested_rules_json or "[]")
+                    if isinstance(parsed, list):
+                        for row in parsed:
+                            n = str(row.get("name", "")).strip()
+                            if not n:
+                                continue
+                            sc = row.get("support_score")
+                            score_by_name[n] = float(sc) if sc is not None else None
+                except Exception:
+                    score_by_name = {}
+                symbol_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct), score_by_name.get(r.name)) for r in rules]
+            else:
+                symbol_rules = build_symbol_ai_dca_rules(pos.symbol, ai_profile, fallback_ai_rules, campaign.sl_pct)
         else:
             symbol_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct), None) for r in rules]
         symbol_rules_by_name = {name: (drop, alloc, score) for name, drop, alloc, score in symbol_rules}
