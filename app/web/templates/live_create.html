@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>Live Menu</h3>
+    <a class="side-link" href="/live">Campaigns Home</a>
+    <a class="side-link active" href="/live/create">Create Live Campaign</a>
+    <a class="side-link" href="/live/history">Live History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>Create Live Campaign</h1>
+      <p>This page has no auto refresh, so you can edit comfortably.</p>
+    </section>
+
+    <section class="card">
+      <h2>New Campaign</h2>
+      <form id="create-campaign-form" method="post" action="/live/campaigns" class="form-grid">
+        <label>Campaign Name
+          <input name="name" required placeholder="Example: Dip Hunter 1">
+        </label>
+        <label>Entry Amount / Coin (USDT)
+          <input name="entry_amount_usdt" type="number" step="0.01" min="1" required placeholder="100">
+        </label>
+        <label>Take Profit % (Optional)
+          <input name="tp_pct" type="number" step="0.01" min="0" placeholder="3.5">
+        </label>
+        <label>Stop Loss % (Optional)
+          <input name="sl_pct" type="number" step="0.01" min="0" placeholder="5">
+        </label>
+        <label>AI DCA Mode
+          <span class="inline-check">
+            <input id="ai_dca_enabled" name="ai_dca_enabled" type="checkbox">
+            <span>Enable Auto DCA from support levels</span>
+          </span>
+        </label>
+        <label>No Score = No DCA (Strict AI)
+          <span class="inline-check">
+            <input id="strict_support_score_required" name="strict_support_score_required" type="checkbox">
+            <span>If support score is missing, skip DCA for that level.</span>
+          </span>
+        </label>
+        <label>Loop Campaign (Top N AI)
+          <span class="inline-check">
+            <input id="loop_enabled" name="loop_enabled" type="checkbox">
+            <span>Always keep N open symbols from top score. AI-only and auto-rotation after close.</span>
+          </span>
+        </label>
+        <label>Symbols Count (Suggest + Loop)
+          <input id="suggest-limit" name="loop_target_count" type="number" min="1" max="30" step="1" value="5">
+        </label>
+        <label>Trend Filter (BTC)
+          <span class="inline-check">
+            <input id="trend_filter_enabled" name="trend_filter_enabled" type="checkbox">
+            <span>If BTC is bearish: reduce DCA size. If strongly bearish: stop DCA buys.</span>
+          </span>
+        </label>
+        <label>Auto Re-entry
+          <span class="inline-check">
+            <input id="auto_reentry_enabled" name="auto_reentry_enabled" type="checkbox">
+            <span>After a symbol closes, reopen it automatically while campaign is active.</span>
+          </span>
+        </label>
+
+        <label>DCA-1 Drop %
+          <input class="manual-dca" name="dca_drop_1" type="number" step="0.01" min="0" placeholder="2">
+        </label>
+        <label>DCA-1 Allocation % of Entry
+          <input class="manual-dca" name="dca_alloc_1" type="number" step="0.01" min="0" placeholder="50">
+        </label>
+        <label>DCA-2 Drop %
+          <input class="manual-dca" name="dca_drop_2" type="number" step="0.01" min="0" placeholder="4">
+        </label>
+        <label>DCA-2 Allocation % of Entry
+          <input class="manual-dca" name="dca_alloc_2" type="number" step="0.01" min="0" placeholder="50">
+        </label>
+        <label>DCA-3 Drop %
+          <input class="manual-dca" name="dca_drop_3" type="number" step="0.01" min="0" placeholder="7">
+        </label>
+        <label>DCA-3 Allocation % of Entry
+          <input class="manual-dca" name="dca_alloc_3" type="number" step="0.01" min="0" placeholder="100">
+        </label>
+        <label>DCA-4 Drop %
+          <input class="manual-dca" name="dca_drop_4" type="number" step="0.01" min="0" placeholder="10">
+        </label>
+        <label>DCA-4 Allocation % of Entry
+          <input class="manual-dca" name="dca_alloc_4" type="number" step="0.01" min="0" placeholder="120">
+        </label>
+        <label>DCA-5 Drop %
+          <input class="manual-dca" name="dca_drop_5" type="number" step="0.01" min="0" placeholder="14">
+        </label>
+        <label>DCA-5 Allocation % of Entry
+          <input class="manual-dca" name="dca_alloc_5" type="number" step="0.01" min="0" placeholder="150">
+        </label>
+
+        <div class="full">
+          <label>Search Binance Symbols</label>
+          <div class="symbol-search">
+            <input id="symbol-query" type="text" placeholder="Search e.g. BTC, ETH, SOL...">
+            <button type="button" id="symbol-search-btn">Search</button>
+            <button type="button" id="suggest-top-btn">Suggest Top N</button>
+          </div>
+          <p id="suggest-meta" class="muted-line"></p>
+          <div id="suggestions-board" class="chips"></div>
+          <div id="symbol-results" class="chips"></div>
+          <label>Selected Symbols (CSV)</label>
+          <textarea id="symbols" name="symbols" required placeholder="BTCUSDT,ETHUSDT" rows="3"></textarea>
+        </div>
+
+        <div class="full">
+          <button id="start-campaign-btn" type="submit">Start Campaign (Buy Now)</button>
+          <p id="create-waiting-msg" class="muted-line" style="display:none; margin-top:8px;">
+            Please wait... creating campaign.
+          </p>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Live Safety</h2>
+      <p>Live mode sends real orders to Binance. Use conservative size and confirm your API permissions.</p>
+      <p>Required environment keys: <code>BINANCE_API_KEY</code> and <code>BINANCE_API_SECRET</code>.</p>
+    </section>
+  </div>
+</section>
+
+<script>
+  const queryInput = document.getElementById("symbol-query");
+  const resultBox = document.getElementById("symbol-results");
+  const symbolsInput = document.getElementById("symbols");
+  const searchButton = document.getElementById("symbol-search-btn");
+  const suggestButton = document.getElementById("suggest-top-btn");
+  const suggestLimitInput = document.getElementById("suggest-limit");
+  const suggestMeta = document.getElementById("suggest-meta");
+  const suggestionsBoard = document.getElementById("suggestions-board");
+  const aiDcaToggle = document.getElementById("ai_dca_enabled");
+  const loopToggle = document.getElementById("loop_enabled");
+  const autoReentryToggle = document.getElementById("auto_reentry_enabled");
+  const strictScoreToggle = document.getElementById("strict_support_score_required");
+  const manualDcaFields = document.querySelectorAll(".manual-dca");
+  const createForm = document.getElementById("create-campaign-form");
+  const startCampaignBtn = document.getElementById("start-campaign-btn");
+  const waitingMsg = document.getElementById("create-waiting-msg");
+  let submitLocked = false;
+
+  function appendSymbol(symbol) {
+    const current = symbolsInput.value.split(",").map(v => v.trim()).filter(Boolean);
+    if (!current.includes(symbol)) {
+      current.push(symbol);
+    }
+    symbolsInput.value = current.join(",");
+  }
+
+  async function searchSymbols() {
+    const q = encodeURIComponent(queryInput.value || "");
+    const res = await fetch(`/api/binance/symbols?q=${q}`);
+    const data = await res.json();
+    resultBox.innerHTML = "";
+    data.items.forEach(symbol => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
+      btn.textContent = symbol;
+      btn.onclick = () => appendSymbol(symbol);
+      resultBox.appendChild(btn);
+    });
+  }
+
+  function setSymbols(symbols) {
+    symbolsInput.value = symbols.join(",");
+  }
+
+  function selectedLimit() {
+    const raw = parseInt(suggestLimitInput.value || "5", 10);
+    if (Number.isNaN(raw)) return 5;
+    return Math.min(30, Math.max(1, raw));
+  }
+
+  async function suggestTopN() {
+    const limit = selectedLimit();
+    suggestMeta.textContent = "Scanning market...";
+    suggestionsBoard.innerHTML = "";
+    const res = await fetch(`/api/live/suggestions?limit=${limit}`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) {
+      suggestMeta.textContent = `No strong suggestions now. BTC state: ${data.market_state || 'unknown'}`;
+      return;
+    }
+    suggestMeta.textContent = `BTC trend state: ${data.market_state}. Click any symbol to add it.`;
+    items.forEach((item) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
+      btn.textContent = `${item.symbol} | score ${item.score}`;
+      btn.onclick = () => appendSymbol(item.symbol);
+      suggestionsBoard.appendChild(btn);
+    });
+    setSymbols(items.map(i => i.symbol));
+  }
+
+  function syncDcaMode() {
+    const isLoop = loopToggle.checked;
+    if (isLoop) {
+      aiDcaToggle.checked = true;
+      aiDcaToggle.disabled = true;
+      strictScoreToggle.checked = true;
+      strictScoreToggle.disabled = true;
+      autoReentryToggle.checked = false;
+      autoReentryToggle.disabled = true;
+    } else {
+      aiDcaToggle.disabled = false;
+      strictScoreToggle.disabled = !aiDcaToggle.checked;
+      if (!aiDcaToggle.checked) strictScoreToggle.checked = false;
+      autoReentryToggle.disabled = false;
+    }
+    const disabled = aiDcaToggle.checked || isLoop;
+    manualDcaFields.forEach((field) => {
+      field.disabled = disabled;
+      if (disabled) {
+        field.value = "";
+      }
+    });
+    const symbolsLocked = isLoop;
+    symbolsInput.disabled = symbolsLocked;
+    queryInput.disabled = symbolsLocked;
+    searchButton.disabled = symbolsLocked;
+    suggestButton.disabled = symbolsLocked;
+    if (symbolsLocked) {
+      symbolsInput.value = "";
+      resultBox.innerHTML = "";
+      suggestionsBoard.innerHTML = "";
+      suggestMeta.textContent = `Loop mode picks top ${selectedLimit()} automatically at runtime.`;
+    } else if (!suggestMeta.textContent.includes("BTC trend state")) {
+      suggestMeta.textContent = "";
+    }
+  }
+
+  searchButton.addEventListener("click", searchSymbols);
+  suggestButton.addEventListener("click", suggestTopN);
+  suggestLimitInput.addEventListener("change", syncDcaMode);
+  aiDcaToggle.addEventListener("change", syncDcaMode);
+  loopToggle.addEventListener("change", syncDcaMode);
+  createForm.addEventListener("submit", () => {
+    if (submitLocked) return false;
+    submitLocked = true;
+    const isLoop = loopToggle.checked;
+    const n = selectedLimit();
+    startCampaignBtn.disabled = true;
+    startCampaignBtn.textContent = isLoop ? `Searching Top ${n}...` : "Creating...";
+    waitingMsg.style.display = "block";
+    waitingMsg.textContent = isLoop
+      ? `Loop campaign is running symbol scan for Top ${n}. Please wait...`
+      : "Creating campaign and opening positions. Please wait...";
+    return true;
+  });
+  queryInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      searchSymbols();
+    }
+  });
+  syncDcaMode();
+</script>
+{% endblock %}
+

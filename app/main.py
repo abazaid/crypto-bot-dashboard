@@ -23,6 +23,12 @@ from app.services.paper_trading import (
     suggest_top_symbols,
     wallet_snapshot,
 )
+from app.services.live_trading import (
+    create_live_campaign_positions,
+    live_wallet_snapshot,
+    recalculate_live_campaign_dca,
+    run_live_cycle,
+)
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -30,6 +36,7 @@ templates = Jinja2Templates(directory="app/web/templates")
 
 scheduler = BackgroundScheduler(timezone="UTC")
 cycle_lock = threading.Lock()
+live_cycle_lock = threading.Lock()
 
 
 def _context(active: str, **kwargs) -> dict:
@@ -172,6 +179,17 @@ def _scheduled_cycle() -> None:
         cycle_lock.release()
 
 
+def _scheduled_live_cycle() -> None:
+    if not live_cycle_lock.acquire(blocking=False):
+        return
+    db = SessionLocal()
+    try:
+        run_live_cycle(db)
+    finally:
+        db.close()
+        live_cycle_lock.release()
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -183,6 +201,9 @@ def on_startup() -> None:
         db.close()
 
     scheduler.add_job(_scheduled_cycle, "interval", seconds=max(settings.cycle_seconds, 3), id="paper_cycle", replace_existing=True)
+    scheduler.add_job(
+        _scheduled_live_cycle, "interval", seconds=max(settings.cycle_seconds, 3), id="live_cycle", replace_existing=True
+    )
     scheduler.start()
 
 
@@ -247,7 +268,167 @@ async def paper_create_campaign_page(request: Request) -> HTMLResponse:
 
 @app.get("/live", response_class=HTMLResponse)
 async def live_dashboard(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("live_dashboard.html", _context("live", request=request))
+    db = SessionLocal()
+    try:
+        campaigns = db.query(Campaign).filter(Campaign.mode == "live").order_by(desc(Campaign.created_at)).all()
+        live_error = None
+        try:
+            wallet = live_wallet_snapshot(db)
+        except Exception as e:
+            wallet = {
+                "cash": 0.0,
+                "equity": 0.0,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "invested_open": 0.0,
+                "market_value": 0.0,
+            }
+            live_error = str(e)
+        items = []
+        for c in campaigns:
+            stats = _campaign_stats(db, c)
+            items.append({"campaign": c, "stats": stats})
+        logs = db.query(ActivityLog).order_by(desc(ActivityLog.id)).limit(50).all()
+        return templates.TemplateResponse(
+            "live_home.html",
+            _context("live_home", request=request, wallet=wallet, campaigns=items, logs=logs, live_error=live_error),
+        )
+    finally:
+        db.close()
+
+
+@app.get("/live/create", response_class=HTMLResponse)
+async def live_create_campaign_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("live_create.html", _context("live_create", request=request))
+
+
+@app.get("/live/history", response_class=HTMLResponse)
+async def live_trading_history(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        closed_positions = (
+            db.query(Position)
+            .join(Campaign, Campaign.id == Position.campaign_id)
+            .filter(Position.status == "closed", Campaign.mode == "live")
+            .order_by(desc(Position.closed_at), desc(Position.id))
+            .all()
+        )
+        rows = []
+        symbol_totals: dict[str, float] = {}
+        wins = 0
+        net_pnl = 0.0
+        for p in closed_positions:
+            invested = float(p.total_invested_usdt or 0.0)
+            pnl = float(p.realized_pnl_usdt or 0.0)
+            pnl_pct = _pnl_pct(invested, pnl)
+            if pnl > 0:
+                wins += 1
+            net_pnl += pnl
+            symbol_key = str(p.symbol or "").upper()
+            symbol_totals[symbol_key] = float(symbol_totals.get(symbol_key, 0.0)) + pnl
+            rows.append(
+                {
+                    "id": p.id,
+                    "campaign_name": p.campaign.name,
+                    "symbol": symbol_key,
+                    "opened_at": p.opened_at,
+                    "closed_at": p.closed_at,
+                    "invested": invested,
+                    "exit_value": float((p.close_price or 0.0) * (p.total_qty or 0.0)),
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "close_reason": p.close_reason or "-",
+                }
+            )
+        for row in rows:
+            row["symbol_total_pnl"] = float(symbol_totals.get(row["symbol"], 0.0))
+        total = len(rows)
+        win_rate = (wins / total * 100.0) if total else 0.0
+        summary = {
+            "total_trades": total,
+            "wins": wins,
+            "losses": max(0, total - wins),
+            "win_rate": win_rate,
+            "net_pnl": net_pnl,
+        }
+        return templates.TemplateResponse(
+            "live_history.html",
+            _context("live_history", request=request, summary=summary, rows=rows),
+        )
+    finally:
+        db.close()
+
+
+@app.get("/live/campaigns/{campaign_id}", response_class=HTMLResponse)
+async def live_campaign_details(request: Request, campaign_id: int) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "live").first()
+        if not campaign:
+            return RedirectResponse("/live", status_code=303)
+        rules = db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).order_by(DcaRule.drop_pct.asc()).all()
+        edit_rules = {r.name: r for r in rules}
+        edit_slots = rules[:5]
+        while len(edit_slots) < 5:
+            edit_slots.append(None)
+        ai_suggested_rows = []
+        if campaign.ai_dca_enabled:
+            try:
+                suggested = json.loads(campaign.ai_dca_suggested_rules_json or "[]")
+            except Exception:
+                suggested = []
+            if isinstance(suggested, list):
+                for row in suggested:
+                    try:
+                        ai_suggested_rows.append(
+                            {
+                                "name": str(row.get("name", "AI-DCA")).strip() or "AI-DCA",
+                                "drop_pct": float(row.get("drop_pct", 0.0)),
+                                "allocation_pct": float(row.get("allocation_pct", 0.0)),
+                                "suggested_usdt": campaign.entry_amount_usdt * (float(row.get("allocation_pct", 0.0)) / 100.0),
+                            }
+                        )
+                    except Exception:
+                        continue
+        current_rows = [
+            {
+                "name": r.name,
+                "drop_pct": float(r.drop_pct),
+                "allocation_pct": float(r.allocation_pct),
+                "current_usdt": campaign.entry_amount_usdt * (float(r.allocation_pct) / 100.0),
+            }
+            for r in rules
+        ]
+        positions = db.query(Position).filter(Position.campaign_id == campaign.id).order_by(desc(Position.id)).all()
+        position_ids = [p.id for p in positions]
+        executed_dca_counts: dict[int, int] = {}
+        if position_ids:
+            dca_states = db.query(PositionDcaState).filter(PositionDcaState.position_id.in_(position_ids)).all()
+            for st in dca_states:
+                if bool(st.executed):
+                    executed_dca_counts[st.position_id] = int(executed_dca_counts.get(st.position_id, 0)) + 1
+        open_symbols = [p.symbol for p in positions if p.status == "open"]
+        prices = get_prices(open_symbols) if open_symbols else {}
+        stats = _campaign_stats(db, campaign)
+        return templates.TemplateResponse(
+            "live_campaign.html",
+            _context(
+                "live_campaign",
+                request=request,
+                campaign=campaign,
+                rules=rules,
+                edit_rules=edit_rules,
+                edit_slots=edit_slots,
+                ai_suggested_rows=ai_suggested_rows,
+                current_rows=current_rows,
+                positions=positions,
+                executed_dca_counts=executed_dca_counts,
+                prices=prices,
+                stats=stats,
+            ),
+        )
+    finally:
+        db.close()
 
 
 @app.get("/paper/history", response_class=HTMLResponse)
@@ -720,6 +901,300 @@ async def edit_paper_campaign(
         )
         db.commit()
         return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/campaigns")
+async def create_live_campaign(
+    request: Request,
+    name: str = Form(...),
+    entry_amount_usdt: str = Form(...),
+    symbols: str = Form(""),
+    tp_pct: str = Form(""),
+    sl_pct: str = Form(""),
+    dca_drop_1: str = Form(""),
+    dca_alloc_1: str = Form(""),
+    dca_drop_2: str = Form(""),
+    dca_alloc_2: str = Form(""),
+    dca_drop_3: str = Form(""),
+    dca_alloc_3: str = Form(""),
+    dca_drop_4: str = Form(""),
+    dca_alloc_4: str = Form(""),
+    dca_drop_5: str = Form(""),
+    dca_alloc_5: str = Form(""),
+    ai_dca_enabled: str | None = Form(None),
+    strict_support_score_required: str | None = Form(None),
+    trend_filter_enabled: str | None = Form(None),
+    auto_reentry_enabled: str | None = Form(None),
+    loop_enabled: str | None = Form(None),
+    loop_target_count: str = Form("5"),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        entry_amount = _safe_float(entry_amount_usdt, 0.0) or 0.0
+        if entry_amount <= 0:
+            return RedirectResponse("/live", status_code=303)
+        picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        loop_mode = str(loop_enabled or "").lower() in {"on", "true", "1", "yes"}
+        loop_target = int(_safe_float(loop_target_count, 5.0) or 5.0)
+        loop_target = min(max(loop_target, 1), 30)
+        ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
+        strict_score_mode = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
+        trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
+        reentry_mode = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
+        if loop_mode:
+            ai_mode = True
+            strict_score_mode = True
+            reentry_mode = False
+            scan = suggest_top_symbols(max(loop_target, 10))
+            picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
+            picked = picked[:loop_target]
+        if not picked:
+            return RedirectResponse("/live/create", status_code=303)
+        campaign = Campaign(
+            name=name.strip() or "Live Campaign",
+            mode="live",
+            status="active",
+            entry_amount_usdt=entry_amount,
+            tp_pct=_safe_float(tp_pct, None),
+            sl_pct=_safe_float(sl_pct, None),
+            ai_dca_enabled=ai_mode,
+            strict_support_score_required=strict_score_mode,
+            trend_filter_enabled=trend_mode,
+            auto_reentry_enabled=reentry_mode,
+            loop_enabled=loop_mode,
+            loop_target_count=loop_target if loop_mode else 0,
+        )
+        db.add(campaign)
+        db.flush()
+        if ai_mode:
+            ai_rules, ai_profile, ai_note = build_ai_dca_rules(picked, campaign.sl_pct)
+            campaign.ai_dca_profile = ai_profile
+            campaign.ai_dca_notes = ai_note
+            campaign.ai_dca_suggested_rules_json = json.dumps(
+                [{"name": n, "drop_pct": float(d), "allocation_pct": float(a)} for n, d, a in ai_rules]
+            )
+            for n, d, a in ai_rules:
+                db.add(DcaRule(campaign_id=campaign.id, name=n, drop_pct=d, allocation_pct=a))
+        else:
+            dca_raw = [
+                ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
+                ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
+                ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
+                ("DCA-4", _safe_float(dca_drop_4, None), _safe_float(dca_alloc_4, None)),
+                ("DCA-5", _safe_float(dca_drop_5, None), _safe_float(dca_alloc_5, None)),
+            ]
+            for n, d, a in dca_raw:
+                if d is None or a is None or d <= 0 or a <= 0:
+                    continue
+                db.add(DcaRule(campaign_id=campaign.id, name=n, drop_pct=d, allocation_pct=a))
+        db.commit()
+        try:
+            opened, errors = create_live_campaign_positions(db, campaign, picked)
+        except Exception as e:
+            db.add(ActivityLog(event_type="LIVE_CREATE_FAIL", symbol="-", message=f"Campaign='{campaign.name}' | error={e}"))
+            db.commit()
+            return RedirectResponse("/live/create", status_code=303)
+        if errors:
+            campaign.status = "paused"
+            db.commit()
+        if opened > 0:
+            db.add(ActivityLog(event_type="LIVE_CAMPAIGN", symbol="-", message=f"Live campaign '{campaign.name}' opened={opened}."))
+            db.commit()
+        return RedirectResponse(f"/live/campaigns/{campaign.id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/campaigns/{campaign_id}/toggle")
+async def toggle_live_campaign(campaign_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "live").first()
+        if campaign:
+            campaign.status = "paused" if campaign.status == "active" else "active"
+            db.add(ActivityLog(event_type="LIVE_CAMPAIGN", symbol="-", message=f"Campaign '{campaign.name}' switched to {campaign.status}."))
+            db.commit()
+        return RedirectResponse(f"/live/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/campaigns/{campaign_id}/recalculate-dca")
+async def recalculate_live_campaign_dca_now(campaign_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "live").first()
+        if not campaign:
+            return RedirectResponse("/live", status_code=303)
+        touched_positions, updated_states = recalculate_live_campaign_dca(db, campaign)
+        db.add(
+            ActivityLog(
+                event_type="LIVE_DCA_RECALC",
+                symbol="-",
+                message=f"Campaign='{campaign.name}' | touched_positions={touched_positions} | updated_pending_states={updated_states}",
+            )
+        )
+        db.commit()
+        return RedirectResponse(f"/live/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/positions/{position_id}/sell")
+async def manual_sell_live_position(position_id: int) -> RedirectResponse:
+    from app.services.binance_live import place_market_sell_qty
+
+    db = SessionLocal()
+    try:
+        pos = (
+            db.query(Position)
+            .join(Campaign, Campaign.id == Position.campaign_id)
+            .filter(Position.id == position_id, Position.status == "open", Campaign.mode == "live")
+            .first()
+        )
+        if not pos:
+            return RedirectResponse("/live", status_code=303)
+        campaign_id = pos.campaign_id
+        sell = place_market_sell_qty(pos.symbol, pos.total_qty)
+        proceeds = float(sell["quote_qty"])
+        close_price = float(sell["avg_price"] or 0.0)
+        pnl = proceeds - float(pos.total_invested_usdt)
+        pos.status = "closed"
+        pos.closed_at = datetime.utcnow()
+        pos.close_price = close_price
+        pos.realized_pnl_usdt = pnl
+        pos.close_reason = "MANUAL_SELL"
+        db.add(
+            ActivityLog(
+                event_type="LIVE_MANUAL_SELL",
+                symbol=pos.symbol,
+                message=(
+                    f"Campaign={pos.campaign.name} | Close={close_price:.6f} | Qty={pos.total_qty:.8f} "
+                    f"| Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
+                ),
+            )
+        )
+        db.commit()
+        return RedirectResponse(f"/live/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/campaigns/{campaign_id}/edit")
+async def edit_live_campaign(
+    campaign_id: int,
+    tp_pct: str = Form(""),
+    sl_pct: str = Form(""),
+    trend_filter_enabled: str | None = Form(None),
+    auto_reentry_enabled: str | None = Form(None),
+    strict_support_score_required: str | None = Form(None),
+    loop_target_count: str = Form(""),
+    dca_drop_1: str = Form(""),
+    dca_alloc_1: str = Form(""),
+    dca_drop_2: str = Form(""),
+    dca_alloc_2: str = Form(""),
+    dca_drop_3: str = Form(""),
+    dca_alloc_3: str = Form(""),
+    dca_drop_4: str = Form(""),
+    dca_alloc_4: str = Form(""),
+    dca_drop_5: str = Form(""),
+    dca_alloc_5: str = Form(""),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "live").first()
+        if not campaign:
+            return RedirectResponse("/live", status_code=303)
+        campaign.tp_pct = _safe_float(tp_pct, None)
+        campaign.sl_pct = _safe_float(sl_pct, None)
+        campaign.trend_filter_enabled = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
+        campaign.auto_reentry_enabled = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
+        campaign.strict_support_score_required = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
+        if campaign.loop_enabled:
+            campaign.strict_support_score_required = True
+            desired = int(_safe_float(loop_target_count, float(campaign.loop_target_count or 5)) or 5)
+            campaign.loop_target_count = min(max(desired, 1), 30)
+        incoming = [
+            ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
+            ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
+            ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
+            ("DCA-4", _safe_float(dca_drop_4, None), _safe_float(dca_alloc_4, None)),
+            ("DCA-5", _safe_float(dca_drop_5, None), _safe_float(dca_alloc_5, None)),
+        ]
+        existing = {r.name: r for r in db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).all()}
+        kept_rule_names: set[str] = set()
+        for n, d, a in incoming:
+            if d is None or a is None or d <= 0 or a <= 0:
+                continue
+            kept_rule_names.add(n)
+            row = existing.get(n)
+            if row:
+                row.drop_pct = d
+                row.allocation_pct = a
+            else:
+                db.add(DcaRule(campaign_id=campaign.id, name=n, drop_pct=d, allocation_pct=a))
+        for n, row in existing.items():
+            if n not in kept_rule_names:
+                db.delete(row)
+        db.flush()
+        _sync_open_positions_dca_states(db, campaign.id)
+        db.add(
+            ActivityLog(
+                event_type="LIVE_CAMPAIGN_EDIT",
+                symbol="-",
+                message=f"Campaign '{campaign.name}' updated: TP={campaign.tp_pct}, SL={campaign.sl_pct}, DCA={sorted(kept_rule_names)}",
+            )
+        )
+        db.commit()
+        return RedirectResponse(f"/live/campaigns/{campaign_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/api/live/suggestions")
+async def api_live_suggestions(limit: int = 5) -> JSONResponse:
+    safe_limit = min(max(int(limit), 1), 30)
+    return JSONResponse(suggest_top_symbols(safe_limit))
+
+
+@app.get("/api/live/positions/{position_id}/dca")
+async def api_live_position_dca(position_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        position = db.query(Position).join(Campaign, Campaign.id == Position.campaign_id).filter(
+            Position.id == position_id, Campaign.mode == "live"
+        ).first()
+        if not position:
+            return JSONResponse({"items": []})
+        states = (
+            db.query(PositionDcaState)
+            .join(DcaRule, DcaRule.id == PositionDcaState.dca_rule_id)
+            .filter(PositionDcaState.position_id == position_id)
+            .order_by(DcaRule.drop_pct.asc())
+            .all()
+        )
+        items = []
+        for st in states:
+            drop_pct = float(st.custom_drop_pct if st.custom_drop_pct is not None else st.rule.drop_pct)
+            alloc_pct = float(st.custom_allocation_pct if st.custom_allocation_pct is not None else st.rule.allocation_pct)
+            if alloc_pct <= 0:
+                continue
+            trigger_price = float(position.initial_price) * (1 - (drop_pct / 100.0))
+            items.append(
+                {
+                    "rule": st.rule.name,
+                    "drop_pct": drop_pct,
+                    "allocation_pct": alloc_pct,
+                    "support_score": st.custom_support_score,
+                    "trigger_price": trigger_price,
+                    "source": "symbol_specific" if st.custom_drop_pct is not None else "campaign_default",
+                    "executed": st.executed,
+                    "executed_price": st.executed_price,
+                }
+            )
+        return JSONResponse({"items": items})
     finally:
         db.close()
 

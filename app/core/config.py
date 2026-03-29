@@ -17,6 +17,8 @@ class Settings:
     dca_scale_3 = float(os.getenv("DCA_SCALE_3", "3.0"))
     dca_scale_4 = float(os.getenv("DCA_SCALE_4", "3.5"))
     dca_scale_5 = float(os.getenv("DCA_SCALE_5", "4.5"))
+    binance_api_key = os.getenv("BINANCE_API_KEY", "").strip()
+    binance_api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
 
 
 settings = Settings()

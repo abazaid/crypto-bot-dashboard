@@ -1,0 +1,325 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>{{ campaign.name }}</h1>
+  <p>Live campaign details and live DCA state.</p>
+</section>
+
+<section class="cards four">
+  <article class="card stat">
+    <h3>Status</h3>
+    <p>{{ campaign.status }}</p>
+  </article>
+  <article class="card stat">
+    <h3>Open</h3>
+    <p>{{ stats.open_count }}</p>
+  </article>
+  <article class="card stat">
+    <h3>Realized</h3>
+    <p class="{{ 'pnl-pos' if stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.realized_pnl) }} USDT</p>
+  </article>
+  <article class="card stat">
+    <h3>Unrealized</h3>
+    <p class="{{ 'pnl-pos' if stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.unrealized_pnl) }} USDT</p>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Risk Config</h2>
+  <p>Entry per symbol: <strong>{{ "%.2f"|format(campaign.entry_amount_usdt) }} USDT</strong></p>
+  <p>Take Profit: <strong>{{ campaign.tp_pct if campaign.tp_pct is not none else "-" }}%</strong></p>
+  <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
+  <p>DCA Mode: <strong>{{ "AI DCA" if campaign.ai_dca_enabled else "Manual DCA" }}</strong></p>
+  <p>Strict AI (No Score = No DCA): <strong>{{ "Enabled" if campaign.strict_support_score_required else "Disabled" }}</strong></p>
+  <p>Campaign Type: <strong>{{ "Loop AI" if campaign.loop_enabled else "Standard" }}</strong></p>
+  {% if campaign.loop_enabled %}
+  <p>Loop Target Open Symbols: <strong>{{ campaign.loop_target_count }}</strong></p>
+  {% endif %}
+  <p>Trend Filter: <strong>{{ "Enabled" if campaign.trend_filter_enabled else "Disabled" }}</strong></p>
+  <p>Auto Re-entry: <strong>{{ "Enabled" if campaign.auto_reentry_enabled else "Disabled" }}</strong></p>
+  <p><strong>Pause behavior:</strong> stops new buys only. TP/SL exits and manual sell remain active.</p>
+  {% if campaign.ai_dca_enabled and campaign.ai_dca_notes %}
+  <p>AI Notes: <strong>{{ campaign.ai_dca_notes }}</strong></p>
+  {% endif %}
+  <div class="actions-row">
+    <form method="post" action="/live/campaigns/{{ campaign.id }}/toggle">
+      <button type="submit">{{ "Pause" if campaign.status == "active" else "Activate" }}</button>
+    </form>
+    {% if campaign.ai_dca_enabled %}
+    <form method="post" action="/live/campaigns/{{ campaign.id }}/recalculate-dca" onsubmit="return confirm('Recalculate pending DCA levels for all open symbols in this campaign?');">
+      <button type="submit" class="mini-btn">Recalculate DCA Now</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Edit Campaign</h2>
+  <p>Allowed edits: Take Profit, Stop Loss, and DCA rules. Entry amount and symbols are locked.</p>
+  <form method="post" action="/live/campaigns/{{ campaign.id }}/edit" class="form-grid">
+    <label>Take Profit %
+      <input name="tp_pct" type="number" step="0.01" min="0" value="{{ campaign.tp_pct if campaign.tp_pct is not none else '' }}">
+    </label>
+    <label>Stop Loss %
+      <input name="sl_pct" type="number" step="0.01" min="0" value="{{ campaign.sl_pct if campaign.sl_pct is not none else '' }}">
+    </label>
+    <label>Trend Filter (BTC)
+      <span class="inline-check">
+        <input name="trend_filter_enabled" type="checkbox" {% if campaign.trend_filter_enabled %}checked{% endif %}>
+        <span>Reduce/block DCA buys in bearish BTC trend.</span>
+      </span>
+    </label>
+    <label>Strict AI (No Score = No DCA)
+      <span class="inline-check">
+        <input name="strict_support_score_required" type="checkbox" {% if campaign.strict_support_score_required %}checked{% endif %} {% if campaign.loop_enabled %}disabled{% endif %}>
+        <span>Skip any AI DCA level that has no support score.</span>
+      </span>
+    </label>
+    <label>Auto Re-entry
+      <span class="inline-check">
+        <input name="auto_reentry_enabled" type="checkbox" {% if campaign.auto_reentry_enabled %}checked{% endif %}>
+        <span>Reopen symbol automatically after close while campaign active.</span>
+      </span>
+    </label>
+    {% if campaign.loop_enabled %}
+    <label>Loop Target Symbols (N)
+      <input name="loop_target_count" type="number" min="1" max="30" step="1" value="{{ campaign.loop_target_count }}">
+    </label>
+    {% endif %}
+
+    <label>DCA-1 Drop %
+      <input name="dca_drop_1" type="number" step="0.01" min="0" value="{{ edit_slots[0].drop_pct if edit_slots[0] else '' }}">
+    </label>
+    <label>DCA-1 Allocation %
+      <input name="dca_alloc_1" type="number" step="0.01" min="0" value="{{ edit_slots[0].allocation_pct if edit_slots[0] else '' }}">
+    </label>
+    <label>DCA-2 Drop %
+      <input name="dca_drop_2" type="number" step="0.01" min="0" value="{{ edit_slots[1].drop_pct if edit_slots[1] else '' }}">
+    </label>
+    <label>DCA-2 Allocation %
+      <input name="dca_alloc_2" type="number" step="0.01" min="0" value="{{ edit_slots[1].allocation_pct if edit_slots[1] else '' }}">
+    </label>
+    <label>DCA-3 Drop %
+      <input name="dca_drop_3" type="number" step="0.01" min="0" value="{{ edit_slots[2].drop_pct if edit_slots[2] else '' }}">
+    </label>
+    <label>DCA-3 Allocation %
+      <input name="dca_alloc_3" type="number" step="0.01" min="0" value="{{ edit_slots[2].allocation_pct if edit_slots[2] else '' }}">
+    </label>
+    <label>DCA-4 Drop %
+      <input name="dca_drop_4" type="number" step="0.01" min="0" value="{{ edit_slots[3].drop_pct if edit_slots[3] else '' }}">
+    </label>
+    <label>DCA-4 Allocation %
+      <input name="dca_alloc_4" type="number" step="0.01" min="0" value="{{ edit_slots[3].allocation_pct if edit_slots[3] else '' }}">
+    </label>
+    <label>DCA-5 Drop %
+      <input name="dca_drop_5" type="number" step="0.01" min="0" value="{{ edit_slots[4].drop_pct if edit_slots[4] else '' }}">
+    </label>
+    <label>DCA-5 Allocation %
+      <input name="dca_alloc_5" type="number" step="0.01" min="0" value="{{ edit_slots[4].allocation_pct if edit_slots[4] else '' }}">
+    </label>
+    <div class="full">
+      <button type="submit">Save Campaign Changes</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>DCA Rules</h2>
+  {% if campaign.ai_dca_enabled and ai_suggested_rows %}
+  <h3>AI Suggested DCA (Original)</h3>
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Rule</th>
+        <th>Drop %</th>
+        <th>Allocation %</th>
+        <th>Suggested Amount (USDT)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in ai_suggested_rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        <td>{{ "%.2f"|format(row.drop_pct) }}</td>
+        <td>{{ "%.2f"|format(row.allocation_pct) }}</td>
+        <td>{{ "%.2f"|format(row.suggested_usdt) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <h3>Current DCA (Editable)</h3>
+  {% endif %}
+  {% if rules %}
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Rule</th>
+        <th>Drop %</th>
+        <th>Allocation %</th>
+        <th>Current Amount (USDT)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in current_rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        <td>{{ "%.2f"|format(row.drop_pct) }}</td>
+        <td>{{ "%.2f"|format(row.allocation_pct) }}</td>
+        <td>{{ "%.2f"|format(row.current_usdt) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p>No DCA rules.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Positions</h2>
+  {% if positions %}
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Status</th>
+        <th>Open Time</th>
+        <th>Close Time</th>
+        <th>Buy Price (Initial)</th>
+        <th>Buy Price (Current Avg)</th>
+        <th>DCA Filled</th>
+        <th>New Average</th>
+        <th>New Target</th>
+        <th>Target Sell (TP)</th>
+        <th>Current/Close</th>
+        <th>Invested</th>
+        <th>Qty</th>
+        <th>PnL</th>
+        <th>DCA</th>
+        <th>Manual Exit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in positions %}
+      {% set mark = prices.get(p.symbol, p.close_price if p.close_price else p.average_price) %}
+      {% set pnl = ((mark * p.total_qty) - p.total_invested_usdt) if p.status == "open" else (p.realized_pnl_usdt or 0.0) %}
+      {% set pnl_pct = ((pnl / p.total_invested_usdt) * 100) if p.total_invested_usdt > 0 else 0 %}
+      {% set dca_count = executed_dca_counts.get(p.id, 0) %}
+      {% set new_avg = p.average_price if dca_count > 0 else p.initial_price %}
+      {% set new_target = (new_avg * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
+      {% set tp_price = (p.average_price * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
+      <tr>
+        <td>{{ p.symbol }}</td>
+        <td><span class="badge">{{ p.status }}</span></td>
+        <td>{{ p.opened_at.strftime("%Y-%m-%d %H:%M") if p.opened_at else "-" }}</td>
+        <td>{{ p.closed_at.strftime("%Y-%m-%d %H:%M") if p.closed_at else "-" }}</td>
+        <td>{{ "%.6f"|format(p.initial_price) }}</td>
+        <td>{{ "%.6f"|format(p.average_price) }}</td>
+        <td>{{ dca_count }}</td>
+        <td>{{ "%.6f"|format(new_avg) }}</td>
+        <td>{{ "%.6f"|format(new_target) if new_target is not none else "-" }}</td>
+        <td>{{ "%.6f"|format(tp_price) if tp_price is not none else "-" }}</td>
+        <td>{{ "%.6f"|format(mark) }}</td>
+        <td>{{ "%.2f"|format(p.total_invested_usdt) }}</td>
+        <td>{{ "%.8f"|format(p.total_qty) }}</td>
+        <td class="{{ 'pnl-pos' if pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(pnl) }} ({{ "%+.2f"|format(pnl_pct) }}%)</td>
+        <td><button type="button" class="mini-btn dca-view-btn" data-position-id="{{ p.id }}">View</button></td>
+        <td>
+          {% if p.status == "open" %}
+          <form method="post" action="/live/positions/{{ p.id }}/sell" onsubmit="return confirm('Sell {{ p.symbol }} now and close this position?');">
+            <button type="submit" class="mini-btn sell-btn">Sell</button>
+          </form>
+          {% else %}
+          <span class="badge">Closed</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div id="dca-position-panel" class="card dca-panel" style="display:none;">
+    <h3 id="dca-panel-title">Symbol DCA</h3>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Rule</th>
+          <th>Drop %</th>
+          <th>Allocation %</th>
+          <th>Support Score</th>
+          <th>Trigger Price</th>
+          <th>Mode</th>
+          <th>Status</th>
+          <th>Executed Price</th>
+        </tr>
+      </thead>
+      <tbody id="dca-panel-body"></tbody>
+    </table>
+    </div>
+  </div>
+  {% else %}
+  <p>No positions in this campaign.</p>
+  {% endif %}
+</section>
+
+<script>
+  window.initPaperCampaignPage = function initPaperCampaignPage() {
+    const dcaPanel = document.getElementById("dca-position-panel");
+    const dcaPanelBody = document.getElementById("dca-panel-body");
+    const dcaPanelTitle = document.getElementById("dca-panel-title");
+    if (!dcaPanel || !dcaPanelBody || !dcaPanelTitle) return;
+    window.__openDcaState = window.__openDcaState || null;
+
+    async function loadPositionDca(positionId, symbol) {
+      dcaPanel.style.display = "block";
+      dcaPanelTitle.textContent = `DCA for ${symbol}`;
+      dcaPanelBody.innerHTML = `<tr><td colspan="8">Loading...</td></tr>`;
+      const res = await fetch(`/api/live/positions/${positionId}/dca`);
+      const data = await res.json();
+      const items = data.items || [];
+      if (!items.length) {
+        dcaPanelBody.innerHTML = `<tr><td colspan="8">No DCA rows for this position.</td></tr>`;
+        return;
+      }
+      dcaPanelBody.innerHTML = "";
+      items.forEach((row) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${row.rule}</td>
+          <td>${Number(row.drop_pct).toFixed(2)}</td>
+          <td>${Number(row.allocation_pct).toFixed(2)}</td>
+          <td>${row.support_score ? Number(row.support_score).toFixed(1) : '-'}</td>
+          <td>${Number(row.trigger_price).toFixed(6)}</td>
+          <td>${row.source === 'symbol_specific' ? 'Per Symbol' : 'Campaign'}</td>
+          <td>${row.executed ? 'Executed' : 'Pending'}</td>
+          <td>${row.executed_price ? Number(row.executed_price).toFixed(6) : '-'}</td>
+        `;
+        dcaPanelBody.appendChild(tr);
+      });
+      window.__openDcaState = { positionId, symbol };
+    }
+
+    document.querySelectorAll(".dca-view-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const positionId = btn.getAttribute("data-position-id");
+        const row = btn.closest("tr");
+        const symbol = row ? row.children[0].textContent.trim() : "position";
+        loadPositionDca(positionId, symbol);
+      });
+    });
+
+    if (window.__openDcaState && window.__openDcaState.positionId) {
+      loadPositionDca(window.__openDcaState.positionId, window.__openDcaState.symbol || "position");
+    }
+  };
+
+  window.initPaperCampaignPage();
+</script>
+{% endblock %}
+

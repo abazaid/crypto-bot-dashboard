@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>Live Menu</h3>
+    <a class="side-link active" href="/live">Campaigns Home</a>
+    <a class="side-link" href="/live/create">Create Campaign</a>
+    <a class="side-link" href="/live/history">Live History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>Live Trading</h1>
+      <p>Campaign overview and live status.</p>
+      {% if live_error %}
+      <p class="pnl-neg">Live API error: {{ live_error }}</p>
+      {% endif %}
+    </section>
+
+    <section class="cards three">
+      <article class="card stat">
+        <h3>Cash</h3>
+        <p>{{ "%.2f"|format(wallet.cash) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Equity</h3>
+        <p>{{ "%.2f"|format(wallet.equity) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>PnL</h3>
+        {% set total_pnl = wallet.realized_pnl + wallet.unrealized_pnl %}
+        <p class="{{ 'pnl-pos' if total_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(total_pnl) }} USDT</p>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Campaigns</h2>
+      {% if campaigns %}
+      <div class="table-scroll">
+      <table class="campaigns-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Type</th>
+            <th>DCA Mode</th>
+            <th>Trend Filter</th>
+            <th>Auto Re-entry</th>
+            <th>Open</th>
+            <th>Closed</th>
+            <th>DCA Done</th>
+            <th>Realized (Confirmed)</th>
+            <th>Unrealized (Floating)</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in campaigns %}
+          <tr>
+            <td>{{ item.campaign.name }}</td>
+            <td>{{ item.campaign.status }}</td>
+            <td>{{ "Loop AI" if item.campaign.loop_enabled else "Standard" }}</td>
+            <td>{{ "AI" if item.campaign.ai_dca_enabled else "Manual" }}</td>
+            <td>{{ "On" if item.campaign.trend_filter_enabled else "Off" }}</td>
+            <td>{{ "On" if item.campaign.auto_reentry_enabled else "Off" }}</td>
+            <td>{{ item.stats.open_count }}</td>
+            <td>{{ item.stats.closed_count }}</td>
+            <td>{{ item.stats.dca_done_count }}</td>
+            <td class="{{ 'pnl-pos' if item.stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.realized_pnl) }}</td>
+            <td class="{{ 'pnl-pos' if item.stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.unrealized_pnl) }}</td>
+            <td><a href="/live/campaigns/{{ item.campaign.id }}">Open</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p>No campaigns yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Activity Log</h2>
+      <div class="log-list">
+        {% for log in logs %}
+        <div class="log-item">
+          <span>{{ log.created_at.strftime("%H:%M:%S") }}</span>
+          <strong>{{ log.event_type }}</strong>
+          <span>{{ log.symbol }}</span>
+          <p>{{ log.message }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+
