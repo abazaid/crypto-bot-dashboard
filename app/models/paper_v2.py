@@ -24,6 +24,7 @@ class Campaign(Base):
     trend_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_reentry_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     loop_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    loop_v2_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     loop_target_count: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 

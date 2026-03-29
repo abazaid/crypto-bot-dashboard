@@ -255,6 +255,9 @@ def _support_engine(symbol: str) -> dict | None:
         return None
 
     closes_1h = [float(k[4]) for k in kl1h]
+    ohlc_1h = [[float(k[1]), float(k[2]), float(k[3]), float(k[4])] for k in kl1h]
+    lows_1h = [x[2] for x in ohlc_1h]
+    volumes_1h = [float(k[5]) for k in kl1h]
     closes_4h = [float(k[4]) for k in kl4h]
     prev_d = kld[-2]
     prev_4h = kl4h[-2]
@@ -296,15 +299,43 @@ def _support_engine(symbol: str) -> dict | None:
 
     strongest = supports_below[0]
     near_strong = abs(price - strongest["price"]) / price * 100.0 <= settings.dca_near_support_pct
+    rsi_value = _rsi(closes_1h, 14) or 50.0
+    rsi_turning = len(closes_1h) >= 4 and closes_1h[-1] >= closes_1h[-2] >= closes_1h[-3]
+    reversal_candle = _is_hammer(ohlc_1h[-1]) or _is_bullish_engulfing(ohlc_1h[-2], ohlc_1h[-1])
+    recent_support = min(lows_1h[-20:])
+    recent_avg_vol = sum(volumes_1h[-21:-1]) / 20.0
+    high_break_vol = volumes_1h[-1] > (recent_avg_vol * 1.8) if recent_avg_vol > 0 else False
+    breakdown_suspected = (
+        price < (strongest["price"] * 0.99)
+        and (price < (recent_support * 0.995) or high_break_vol)
+    )
+    vol_now = sum(volumes_1h[-3:]) / 3.0
+    vol_before = sum(volumes_1h[-6:-3]) / 3.0
+    volume_weakening = vol_now <= vol_before
+    reversal_ok_count = sum(
+        [
+            bool(rsi_value <= settings.dca_rsi_oversold or rsi_turning),
+            bool(reversal_candle),
+            bool(volume_weakening),
+            bool(price >= strongest["price"]),
+        ]
+    )
+    reversal_confirmed = reversal_ok_count >= max(1, settings.dca_reversal_min_conditions)
     return {
         "price": price,
-        "rsi": _rsi(closes_1h, 14) or 50.0,
+        "rsi": rsi_value,
         "ema200": float(ema200),
         "supports": supports_below,
         "strongest": strongest,
         "near_strong": near_strong,
         "drawdown_pct": ((max([float(k[2]) for k in kl1h[-200:]]) - price) / max([float(k[2]) for k in kl1h[-200:]])) * 100.0,
         "volume_spike": (float(kl1h[-1][5]) > (sum([float(k[5]) for k in kl1h[-21:-1]]) / 20.0) * 1.2),
+        "rsi_turning": rsi_turning,
+        "reversal_candle": reversal_candle,
+        "volume_weakening": volume_weakening,
+        "reversal_ok_count": reversal_ok_count,
+        "reversal_confirmed": reversal_confirmed,
+        "breakdown_suspected": breakdown_suspected,
     }
 
 
@@ -390,7 +421,7 @@ def _cap_drop_levels_to_sl(levels: list[float], sl_pct: float | None) -> list[fl
     return cleaned
 
 
-def suggest_top_symbols(limit: int = 5) -> dict:
+def suggest_top_symbols(limit: int = 5, use_v2: bool = False) -> dict:
     market_state = btc_market_state()
     raw = get_24h_tickers()
     candidates = []
@@ -409,7 +440,8 @@ def suggest_top_symbols(limit: int = 5) -> dict:
             }
         )
     candidates.sort(key=lambda x: x["quote_volume"], reverse=True)
-    universe = candidates[:18]
+    universe_size = 40 if use_v2 else 18
+    universe = candidates[:universe_size]
 
     results = []
     for c in universe:
@@ -428,27 +460,59 @@ def suggest_top_symbols(limit: int = 5) -> dict:
         dip_valid = (-10.0 <= c["price_change_pct_24h"] <= -3.0) or (5.0 <= drawdown_from_recent_high <= 20.0)
         trend_good = ctx["price"] > float(ctx["ema200"])
 
-        score = 0
-        if near_support:
-            score += 30
-        score += min(30, int(strongest_score / 3.5))
-        if rsi_ok:
-            score += 20
-        if volume_spike:
-            score += 20
-        if trend_good:
-            score += 15
-        if dip_valid:
-            score += 15
+        if use_v2:
+            # Hard filters (must pass):
+            # 1) near strong support
+            # 2) support score >= threshold
+            # 3) no breakdown structure
+            # 4) reversal confirmed
+            if not near_support:
+                continue
+            if strongest_score < settings.dca_support_score_threshold:
+                continue
+            if bool(ctx.get("breakdown_suspected", False)):
+                continue
+            if not bool(ctx.get("reversal_confirmed", False)):
+                continue
+            if settings.enforce_btc_filter and market_state == "strong_bearish":
+                continue
 
-        # BTC regime adjustment
-        if market_state == "strong_bearish":
-            score -= 25
-        elif market_state == "bearish":
-            score -= 10
+            # Ranking score (after hard filters only).
+            score = 40
+            score += min(30, int(strongest_score / 2.8))
+            if rsi_ok:
+                score += 10
+            if volume_spike:
+                score += 10
+            if trend_good:
+                score += 8
+            if dip_valid:
+                score += 8
+            score += min(8, int(max(0.0, (c["quote_volume"] / 10_000_000) - 1)))
+            if market_state == "bearish":
+                score -= 8
+        else:
+            score = 0
+            if near_support:
+                score += 30
+            score += min(30, int(strongest_score / 3.5))
+            if rsi_ok:
+                score += 20
+            if volume_spike:
+                score += 20
+            if trend_good:
+                score += 15
+            if dip_valid:
+                score += 15
 
-        if score < 35:
-            continue
+            # BTC regime adjustment
+            if market_state == "strong_bearish":
+                score -= 25
+            elif market_state == "bearish":
+                score -= 10
+
+            if score < 35:
+                continue
 
         results.append(
             {
@@ -460,6 +524,8 @@ def suggest_top_symbols(limit: int = 5) -> dict:
                 "support_score": strongest_score,
                 "support_distance_pct": support_distance_pct,
                 "drawdown_pct": drawdown_from_recent_high,
+                "reversal_ok_count": int(ctx.get("reversal_ok_count", 0)),
+                "breakdown_suspected": bool(ctx.get("breakdown_suspected", False)),
             }
         )
 
@@ -467,6 +533,7 @@ def suggest_top_symbols(limit: int = 5) -> dict:
     picked = results[: max(1, limit)]
     return {
         "market_state": market_state,
+        "engine_version": "v2" if use_v2 else "v1",
         "items": picked,
         "symbols_csv": ",".join([x["symbol"] for x in picked]),
     }
@@ -1043,7 +1110,7 @@ def run_cycle(db: Session) -> None:
         fallback_ai_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct)) for r in rules]
         ai_profile = campaign.ai_dca_profile or "neutral"
 
-        scan = suggest_top_symbols(max(15, target_count * 4))
+        scan = suggest_top_symbols(max(15, target_count * 4), use_v2=bool(campaign.loop_v2_enabled))
         ranked_symbols = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
         picks = []
         for symbol in ranked_symbols:

@@ -278,6 +278,7 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE campaigns ADD COLUMN trend_filter_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN auto_reentry_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN loop_enabled BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE campaigns ADD COLUMN loop_v2_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN loop_target_count INTEGER NOT NULL DEFAULT 5",
         "ALTER TABLE position_dca_states ADD COLUMN custom_drop_pct FLOAT",
         "ALTER TABLE position_dca_states ADD COLUMN custom_allocation_pct FLOAT",
@@ -664,6 +665,7 @@ async def create_paper_campaign(
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
     loop_enabled: str | None = Form(None),
+    loop_v2_enabled: str | None = Form(None),
     loop_target_count: str = Form("5"),
 ) -> RedirectResponse:
     db = SessionLocal()
@@ -674,6 +676,7 @@ async def create_paper_campaign(
 
         picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
         loop_mode = str(loop_enabled or "").lower() in {"on", "true", "1", "yes"}
+        loop_v2_mode = str(loop_v2_enabled or "").lower() in {"on", "true", "1", "yes"}
         loop_target = int(_safe_float(loop_target_count, 5.0) or 5.0)
         loop_target = min(max(loop_target, 1), 30)
         ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
@@ -684,7 +687,7 @@ async def create_paper_campaign(
             ai_mode = True
             strict_score_mode = True
             reentry_mode = False
-            scan = suggest_top_symbols(max(loop_target, 10))
+            scan = suggest_top_symbols(max(loop_target, 10), use_v2=loop_v2_mode)
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
             picked = picked[:loop_target]
         if not picked:
@@ -701,6 +704,7 @@ async def create_paper_campaign(
             trend_filter_enabled=trend_mode,
             auto_reentry_enabled=reentry_mode,
             loop_enabled=loop_mode,
+            loop_v2_enabled=loop_v2_mode if loop_mode else False,
             loop_target_count=loop_target if loop_mode else 0,
         )
         db.add(campaign)
@@ -914,6 +918,7 @@ async def edit_paper_campaign(
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
     strict_support_score_required: str | None = Form(None),
+    loop_v2_enabled: str | None = Form(None),
     loop_target_count: str = Form(""),
     dca_drop_1: str = Form(""),
     dca_alloc_1: str = Form(""),
@@ -939,6 +944,7 @@ async def edit_paper_campaign(
         campaign.strict_support_score_required = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
         if campaign.loop_enabled:
             campaign.strict_support_score_required = True
+            campaign.loop_v2_enabled = str(loop_v2_enabled or "").lower() in {"on", "true", "1", "yes"}
         if campaign.loop_enabled:
             desired = int(_safe_float(loop_target_count, float(campaign.loop_target_count or 5)) or 5)
             campaign.loop_target_count = min(max(desired, 1), 30)
@@ -1015,6 +1021,7 @@ async def create_live_campaign(
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
     loop_enabled: str | None = Form(None),
+    loop_v2_enabled: str | None = Form(None),
     loop_target_count: str = Form("5"),
 ) -> RedirectResponse:
     db = SessionLocal()
@@ -1024,6 +1031,7 @@ async def create_live_campaign(
             return RedirectResponse("/live", status_code=303)
         picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
         loop_mode = str(loop_enabled or "").lower() in {"on", "true", "1", "yes"}
+        loop_v2_mode = str(loop_v2_enabled or "").lower() in {"on", "true", "1", "yes"}
         loop_target = int(_safe_float(loop_target_count, 5.0) or 5.0)
         loop_target = min(max(loop_target, 1), 30)
         ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
@@ -1034,7 +1042,7 @@ async def create_live_campaign(
             ai_mode = True
             strict_score_mode = True
             reentry_mode = False
-            scan = suggest_top_symbols(max(loop_target, 10))
+            scan = suggest_top_symbols(max(loop_target, 10), use_v2=loop_v2_mode)
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
             picked = picked[:loop_target]
         if not picked:
@@ -1051,6 +1059,7 @@ async def create_live_campaign(
             trend_filter_enabled=trend_mode,
             auto_reentry_enabled=reentry_mode,
             loop_enabled=loop_mode,
+            loop_v2_enabled=loop_v2_mode if loop_mode else False,
             loop_target_count=loop_target if loop_mode else 0,
         )
         db.add(campaign)
@@ -1185,6 +1194,7 @@ async def edit_live_campaign(
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
     strict_support_score_required: str | None = Form(None),
+    loop_v2_enabled: str | None = Form(None),
     loop_target_count: str = Form(""),
     dca_drop_1: str = Form(""),
     dca_alloc_1: str = Form(""),
@@ -1209,6 +1219,7 @@ async def edit_live_campaign(
         campaign.strict_support_score_required = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
         if campaign.loop_enabled:
             campaign.strict_support_score_required = True
+            campaign.loop_v2_enabled = str(loop_v2_enabled or "").lower() in {"on", "true", "1", "yes"}
             desired = int(_safe_float(loop_target_count, float(campaign.loop_target_count or 5)) or 5)
             campaign.loop_target_count = min(max(desired, 1), 30)
         incoming = [
@@ -1249,9 +1260,9 @@ async def edit_live_campaign(
 
 
 @app.get("/api/live/suggestions")
-async def api_live_suggestions(limit: int = 5) -> JSONResponse:
+async def api_live_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
     safe_limit = min(max(int(limit), 1), 30)
-    return JSONResponse(suggest_top_symbols(safe_limit))
+    return JSONResponse(suggest_top_symbols(safe_limit, use_v2=bool(v2)))
 
 
 @app.get("/api/live/positions/{position_id}/dca")
@@ -1301,9 +1312,9 @@ async def api_symbol_search(q: str = "") -> JSONResponse:
 
 
 @app.get("/api/paper/suggestions")
-async def api_paper_suggestions(limit: int = 5) -> JSONResponse:
+async def api_paper_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
     safe_limit = min(max(int(limit), 1), 10)
-    data = suggest_top_symbols(safe_limit)
+    data = suggest_top_symbols(safe_limit, use_v2=bool(v2))
     return JSONResponse(data)
 
 

@@ -34,6 +34,7 @@
   <p>Campaign Type: <strong>{{ "Loop AI" if campaign.loop_enabled else "Standard" }}</strong></p>
   {% if campaign.loop_enabled %}
   <p>Loop Target Open Symbols: <strong>{{ campaign.loop_target_count }}</strong></p>
+  <p>Loop Engine: <strong>{{ "V2" if campaign.loop_v2_enabled else "V1" }}</strong></p>
   {% endif %}
   <p>Trend Filter: <strong>{{ "Enabled" if campaign.trend_filter_enabled else "Disabled" }}</strong></p>
   <p>Auto Re-entry: <strong>{{ "Enabled" if campaign.auto_reentry_enabled else "Disabled" }}</strong></p>
@@ -82,6 +83,12 @@
       </span>
     </label>
     {% if campaign.loop_enabled %}
+    <label>Loop Scanner V2
+      <span class="inline-check">
+        <input name="loop_v2_enabled" type="checkbox" {% if campaign.loop_v2_enabled %}checked{% endif %}>
+        <span>Enable strict V2 loop selection engine.</span>
+      </span>
+    </label>
     <label>Loop Target Symbols (N)
       <input name="loop_target_count" type="number" min="1" max="30" step="1" value="{{ campaign.loop_target_count }}">
     </label>
@@ -193,8 +200,8 @@
         <th>Buy Price (Initial)</th>
         <th>Buy Price (Current Avg)</th>
         <th>DCA Filled</th>
-        <th>New Average</th>
-        <th>New Target</th>
+        <th title="Average after executed DCA levels only">New Average</th>
+        <th title="TP price based on New Average after executed DCA">New Target</th>
         <th>Target Sell (TP)</th>
         <th>Current/Close</th>
         <th>Invested</th>
@@ -210,8 +217,8 @@
       {% set pnl = ((mark * p.total_qty) - p.total_invested_usdt) if p.status == "open" else (p.realized_pnl_usdt or 0.0) %}
       {% set pnl_pct = ((pnl / p.total_invested_usdt) * 100) if p.total_invested_usdt > 0 else 0 %}
       {% set dca_count = executed_dca_counts.get(p.id, 0) %}
-      {% set new_avg = p.average_price if dca_count > 0 else p.initial_price %}
-      {% set new_target = (new_avg * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
+      {% set new_avg = p.average_price if dca_count > 0 else none %}
+      {% set new_target = ((new_avg * (1 + (campaign.tp_pct / 100.0))) if (campaign.tp_pct is not none and new_avg is not none) else none) %}
       {% set tp_price = (p.average_price * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
       <tr>
         <td>{{ p.symbol }}</td>
@@ -221,7 +228,7 @@
         <td>{{ "%.6f"|format(p.initial_price) }}</td>
         <td>{{ "%.6f"|format(p.average_price) }}</td>
         <td>{{ dca_count }}</td>
-        <td>{{ "%.6f"|format(new_avg) }}</td>
+        <td>{{ "%.6f"|format(new_avg) if new_avg is not none else "-" }}</td>
         <td>{{ "%.6f"|format(new_target) if new_target is not none else "-" }}</td>
         <td>{{ "%.6f"|format(tp_price) if tp_price is not none else "-" }}</td>
         <td>{{ "%.6f"|format(mark) }}</td>

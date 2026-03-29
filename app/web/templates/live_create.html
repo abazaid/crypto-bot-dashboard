@@ -47,6 +47,12 @@
             <span>Always keep N open symbols from top score. AI-only and auto-rotation after close.</span>
           </span>
         </label>
+        <label>Loop Scanner V2
+          <span class="inline-check">
+            <input id="loop_v2_enabled" name="loop_v2_enabled" type="checkbox">
+            <span>Use strict V2 engine: hard support filters + reversal confirmation + breakdown block.</span>
+          </span>
+        </label>
         <label>Symbols Count (Suggest + Loop)
           <input id="suggest-limit" name="loop_target_count" type="number" min="1" max="30" step="1" value="5">
         </label>
@@ -138,6 +144,7 @@
   const loopToggle = document.getElementById("loop_enabled");
   const autoReentryToggle = document.getElementById("auto_reentry_enabled");
   const strictScoreToggle = document.getElementById("strict_support_score_required");
+  const loopV2Toggle = document.getElementById("loop_v2_enabled");
   const manualDcaFields = document.querySelectorAll(".manual-dca");
   const createForm = document.getElementById("create-campaign-form");
   const startCampaignBtn = document.getElementById("start-campaign-btn");
@@ -181,14 +188,15 @@
     const limit = selectedLimit();
     suggestMeta.textContent = "Scanning market...";
     suggestionsBoard.innerHTML = "";
-    const res = await fetch(`/api/live/suggestions?limit=${limit}`);
+    const v2 = loopV2Toggle.checked ? 1 : 0;
+    const res = await fetch(`/api/live/suggestions?limit=${limit}&v2=${v2}`);
     const data = await res.json();
     const items = data.items || [];
     if (!items.length) {
       suggestMeta.textContent = `No strong suggestions now. BTC state: ${data.market_state || 'unknown'}`;
       return;
     }
-    suggestMeta.textContent = `BTC trend state: ${data.market_state}. Click any symbol to add it.`;
+    suggestMeta.textContent = `BTC trend state: ${data.market_state}. Engine: ${data.engine_version || 'v1'}. Click any symbol to add it.`;
     items.forEach((item) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -209,11 +217,13 @@
       strictScoreToggle.disabled = true;
       autoReentryToggle.checked = false;
       autoReentryToggle.disabled = true;
+      loopV2Toggle.disabled = false;
     } else {
       aiDcaToggle.disabled = false;
       strictScoreToggle.disabled = !aiDcaToggle.checked;
       if (!aiDcaToggle.checked) strictScoreToggle.checked = false;
       autoReentryToggle.disabled = false;
+      loopV2Toggle.disabled = false;
     }
     const disabled = aiDcaToggle.checked || isLoop;
     manualDcaFields.forEach((field) => {
