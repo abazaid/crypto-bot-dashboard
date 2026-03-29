@@ -345,19 +345,49 @@ def _sl_drop_cap(sl_pct: float | None) -> float | None:
         return None
     if sl <= 0:
         return None
-    return max(0.8, sl)
+    # Keep DCA comfortably below the stop-loss boundary.
+    return max(0.8, sl * 0.85)
+
+
+def _max_dca_levels_for_sl(sl_pct: float | None, hard_cap: int = 5) -> int:
+    if sl_pct is None:
+        return max(1, hard_cap)
+    try:
+        sl = float(sl_pct)
+    except Exception:
+        return max(1, hard_cap)
+    if sl <= 0:
+        return 1
+    if sl <= 3:
+        return min(1, hard_cap)
+    if sl <= 5:
+        return min(2, hard_cap)
+    if sl <= 8:
+        return min(3, hard_cap)
+    if sl <= 12:
+        return min(4, hard_cap)
+    return max(1, hard_cap)
 
 
 def _cap_drop_levels_to_sl(levels: list[float], sl_pct: float | None) -> list[float]:
     cap = _sl_drop_cap(sl_pct)
     if cap is None:
         return [round(max(0.8, float(x)), 2) for x in levels]
-    out = [round(max(0.8, min(float(x), cap)), 2) for x in levels]
-    out.sort()
-    for i in range(1, len(out)):
-        if out[i] <= out[i - 1]:
-            out[i] = round(min(cap, out[i - 1] + 0.05), 2)
-    return out
+    out = []
+    for x in levels:
+        v = round(max(0.8, min(float(x), cap)), 2)
+        if v < cap:
+            out.append(v)
+    out = sorted(out)
+    cleaned: list[float] = []
+    for v in out:
+        if not cleaned:
+            cleaned.append(v)
+            continue
+        # Keep meaningful spacing between DCA levels.
+        if (v - cleaned[-1]) >= 0.5:
+            cleaned.append(v)
+    return cleaned
 
 
 def suggest_top_symbols(limit: int = 5) -> dict:
@@ -472,10 +502,25 @@ def _symbol_ai_support_drops(symbol: str) -> list[float]:
 def build_ai_dca_rules(symbols: list[str], sl_pct: float | None = None) -> tuple[list[tuple[str, float, float]], str, str]:
     picked = [s.strip().upper() for s in symbols if s and s.strip()]
     sample = picked[:12]
-    allocations = _dca_scale_allocations_pct(max_levels=5)
+    target_levels = _max_dca_levels_for_sl(sl_pct, 5)
+    allocations = _dca_scale_allocations_pct(max_levels=target_levels)
     fallback_drops = _cap_drop_levels_to_sl([2.0, 4.5, 8.0, 12.0, 16.0], sl_pct)
+    if len(fallback_drops) < target_levels:
+        fallback_drops = fallback_drops[:]
+        cap = _sl_drop_cap(sl_pct)
+        probe = fallback_drops[-1] + 0.6 if fallback_drops else 1.0
+        while len(fallback_drops) < target_levels:
+            if cap is not None and probe >= cap:
+                break
+            fallback_drops.append(round(probe, 2))
+            probe += 0.6
+    target_levels = min(target_levels, len(fallback_drops), len(allocations))
+    if target_levels <= 0:
+        target_levels = 1
+        fallback_drops = [1.0]
+        allocations = _dca_scale_allocations_pct(max_levels=1)
     if not sample:
-        rules = [(f"AI-DCA-{i+1}", fallback_drops[i], allocations[i]) for i in range(5)]
+        rules = [(f"AI-DCA-{i+1}", fallback_drops[i], allocations[i]) for i in range(target_levels)]
         return rules, "neutral", "Fallback AI DCA."
 
     symbol_drops: list[list[float]] = []
@@ -494,7 +539,7 @@ def build_ai_dca_rules(symbols: list[str], sl_pct: float | None = None) -> tuple
     profile = _trend_profile()
 
     if not symbol_drops:
-        rules = [(f"AI-DCA-{i+1}", fallback_drops[i], allocations[i]) for i in range(5)]
+        rules = [(f"AI-DCA-{i+1}", fallback_drops[i], allocations[i]) for i in range(target_levels)]
         return rules, profile, f"AI DCA fallback profile={profile}."
 
     all_flat = sorted(x for row in symbol_drops for x in row)
@@ -506,10 +551,17 @@ def build_ai_dca_rules(symbols: list[str], sl_pct: float | None = None) -> tuple
         d = all_flat[max(0, int(n * q) - 1)]
         levels.append(max(floors[i], d))
     levels = _cap_drop_levels_to_sl(sorted(levels), sl_pct)
-    rules = [(f"AI-DCA-{i+1}", round(levels[i], 2), allocations[i]) for i in range(5)]
+    if len(levels) < target_levels:
+        for f in fallback_drops:
+            if len(levels) >= target_levels:
+                break
+            if not levels or abs(f - levels[-1]) >= 0.5:
+                levels.append(round(f, 2))
+    levels = levels[:target_levels]
+    rules = [(f"AI-DCA-{i+1}", round(levels[i], 2), allocations[i]) for i in range(len(levels))]
     note = (
         f"AI DCA from supports (Pivot+EMA) over {len(symbol_drops)} symbols. "
-        f"Trend profile={profile}. Drops={levels[0]:.2f}/{levels[1]:.2f}/{levels[2]:.2f}/{levels[3]:.2f}/{levels[4]:.2f}%."
+        f"Trend profile={profile}. Levels={len(levels)} Drops={'/'.join([f'{x:.2f}' for x in levels])}%."
     )
     return rules, profile, note
 
@@ -518,15 +570,28 @@ def build_symbol_ai_dca_rules(
     symbol: str, profile: str, fallback_rules: list[tuple[str, float, float]], sl_pct: float | None = None
 ) -> list[tuple[str, float, float, float | None]]:
     ctx = _support_engine(symbol)
+    target_levels = _max_dca_levels_for_sl(sl_pct, len(fallback_rules) if fallback_rules else 5)
     fallback_drops = _cap_drop_levels_to_sl([2.0, 4.5, 8.0, 12.0, 16.0], sl_pct)
-    fallback_allocs = _dca_scale_allocations_pct(max_levels=5)
+    if len(fallback_drops) < target_levels:
+        fallback_drops = fallback_drops[:]
+        cap = _sl_drop_cap(sl_pct)
+        probe = fallback_drops[-1] + 0.6 if fallback_drops else 1.0
+        while len(fallback_drops) < target_levels:
+            if cap is not None and probe >= cap:
+                break
+            fallback_drops.append(round(probe, 2))
+            probe += 0.6
+    target_levels = min(target_levels, len(fallback_drops))
+    if target_levels <= 0:
+        return []
+    fallback_allocs = _dca_scale_allocations_pct(max_levels=target_levels)
     base_fallback = [
         (
             fallback_rules[idx][0] if idx < len(fallback_rules) else f"AI-DCA-{idx+1}",
             float(fallback_rules[idx][1]) if idx < len(fallback_rules) else fallback_drops[idx],
             float(fallback_rules[idx][2]) if idx < len(fallback_rules) else fallback_allocs[idx],
         )
-        for idx in range(5)
+        for idx in range(target_levels)
     ]
     if not ctx:
         return [(n, d, a, None) for n, d, a in base_fallback]
@@ -542,7 +607,7 @@ def build_symbol_ai_dca_rules(
     out = []
     raw_symbol_drops: list[float] = []
     raw_symbol_scores: list[float | None] = []
-    for idx in range(5):
+    for idx in range(target_levels):
         if idx < len(supports):
             support = supports[idx]
             raw_symbol_drops.append(max(0.8, ((price - float(support["price"])) / price) * 100.0))
@@ -553,7 +618,7 @@ def build_symbol_ai_dca_rules(
             raw_symbol_scores.append(None)
     symbol_drops = _cap_drop_levels_to_sl(raw_symbol_drops, sl_pct)
 
-    for idx in range(5):
+    for idx in range(target_levels):
         name_rule = base_fallback[idx][0]
         alloc_pct = fallback_allocs[idx]
         out.append((name_rule, float(symbol_drops[idx]), round(alloc_pct, 2), raw_symbol_scores[idx]))
@@ -1078,6 +1143,11 @@ def recalculate_campaign_dca(db: Session, campaign: Campaign) -> tuple[int, int]
                         _, d, a, sc = symbol_rules[idx]
                         rule_data = (d, a, sc)
             if not rule_data:
+                # Disable stale levels not present in the current smart DCA plan.
+                st.custom_allocation_pct = 0.0
+                st.custom_support_score = None
+                changed_any = True
+                updated_states += 1
                 continue
             drop_pct, alloc_pct, support_score = rule_data
             st.custom_drop_pct = float(drop_pct)

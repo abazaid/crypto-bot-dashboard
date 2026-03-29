@@ -188,6 +188,8 @@
       <tr>
         <th>Symbol</th>
         <th>Status</th>
+        <th>Open Time</th>
+        <th>Close Time</th>
         <th>Buy Price (Initial)</th>
         <th>Buy Price (Current Avg)</th>
         <th>DCA Filled</th>
@@ -214,6 +216,8 @@
       <tr>
         <td>{{ p.symbol }}</td>
         <td><span class="badge">{{ p.status }}</span></td>
+        <td>{{ p.opened_at.strftime("%Y-%m-%d %H:%M") if p.opened_at else "-" }}</td>
+        <td>{{ p.closed_at.strftime("%Y-%m-%d %H:%M") if p.closed_at else "-" }}</td>
         <td>{{ "%.6f"|format(p.initial_price) }}</td>
         <td>{{ "%.6f"|format(p.average_price) }}</td>
         <td>{{ dca_count }}</td>

@@ -45,6 +45,8 @@
             <th>Open</th>
             <th>Closed</th>
             <th>DCA Done</th>
+            <th>Realized (Confirmed)</th>
+            <th>Unrealized (Floating)</th>
             <th>Details</th>
           </tr>
         </thead>
@@ -60,6 +62,8 @@
             <td>{{ item.stats.open_count }}</td>
             <td>{{ item.stats.closed_count }}</td>
             <td>{{ item.stats.dca_done_count }}</td>
+            <td class="{{ 'pnl-pos' if item.stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.realized_pnl) }}</td>
+            <td class="{{ 'pnl-pos' if item.stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.unrealized_pnl) }}</td>
             <td><a href="/paper/campaigns/{{ item.campaign.id }}">Open</a></td>
           </tr>
           {% endfor %}
@@ -69,60 +73,6 @@
       {% else %}
       <p>No campaigns yet.</p>
       {% endif %}
-    </section>
-
-    <section class="cards two">
-      <article class="card">
-        <h2>Realized (Confirmed)</h2>
-        {% if realized_rows %}
-        <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Campaign</th>
-              <th>Amount (USDT)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in realized_rows %}
-            <tr>
-              <td>{{ row.campaign.name }}</td>
-              <td class="{{ 'pnl-pos' if row.amount >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.amount) }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        </div>
-        {% else %}
-        <p>No realized data yet.</p>
-        {% endif %}
-      </article>
-
-      <article class="card">
-        <h2>Unrealized (Floating)</h2>
-        {% if unrealized_rows %}
-        <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Campaign</th>
-              <th>Amount (USDT)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in unrealized_rows %}
-            <tr>
-              <td>{{ row.campaign.name }}</td>
-              <td class="{{ 'pnl-pos' if row.amount >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.amount) }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        </div>
-        {% else %}
-        <p>No unrealized data yet.</p>
-        {% endif %}
-      </article>
     </section>
 
     <section class="card">

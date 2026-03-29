@@ -755,6 +755,8 @@ async def api_position_dca(position_id: int) -> JSONResponse:
         for st in states:
             drop_pct = float(st.custom_drop_pct if st.custom_drop_pct is not None else st.rule.drop_pct)
             alloc_pct = float(st.custom_allocation_pct if st.custom_allocation_pct is not None else st.rule.allocation_pct)
+            if alloc_pct <= 0:
+                continue
             trigger_price = float(position.initial_price) * (1 - (drop_pct / 100.0))
             items.append(
                 {
