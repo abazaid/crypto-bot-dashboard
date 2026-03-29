@@ -5,6 +5,7 @@
     <h3>Paper Menu</h3>
     <a class="side-link active" href="/paper">Campaigns Home</a>
     <a class="side-link" href="/paper/create">Create Campaign</a>
+    <a class="side-link" href="/paper/smart-create">Smart DCA</a>
   </aside>
 
   <div class="paper-main">
@@ -55,7 +56,7 @@
           <tr>
             <td>{{ item.campaign.name }}</td>
             <td>{{ item.campaign.status }}</td>
-            <td>{{ "Loop AI" if item.campaign.loop_enabled else "Standard" }}</td>
+            <td>{{ "Loop AI" if item.campaign.loop_enabled else ("Smart DCA" if item.campaign.smart_dca_enabled else "Standard") }}</td>
             <td>{{ "AI" if item.campaign.ai_dca_enabled else "Manual" }}</td>
             <td>{{ "On" if item.campaign.trend_filter_enabled else "Off" }}</td>
             <td>{{ "On" if item.campaign.auto_reentry_enabled else "Off" }}</td>

@@ -16,6 +16,7 @@ from app.core.database import Base, SessionLocal, engine
 from app.models.paper_v2 import ActivityLog, AppSetting, Campaign, DcaRule, Position, PositionDcaState
 from app.services.binance_public import get_prices, search_symbols
 from app.services.paper_trading import (
+    build_smart_dca_plan,
     build_ai_dca_rules,
     create_campaign_positions,
     ensure_defaults,
@@ -271,6 +272,7 @@ def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
 def _apply_schema_updates() -> None:
     stmts = [
         "ALTER TABLE campaigns ADD COLUMN ai_dca_enabled BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE campaigns ADD COLUMN smart_dca_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN ai_dca_profile VARCHAR(40)",
         "ALTER TABLE campaigns ADD COLUMN ai_dca_notes TEXT",
         "ALTER TABLE campaigns ADD COLUMN ai_dca_suggested_rules_json TEXT",
@@ -411,6 +413,11 @@ async def paper_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("paper_create.html", _context("paper_create", request=request))
 
 
+@app.get("/paper/smart-create", response_class=HTMLResponse)
+async def paper_smart_create_campaign_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("paper_smart_create.html", _context("paper_smart_create", request=request))
+
+
 @app.get("/live", response_class=HTMLResponse)
 async def live_dashboard(request: Request) -> HTMLResponse:
     db = SessionLocal()
@@ -450,6 +457,11 @@ async def live_campaigns_alias() -> RedirectResponse:
 @app.get("/live/create", response_class=HTMLResponse)
 async def live_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("live_create.html", _context("live_create", request=request))
+
+
+@app.get("/live/smart-create", response_class=HTMLResponse)
+async def live_smart_create_campaign_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("live_smart_create.html", _context("live_smart_create", request=request))
 
 
 @app.get("/live/history", response_class=HTMLResponse)
@@ -809,6 +821,129 @@ async def create_paper_campaign(
         db.close()
 
 
+@app.post("/paper/smart-campaigns")
+async def create_paper_smart_campaign(
+    request: Request,
+    name: str = Form(...),
+    symbol: str = Form(...),
+    entry_amount_usdt: str = Form(...),
+    tp_pct: str = Form(""),
+    sl_pct: str = Form(""),
+    strategy_mode: str = Form("balanced"),
+    trend_filter_enabled: str | None = Form(None),
+    strict_support_score_required: str | None = Form(None),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        entry_amount = _safe_float(entry_amount_usdt, 0.0) or 0.0
+        if entry_amount <= 0:
+            return RedirectResponse("/paper/smart-create", status_code=303)
+
+        symbol_clean = str(symbol or "").strip().upper()
+        if not symbol_clean:
+            return RedirectResponse("/paper/smart-create", status_code=303)
+
+        tp_value = _safe_float(tp_pct, None)
+        sl_value = _safe_float(sl_pct, None)
+        trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
+        strict_mode = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
+
+        plan = build_smart_dca_plan(
+            symbol=symbol_clean,
+            entry_amount_usdt=entry_amount,
+            tp_pct=tp_value,
+            sl_pct=sl_value,
+            max_levels=5,
+            strategy_mode=strategy_mode,
+        )
+        if not bool(plan.get("ok")):
+            db.add(
+                ActivityLog(
+                    event_type="SMART_DCA_FAIL",
+                    symbol=symbol_clean,
+                    message=f"Create failed: {plan.get('error', 'unknown error')}",
+                )
+            )
+            db.commit()
+            return RedirectResponse("/paper/smart-create", status_code=303)
+
+        campaign = Campaign(
+            name=name.strip() or f"SMART DCA {symbol_clean}",
+            mode="paper",
+            status="active",
+            entry_amount_usdt=entry_amount,
+            tp_pct=tp_value,
+            sl_pct=sl_value,
+            ai_dca_enabled=True,
+            smart_dca_enabled=True,
+            strict_support_score_required=strict_mode,
+            trend_filter_enabled=trend_mode,
+            auto_reentry_enabled=False,
+            loop_enabled=False,
+            loop_v2_enabled=False,
+            loop_target_count=0,
+            ai_dca_profile=f"smart_weighted_{str(plan.get('strategy_mode', 'balanced'))}",
+            ai_dca_notes=str(plan.get("note", "Smart weighted DCA.")),
+            ai_dca_suggested_rules_json=json.dumps(plan.get("rules", [])),
+        )
+        db.add(campaign)
+        db.flush()
+
+        for row in plan.get("rules", []):
+            try:
+                drop_pct = float(row.get("drop_pct", 0.0))
+                alloc_pct = float(row.get("allocation_pct", 0.0))
+            except Exception:
+                continue
+            if drop_pct <= 0 or alloc_pct <= 0:
+                continue
+            db.add(
+                DcaRule(
+                    campaign_id=campaign.id,
+                    name=str(row.get("name", "SMART-DCA")).strip() or "SMART-DCA",
+                    drop_pct=drop_pct,
+                    allocation_pct=alloc_pct,
+                )
+            )
+
+        db.add(
+            ActivityLog(
+                event_type="SMART_DCA_PLAN",
+                symbol=symbol_clean,
+                message=(
+                    f"Campaign='{campaign.name}' | entry={entry_amount:.2f} | "
+                    f"estimate_total={float(plan['estimate']['total_if_all_filled_usdt']):.2f} | "
+                    f"levels={len(plan.get('rules', []))}"
+                ),
+            )
+        )
+        db.commit()
+
+        opened, errors = create_campaign_positions(db, campaign, [symbol_clean])
+        if errors:
+            campaign.status = "paused"
+            db.add(
+                ActivityLog(
+                    event_type="CAMPAIGN_ERROR",
+                    symbol=symbol_clean,
+                    message=f"Campaign '{campaign.name}' failed to open position: {' | '.join(errors)}",
+                )
+            )
+            db.commit()
+        elif opened > 0:
+            db.add(
+                ActivityLog(
+                    event_type="SMART_DCA",
+                    symbol=symbol_clean,
+                    message=f"Campaign '{campaign.name}' started with SMART DCA plan.",
+                )
+            )
+            db.commit()
+        return RedirectResponse(f"/paper/campaigns/{campaign.id}", status_code=303)
+    finally:
+        db.close()
+
+
 @app.post("/paper/reset")
 async def reset_paper_data(confirm_text: str = Form("")) -> RedirectResponse:
     db = SessionLocal()
@@ -1146,6 +1281,132 @@ async def create_live_campaign(
         db.close()
 
 
+@app.post("/live/smart-campaigns")
+async def create_live_smart_campaign(
+    request: Request,
+    name: str = Form(...),
+    symbol: str = Form(...),
+    entry_amount_usdt: str = Form(...),
+    tp_pct: str = Form(""),
+    sl_pct: str = Form(""),
+    strategy_mode: str = Form("balanced"),
+    trend_filter_enabled: str | None = Form(None),
+    strict_support_score_required: str | None = Form(None),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        entry_amount = _safe_float(entry_amount_usdt, 0.0) or 0.0
+        if entry_amount <= 0:
+            return RedirectResponse("/live/smart-create", status_code=303)
+        symbol_clean = str(symbol or "").strip().upper()
+        if not symbol_clean:
+            return RedirectResponse("/live/smart-create", status_code=303)
+
+        tp_value = _safe_float(tp_pct, None)
+        sl_value = _safe_float(sl_pct, None)
+        trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
+        strict_mode = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
+
+        plan = build_smart_dca_plan(
+            symbol=symbol_clean,
+            entry_amount_usdt=entry_amount,
+            tp_pct=tp_value,
+            sl_pct=sl_value,
+            max_levels=5,
+            strategy_mode=strategy_mode,
+        )
+        if not bool(plan.get("ok")):
+            db.add(
+                ActivityLog(
+                    event_type="LIVE_SMART_DCA_FAIL",
+                    symbol=symbol_clean,
+                    message=f"Create failed: {plan.get('error', 'unknown error')}",
+                )
+            )
+            db.commit()
+            return RedirectResponse("/live/smart-create", status_code=303)
+
+        campaign = Campaign(
+            name=name.strip() or f"LIVE SMART DCA {symbol_clean}",
+            mode="live",
+            status="active",
+            entry_amount_usdt=entry_amount,
+            tp_pct=tp_value,
+            sl_pct=sl_value,
+            ai_dca_enabled=True,
+            smart_dca_enabled=True,
+            strict_support_score_required=strict_mode,
+            trend_filter_enabled=trend_mode,
+            auto_reentry_enabled=False,
+            loop_enabled=False,
+            loop_v2_enabled=False,
+            loop_target_count=0,
+            ai_dca_profile=f"smart_weighted_{str(plan.get('strategy_mode', 'balanced'))}",
+            ai_dca_notes=str(plan.get("note", "Smart weighted DCA.")),
+            ai_dca_suggested_rules_json=json.dumps(plan.get("rules", [])),
+        )
+        db.add(campaign)
+        db.flush()
+
+        for row in plan.get("rules", []):
+            try:
+                drop_pct = float(row.get("drop_pct", 0.0))
+                alloc_pct = float(row.get("allocation_pct", 0.0))
+            except Exception:
+                continue
+            if drop_pct <= 0 or alloc_pct <= 0:
+                continue
+            db.add(
+                DcaRule(
+                    campaign_id=campaign.id,
+                    name=str(row.get("name", "SMART-DCA")).strip() or "SMART-DCA",
+                    drop_pct=drop_pct,
+                    allocation_pct=alloc_pct,
+                )
+            )
+        db.add(
+            ActivityLog(
+                event_type="LIVE_SMART_DCA_PLAN",
+                symbol=symbol_clean,
+                message=(
+                    f"Campaign='{campaign.name}' | entry={entry_amount:.2f} | "
+                    f"estimate_total={float(plan['estimate']['total_if_all_filled_usdt']):.2f} | "
+                    f"levels={len(plan.get('rules', []))}"
+                ),
+            )
+        )
+        db.commit()
+
+        try:
+            opened, errors = create_live_campaign_positions(db, campaign, [symbol_clean])
+        except Exception as e:
+            errors = [str(e)]
+            opened = 0
+
+        if errors:
+            campaign.status = "paused"
+            db.add(
+                ActivityLog(
+                    event_type="LIVE_CAMPAIGN_ERROR",
+                    symbol=symbol_clean,
+                    message=f"Campaign '{campaign.name}' failed to open position: {' | '.join(errors)}",
+                )
+            )
+            db.commit()
+        elif opened > 0:
+            db.add(
+                ActivityLog(
+                    event_type="LIVE_SMART_DCA",
+                    symbol=symbol_clean,
+                    message=f"Campaign '{campaign.name}' started with SMART DCA plan.",
+                )
+            )
+            db.commit()
+        return RedirectResponse(f"/live/campaigns/{campaign.id}", status_code=303)
+    finally:
+        db.close()
+
+
 @app.post("/live/campaigns/{campaign_id}/toggle")
 async def toggle_live_campaign(campaign_id: int) -> RedirectResponse:
     db = SessionLocal()
@@ -1308,6 +1569,25 @@ async def api_live_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
     return JSONResponse(suggest_top_symbols(safe_limit, use_v2=bool(v2)))
 
 
+@app.get("/api/live/smart-plan")
+async def api_live_smart_plan(
+    symbol: str,
+    entry_amount_usdt: float,
+    tp_pct: float | None = None,
+    sl_pct: float | None = None,
+    strategy_mode: str = "balanced",
+) -> JSONResponse:
+    plan = build_smart_dca_plan(
+        symbol=symbol,
+        entry_amount_usdt=float(entry_amount_usdt or 0.0),
+        tp_pct=tp_pct,
+        sl_pct=sl_pct,
+        max_levels=5,
+        strategy_mode=strategy_mode,
+    )
+    return JSONResponse(plan)
+
+
 @app.get("/api/live/positions/{position_id}/dca")
 async def api_live_position_dca(position_id: int) -> JSONResponse:
     db = SessionLocal()
@@ -1359,6 +1639,25 @@ async def api_paper_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
     safe_limit = min(max(int(limit), 1), 10)
     data = suggest_top_symbols(safe_limit, use_v2=bool(v2))
     return JSONResponse(data)
+
+
+@app.get("/api/paper/smart-plan")
+async def api_paper_smart_plan(
+    symbol: str,
+    entry_amount_usdt: float,
+    tp_pct: float | None = None,
+    sl_pct: float | None = None,
+    strategy_mode: str = "balanced",
+) -> JSONResponse:
+    plan = build_smart_dca_plan(
+        symbol=symbol,
+        entry_amount_usdt=float(entry_amount_usdt or 0.0),
+        tp_pct=tp_pct,
+        sl_pct=sl_pct,
+        max_levels=5,
+        strategy_mode=strategy_mode,
+    )
+    return JSONResponse(plan)
 
 
 @app.get("/api/paper/positions/{position_id}/dca")

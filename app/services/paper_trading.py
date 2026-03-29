@@ -367,6 +367,72 @@ def _dca_scale_allocations_pct(max_levels: int = 5) -> list[float]:
     return [round(x * 100.0, 2) for x in final_scale]
 
 
+def _weighted_zone_allocations_pct(drops: list[float], scores: list[float], budget_pct: float) -> list[float]:
+    if not drops or budget_pct <= 0:
+        return [0.0 for _ in drops]
+    max_drop = max(max(drops), 0.0001)
+    weights: list[float] = []
+    for idx, drop in enumerate(drops):
+        depth_factor = max(0.0, float(drop) / max_drop)
+        score_factor = max(0.0, min(100.0, float(scores[idx] if idx < len(scores) else 0.0))) / 100.0
+        # Weighted Smart DCA:
+        # - deeper zones get higher weight (60%)
+        # - stronger support score gets higher weight (40%)
+        w = (depth_factor * 0.6) + (score_factor * 0.4) + 0.05
+        weights.append(w)
+    total_w = sum(weights)
+    if total_w <= 0:
+        unit = budget_pct / len(drops)
+        return [round(unit, 2) for _ in drops]
+    return [round((w / total_w) * budget_pct, 2) for w in weights]
+
+
+def _strategy_mode_weights(levels: int, strategy_mode: str) -> list[float]:
+    n = max(1, int(levels))
+    mode = str(strategy_mode or "balanced").strip().lower()
+    if mode not in {"conservative", "balanced", "aggressive"}:
+        mode = "balanced"
+    if mode == "conservative":
+        base = [float(i) for i in range(1, n + 1)]  # deeper levels heavier
+    elif mode == "aggressive":
+        base = [float(n - i + 1) for i in range(1, n + 1)]  # early levels heavier
+    else:
+        # Balanced: slight depth preference but near-uniform.
+        base = [1.0 + (0.25 * ((i - 1) / max(n - 1, 1))) for i in range(1, n + 1)]
+    total = sum(base)
+    if total <= 0:
+        return [1.0 / n for _ in range(n)]
+    return [x / total for x in base]
+
+
+def _smart_allocations_pct(
+    drops: list[float],
+    scores: list[float],
+    budget_pct: float,
+    strategy_mode: str,
+) -> list[float]:
+    if not drops or budget_pct <= 0:
+        return [0.0 for _ in drops]
+    n = len(drops)
+    max_drop = max(max(drops), 0.0001)
+    strategy_weights = _strategy_mode_weights(n, strategy_mode)
+    raw_weights: list[float] = []
+    for i in range(n):
+        depth_norm = max(0.0, float(drops[i]) / max_drop)
+        score_norm = max(0.0, min(100.0, float(scores[i] if i < len(scores) else 0.0))) / 100.0
+        strategy_norm = float(strategy_weights[i])
+        # Dynamic (real-data based) allocation:
+        # - strategy intent
+        # - depth of support
+        # - support quality score
+        w = (strategy_norm * 0.55) + (depth_norm * 0.25) + (score_norm * 0.20)
+        raw_weights.append(max(0.0001, w))
+    total_w = sum(raw_weights)
+    if total_w <= 0:
+        return [round(budget_pct / n, 2) for _ in range(n)]
+    return [round((w / total_w) * budget_pct, 2) for w in raw_weights]
+
+
 def _sl_drop_cap(sl_pct: float | None) -> float | None:
     if sl_pct is None:
         return None
@@ -638,6 +704,160 @@ def build_ai_dca_rules(symbols: list[str], sl_pct: float | None = None) -> tuple
     return rules, profile, note
 
 
+def build_smart_dca_plan(
+    symbol: str,
+    entry_amount_usdt: float,
+    tp_pct: float | None = None,
+    sl_pct: float | None = None,
+    max_levels: int = 5,
+    strategy_mode: str = "balanced",
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    if not sym or entry_amount_usdt <= 0:
+        return {"ok": False, "error": "Invalid symbol or entry amount."}
+    ctx = _support_engine(sym)
+    if not ctx:
+        return {"ok": False, "error": f"No enough market context for {sym} now."}
+
+    current_price = float(ctx["price"])
+    max_levels = max(1, min(int(max_levels), 5))
+    max_levels = min(max_levels, _max_dca_levels_for_sl(sl_pct, 5))
+
+    # Build support zones from strongest detected supports under current price.
+    supports = [s for s in (ctx.get("supports") or []) if float(s.get("price", 0.0)) < current_price]
+    supports.sort(key=lambda x: float(x.get("price", 0.0)), reverse=True)
+    if not supports:
+        return {"ok": False, "error": f"No valid support zones found for {sym}."}
+
+    sl_cap = _sl_drop_cap(sl_pct)
+    zones: list[dict] = []
+    used_drop_levels: set[float] = set()
+    for s in supports:
+        support_price = float(s["price"])
+        support_score = float(s.get("score", 0.0))
+        if support_score < 35.0:
+            continue
+        drop_pct = ((current_price - support_price) / current_price) * 100.0
+        if drop_pct < 0.5:
+            continue
+        if sl_cap is not None and drop_pct >= sl_cap:
+            continue
+        drop_key = round(drop_pct, 2)
+        if drop_key in used_drop_levels:
+            continue
+        used_drop_levels.add(drop_key)
+        zones.append(
+            {
+                "trigger_price": support_price,
+                "drop_pct": drop_key,
+                "score": round(support_score, 2),
+                "sources": list(s.get("sources", [])),
+            }
+        )
+        if len(zones) >= max_levels:
+            break
+
+    if not zones:
+        # fallback safe levels if strict support map is empty
+        fallback_drops = _cap_drop_levels_to_sl([1.5, 3.0, 5.0, 7.5, 10.5], sl_pct)[:max_levels]
+        if not fallback_drops:
+            return {"ok": False, "error": f"No safe DCA levels available for {sym} with current SL."}
+        zones = [
+            {
+                "trigger_price": round(current_price * (1.0 - (d / 100.0)), 8),
+                "drop_pct": round(d, 2),
+                "score": 50.0,
+                "sources": ["fallback"],
+            }
+            for d in fallback_drops
+        ]
+
+    zones = sorted(zones, key=lambda x: float(x["drop_pct"]))
+    drops = [float(z["drop_pct"]) for z in zones]
+    scores = [float(z["score"]) for z in zones]
+    budget_pct = max(10.0, (max(1.2, float(settings.dca_max_symbol_allocation_x)) - 1.0) * 100.0)
+    mode = str(strategy_mode or "balanced").strip().lower()
+    if mode not in {"conservative", "balanced", "aggressive"}:
+        mode = "balanced"
+    allocs = _smart_allocations_pct(drops, scores, budget_pct, mode)
+
+    # Build final rules shallow -> deep.
+    rows = []
+    for idx, z in enumerate(zones):
+        alloc_pct = float(allocs[idx]) if idx < len(allocs) else 0.0
+        if alloc_pct <= 0:
+            continue
+        rows.append(
+            {
+                "name": f"SMART-DCA-{len(rows) + 1}",
+                "drop_pct": round(float(z["drop_pct"]), 2),
+                "allocation_pct": round(alloc_pct, 2),
+                "support_score": round(float(z["score"]), 2),
+                "trigger_price": round(float(z["trigger_price"]), 8),
+                "sources": z["sources"],
+            }
+        )
+    if not rows:
+        return {"ok": False, "error": f"Could not build SMART DCA rows for {sym}."}
+
+    initial_qty = entry_amount_usdt / current_price
+    total_invested = float(entry_amount_usdt)
+    total_qty = float(initial_qty)
+    for r in rows:
+        dca_usdt = entry_amount_usdt * (float(r["allocation_pct"]) / 100.0)
+        total_invested += dca_usdt
+        total_qty += dca_usdt / max(float(r["trigger_price"]), 1e-12)
+    estimated_avg = total_invested / max(total_qty, 1e-12)
+    effective_tp = float(tp_pct or 0.0)
+    target_price = estimated_avg * (1.0 + (effective_tp / 100.0)) if effective_tp > 0 else None
+
+    deepest_drop_pct = max([float(r["drop_pct"]) for r in rows], default=0.0)
+    first_zone_weight_pct = float(rows[0]["allocation_pct"]) if rows else 0.0
+    theoretical_total = (
+        entry_amount_usdt / (first_zone_weight_pct / 100.0)
+        if first_zone_weight_pct > 0
+        else total_invested
+    )
+    expected_drawdown_pct = max(float(ctx.get("drawdown_pct", 0.0)), deepest_drop_pct)
+    if expected_drawdown_pct <= 12.0:
+        risk_level = "low"
+    elif expected_drawdown_pct <= 25.0:
+        risk_level = "medium"
+    else:
+        risk_level = "high"
+    suggested_total_with_buffer = max(theoretical_total, total_invested) * 1.10
+
+    return {
+        "ok": True,
+        "symbol": sym,
+        "entry_price": round(current_price, 8),
+        "entry_amount_usdt": round(float(entry_amount_usdt), 4),
+        "tp_pct": effective_tp,
+        "sl_pct": sl_pct,
+        "rules": rows,
+        "estimate": {
+            "dca_total_usdt": round(total_invested - entry_amount_usdt, 4),
+            "total_if_all_filled_usdt": round(total_invested, 4),
+            "estimated_avg_price_if_all_filled": round(estimated_avg, 8),
+            "estimated_target_price_if_all_filled": round(target_price, 8) if target_price else None,
+        },
+        "capital_planning": {
+            "first_zone_weight_pct": round(first_zone_weight_pct, 2),
+            "theoretical_total_required_usdt": round(theoretical_total, 4),
+            "planned_total_if_all_levels_hit_usdt": round(total_invested, 4),
+            "suggested_total_with_buffer_usdt": round(suggested_total_with_buffer, 4),
+            "expected_drawdown_pct": round(expected_drawdown_pct, 2),
+            "deepest_dca_drop_pct": round(deepest_drop_pct, 2),
+            "risk_level": risk_level,
+        },
+        "market_state": btc_market_state(),
+        "strategy_mode": mode,
+        "note": (
+            f"Smart weighted DCA ({mode}) based on support zones, score quality, and depth context."
+        ),
+    }
+
+
 def build_symbol_ai_dca_rules(
     symbol: str, profile: str, fallback_rules: list[tuple[str, float, float]], sl_pct: float | None = None
 ) -> list[tuple[str, float, float, float | None]]:
@@ -700,7 +920,7 @@ def build_symbol_ai_dca_rules(
 
     for idx in range(target_levels):
         name_rule = base_fallback[idx][0]
-        alloc_pct = fallback_allocs[idx]
+        alloc_pct = float(base_fallback[idx][2])
         out.append((name_rule, float(symbol_drops[idx]), round(alloc_pct, 2), raw_symbol_scores[idx]))
     return out
 

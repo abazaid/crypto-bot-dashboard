@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>Live Menu</h3>
+    <a class="side-link" href="/live">Campaigns Home</a>
+    <a class="side-link" href="/live/create">Create Campaign</a>
+    <a class="side-link active" href="/live/smart-create">Smart DCA</a>
+    <a class="side-link" href="/live/history">Live History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>SMART DCA (Live)</h1>
+      <p>Build weighted support-based plan, then place real Binance orders.</p>
+    </section>
+
+    <section class="card">
+      <h2>New Live SMART DCA</h2>
+      <form id="smart-campaign-form" method="post" action="/live/smart-campaigns" class="form-grid">
+        <label>Campaign Name
+          <input id="name" name="name" required placeholder="Example: Live Smart ADA">
+        </label>
+        <label>Symbol
+          <input id="symbol" name="symbol" required placeholder="ADAUSDT">
+        </label>
+        <label>Entry Amount (USDT)
+          <input id="entry_amount_usdt" name="entry_amount_usdt" type="number" step="0.01" min="1" required value="15">
+        </label>
+        <label>Take Profit % (Optional)
+          <input id="tp_pct" name="tp_pct" type="number" step="0.01" min="0" placeholder="1.5">
+        </label>
+        <label>Stop Loss % (Optional)
+          <input id="sl_pct" name="sl_pct" type="number" step="0.01" min="0" placeholder="5">
+        </label>
+        <label>Strategy Mode
+          <select id="strategy_mode" name="strategy_mode">
+            <option value="conservative">Conservative (deeper accumulation)</option>
+            <option value="balanced" selected>Balanced (recommended)</option>
+            <option value="aggressive">Aggressive (early allocation)</option>
+          </select>
+        </label>
+        <label>No Score = No DCA (Strict)
+          <span class="inline-check">
+            <input id="strict_support_score_required" name="strict_support_score_required" type="checkbox" checked>
+            <span>Skip DCA level when support score is missing.</span>
+          </span>
+        </label>
+        <label>Trend Filter (BTC)
+          <span class="inline-check">
+            <input id="trend_filter_enabled" name="trend_filter_enabled" type="checkbox">
+            <span>Reduce/stop DCA in bearish BTC conditions.</span>
+          </span>
+        </label>
+
+        <div class="full">
+          <label>Search Binance Symbols</label>
+          <div class="symbol-search">
+            <input id="symbol-query" type="text" placeholder="Search e.g. BTC, ETH, SOL...">
+            <button type="button" id="symbol-search-btn">Search</button>
+          </div>
+          <div id="symbol-results" class="chips"></div>
+        </div>
+
+        <div class="full">
+          <button type="button" id="calc-plan-btn">Calculate Smart Plan</button>
+          <button type="submit" id="create-smart-btn">Start Live SMART Campaign</button>
+          <p id="smart-status" class="muted-line"></p>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Live Safety</h2>
+      <p>Live mode sends real orders to Binance. Verify API keys and order permissions before starting.</p>
+    </section>
+
+    <section id="smart-plan-card" class="card" style="display:none;">
+      <h2>SMART DCA Estimate</h2>
+      <div class="cards three">
+        <article class="card stat">
+          <h3>Entry Price</h3>
+          <p id="plan-entry-price">-</p>
+        </article>
+        <article class="card stat">
+          <h3>Total Estimated</h3>
+          <p id="plan-total-estimated">-</p>
+        </article>
+        <article class="card stat">
+          <h3>Est. Avg / Target</h3>
+          <p id="plan-avg-target">-</p>
+        </article>
+      </div>
+      <div class="cards three">
+        <article class="card stat">
+          <h3>Required Capital</h3>
+          <p id="plan-required-capital">-</p>
+        </article>
+        <article class="card stat">
+          <h3>Expected Drawdown</h3>
+          <p id="plan-drawdown">-</p>
+        </article>
+        <article class="card stat">
+          <h3>Risk Level</h3>
+          <p id="plan-risk-level">-</p>
+        </article>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Drop %</th>
+              <th>Allocation %</th>
+              <th>DCA Amount (USDT)</th>
+              <th>Trigger Price</th>
+              <th>Support Score</th>
+            </tr>
+          </thead>
+          <tbody id="smart-plan-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</section>
+
+<script>
+  (function initLiveSmartCreatePage() {
+    const symbolInput = document.getElementById("symbol");
+    const entryInput = document.getElementById("entry_amount_usdt");
+    const tpInput = document.getElementById("tp_pct");
+    const slInput = document.getElementById("sl_pct");
+    const strategyInput = document.getElementById("strategy_mode");
+    const statusLine = document.getElementById("smart-status");
+    const planCard = document.getElementById("smart-plan-card");
+    const planRows = document.getElementById("smart-plan-rows");
+    const planEntryPrice = document.getElementById("plan-entry-price");
+    const planTotalEstimated = document.getElementById("plan-total-estimated");
+    const planAvgTarget = document.getElementById("plan-avg-target");
+    const planRequiredCapital = document.getElementById("plan-required-capital");
+    const planDrawdown = document.getElementById("plan-drawdown");
+    const planRiskLevel = document.getElementById("plan-risk-level");
+    const calcBtn = document.getElementById("calc-plan-btn");
+    const createBtn = document.getElementById("create-smart-btn");
+    const form = document.getElementById("smart-campaign-form");
+    const queryInput = document.getElementById("symbol-query");
+    const resultBox = document.getElementById("symbol-results");
+    const searchBtn = document.getElementById("symbol-search-btn");
+
+    async function searchSymbols() {
+      const q = encodeURIComponent(queryInput.value || "");
+      const res = await fetch(`/api/binance/symbols?q=${q}`);
+      const data = await res.json();
+      resultBox.innerHTML = "";
+      (data.items || []).forEach((symbol) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chip";
+        btn.textContent = symbol;
+        btn.onclick = () => {
+          symbolInput.value = symbol;
+          const nameInput = document.getElementById("name");
+          if (!nameInput.value.trim()) {
+            nameInput.value = `LIVE SMART ${symbol}`;
+          }
+        };
+        resultBox.appendChild(btn);
+      });
+    }
+
+    function f2(v) {
+      return Number(v || 0).toFixed(2);
+    }
+
+    function f6(v) {
+      return Number(v || 0).toFixed(6);
+    }
+
+    async function calculatePlan() {
+      const symbol = (symbolInput.value || "").trim().toUpperCase();
+      const entry = parseFloat(entryInput.value || "0");
+      if (!symbol || !(entry > 0)) {
+        statusLine.textContent = "Please set symbol and entry amount first.";
+        return;
+      }
+      statusLine.textContent = "Calculating SMART plan...";
+      calcBtn.disabled = true;
+      try {
+        const params = new URLSearchParams({
+          symbol,
+          entry_amount_usdt: String(entry),
+          tp_pct: String(parseFloat(tpInput.value || "0") || 0),
+          sl_pct: String(parseFloat(slInput.value || "0") || 0),
+          strategy_mode: String(strategyInput.value || "balanced"),
+        });
+        const res = await fetch(`/api/live/smart-plan?${params.toString()}`);
+        const data = await res.json();
+        if (!data.ok) {
+          planCard.style.display = "none";
+          statusLine.textContent = data.error || "No plan available now.";
+          return;
+        }
+
+        const rows = data.rules || [];
+        planRows.innerHTML = "";
+        rows.forEach((r) => {
+          const dcaAmount = entry * (Number(r.allocation_pct || 0) / 100);
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${r.name}</td>
+            <td>${f2(r.drop_pct)}</td>
+            <td>${f2(r.allocation_pct)}</td>
+            <td>${f2(dcaAmount)}</td>
+            <td>${f6(r.trigger_price)}</td>
+            <td>${r.support_score ?? "-"}</td>
+          `;
+          planRows.appendChild(tr);
+        });
+
+        planEntryPrice.textContent = `${f6(data.entry_price)} USDT`;
+        planTotalEstimated.textContent = `${f2(data.estimate.total_if_all_filled_usdt)} USDT`;
+        const avg = f6(data.estimate.estimated_avg_price_if_all_filled);
+        const tp = data.estimate.estimated_target_price_if_all_filled;
+        planAvgTarget.textContent = tp ? `${avg} / ${f6(tp)}` : `${avg} / -`;
+        const cp = data.capital_planning || {};
+        const req = Number(cp.theoretical_total_required_usdt || data.estimate.total_if_all_filled_usdt || 0);
+        const withBuf = Number(cp.suggested_total_with_buffer_usdt || req);
+        planRequiredCapital.textContent = `${f2(req)} USDT (10% buffer: ${f2(withBuf)})`;
+        planDrawdown.textContent = `${f2(cp.expected_drawdown_pct || 0)}% (deepest DCA: ${f2(cp.deepest_dca_drop_pct || 0)}%)`;
+        planRiskLevel.textContent = String(cp.risk_level || "-").toUpperCase();
+        planCard.style.display = "block";
+        statusLine.textContent = `Plan ready (${String(data.strategy_mode || "balanced")}). Market state: ${data.market_state || "unknown"}.`;
+      } catch (e) {
+        statusLine.textContent = "Failed to calculate plan.";
+      } finally {
+        calcBtn.disabled = false;
+      }
+    }
+
+    searchBtn?.addEventListener("click", searchSymbols);
+    queryInput?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        searchSymbols();
+      }
+    });
+    calcBtn?.addEventListener("click", calculatePlan);
+    form?.addEventListener("submit", () => {
+      createBtn.disabled = true;
+      createBtn.textContent = "Creating...";
+      statusLine.textContent = "Creating live SMART DCA campaign...";
+      return true;
+    });
+  })();
+</script>
+{% endblock %}

@@ -30,8 +30,11 @@
   <p>Take Profit: <strong>{{ campaign.tp_pct if campaign.tp_pct is not none else "-" }}%</strong></p>
   <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
   <p>DCA Mode: <strong>{{ "AI DCA" if campaign.ai_dca_enabled else "Manual DCA" }}</strong></p>
+  {% if campaign.smart_dca_enabled %}
+  <p>Smart Strategy: <strong>{{ (campaign.ai_dca_profile or "smart_weighted_balanced").replace("smart_weighted_", "")|upper }}</strong></p>
+  {% endif %}
   <p>Strict AI (No Score = No DCA): <strong>{{ "Enabled" if campaign.strict_support_score_required else "Disabled" }}</strong></p>
-  <p>Campaign Type: <strong>{{ "Loop AI" if campaign.loop_enabled else "Standard" }}</strong></p>
+  <p>Campaign Type: <strong>{{ "Loop AI" if campaign.loop_enabled else ("Smart DCA" if campaign.smart_dca_enabled else "Standard") }}</strong></p>
   {% if campaign.loop_enabled %}
   <p>Loop Target Open Symbols: <strong>{{ campaign.loop_target_count }}</strong></p>
   <p>Loop Engine: <strong>{{ "V2" if campaign.loop_v2_enabled else "V1" }}</strong></p>

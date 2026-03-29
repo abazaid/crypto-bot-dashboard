@@ -17,6 +17,7 @@ class Campaign(Base):
     tp_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     sl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_dca_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    smart_dca_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ai_dca_profile: Mapped[str | None] = mapped_column(String(40), nullable=True)
     ai_dca_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_dca_suggested_rules_json: Mapped[str | None] = mapped_column(Text, nullable=True)
