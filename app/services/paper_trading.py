@@ -455,6 +455,24 @@ def _adaptive_drop_targets(expected_drawdown_pct: float, strategy_mode: str, cou
     return out[: max(1, int(count))]
 
 
+def _target_drawdown_by_regime(market_state: str, strategy_mode: str, base_drawdown: float) -> float:
+    state = str(market_state or "neutral").strip().lower()
+    mode = str(strategy_mode or "balanced").strip().lower()
+    d = max(4.0, float(base_drawdown or 0.0))
+
+    floors = {
+        "strong_bearish": {"conservative": 35.0, "balanced": 25.0, "aggressive": 15.0},
+        "bearish": {"conservative": 25.0, "balanced": 18.0, "aggressive": 12.0},
+        "neutral": {"conservative": 18.0, "balanced": 12.0, "aggressive": 8.0},
+        "bullish": {"conservative": 14.0, "balanced": 10.0, "aggressive": 7.0},
+    }
+    if mode not in {"conservative", "balanced", "aggressive"}:
+        mode = "balanced"
+    if state not in floors:
+        state = "neutral"
+    return max(d, floors[state][mode])
+
+
 def _sl_drop_cap(sl_pct: float | None) -> float | None:
     if sl_pct is None:
         return None
@@ -788,8 +806,13 @@ def build_smart_dca_plan(
         if len(zones) >= max_levels:
             break
 
-    desired_levels = min(max_levels, 4)
-    expected_drawdown_raw = max(float(ctx.get("drawdown_pct", 0.0)), 6.0)
+    desired_levels = min(max_levels, 5)
+    market_state = btc_market_state()
+    expected_drawdown_raw = _target_drawdown_by_regime(
+        market_state=market_state,
+        strategy_mode=mode,
+        base_drawdown=max(float(ctx.get("drawdown_pct", 0.0)), 6.0),
+    )
     adaptive_targets = _cap_drop_levels_to_sl(
         _adaptive_drop_targets(expected_drawdown_raw, strategy_mode=mode, count=max_levels),
         sl_pct,
@@ -877,7 +900,7 @@ def build_smart_dca_plan(
     deepest_drop_pct = max([float(r["drop_pct"]) for r in rows], default=0.0)
     first_zone_weight_pct = float(rows[0]["allocation_pct"]) if rows else 0.0
     theoretical_total = max(float(total_invested), float(entry_amount_usdt))
-    expected_drawdown_pct = max(float(ctx.get("drawdown_pct", 0.0)), deepest_drop_pct)
+    expected_drawdown_pct = max(expected_drawdown_raw, deepest_drop_pct)
     if expected_drawdown_pct <= 12.0:
         risk_level = "low"
     elif expected_drawdown_pct <= 25.0:
@@ -909,7 +932,7 @@ def build_smart_dca_plan(
             "deepest_dca_drop_pct": round(deepest_drop_pct, 2),
             "risk_level": risk_level,
         },
-        "market_state": btc_market_state(),
+        "market_state": market_state,
         "strategy_mode": mode,
         "note": (
             f"Smart weighted DCA ({mode}) based on support zones, score quality, and depth context."
