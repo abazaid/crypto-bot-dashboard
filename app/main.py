@@ -688,7 +688,10 @@ async def create_paper_campaign(
                 )
         db.commit()
 
-        opened, errors = create_campaign_positions(db, campaign, picked)
+        try:
+            opened, errors = create_campaign_positions(db, campaign, picked)
+        except Exception as exc:
+            opened, errors = 0, [f"{type(exc).__name__}: {exc}"]
         if errors:
             campaign.status = "paused"
             db.add(

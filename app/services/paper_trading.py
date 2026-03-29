@@ -617,6 +617,14 @@ def build_symbol_ai_dca_rules(
             raw_symbol_drops.append(float(drop_pct))
             raw_symbol_scores.append(None)
     symbol_drops = _cap_drop_levels_to_sl(raw_symbol_drops, sl_pct)
+    if len(symbol_drops) < target_levels:
+        for _, drop_pct, _ in base_fallback:
+            if len(symbol_drops) >= target_levels:
+                break
+            d = round(float(drop_pct), 2)
+            if not symbol_drops or abs(d - symbol_drops[-1]) >= 0.5:
+                symbol_drops.append(d)
+    symbol_drops = symbol_drops[:target_levels]
 
     for idx in range(target_levels):
         name_rule = base_fallback[idx][0]
