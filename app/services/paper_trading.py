@@ -746,6 +746,28 @@ def _open_position_with_rules(
     event_type: str,
     event_label: str,
 ) -> float:
+    # Loop safety: never open duplicate symbol while an open position exists
+    # in the same campaign. Re-entry is allowed only after prior one is closed.
+    if bool(campaign.loop_enabled):
+        exists_open = (
+            db.query(Position.id)
+            .filter(
+                Position.campaign_id == campaign.id,
+                Position.symbol == symbol,
+                Position.status == "open",
+            )
+            .first()
+            is not None
+        )
+        if exists_open:
+            add_log(
+                db,
+                "LOOP_SKIP",
+                symbol,
+                f"Campaign={campaign.name} | reason=duplicate_open_symbol",
+            )
+            return 0.0
+
     qty = campaign.entry_amount_usdt / price
     pos = Position(
         campaign_id=campaign.id,
@@ -1045,6 +1067,8 @@ def run_cycle(db: Session) -> None:
 
         price_map = get_prices(picks)
         for symbol in picks:
+            if symbol in open_symbols:
+                continue
             price = float(price_map.get(symbol, 0.0))
             if price <= 0 or cash < campaign.entry_amount_usdt:
                 continue
@@ -1060,7 +1084,10 @@ def run_cycle(db: Session) -> None:
                 event_type="LOOP_OPEN",
                 event_label="Loop refill buy",
             )
+            if spent <= 0:
+                continue
             cash -= spent
+            open_symbols.add(symbol)
             changed = True
 
     # Auto re-entry: reopen symbols that are currently closed (no open position),
