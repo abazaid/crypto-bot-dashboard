@@ -45,14 +45,22 @@
 </section>
 
 <section class="card deals-filter-card">
-  <div class="deals-filters">
+  <form method="get" action="/paper/history" class="deals-filters">
     <label>Date Filter
-      <input type="text" value="All time" readonly>
+      <select name="date_range" onchange="this.form.submit()">
+        {% for f in date_filters %}
+        <option value="{{ f.key }}" {% if selected_date_filter == f.key %}selected{% endif %}>{{ f.label }}{% if f.key != 'all' %} | {{ f.count }} Deals{% endif %}</option>
+        {% endfor %}
+      </select>
     </label>
     <label>Strategy Type
-      <input type="text" value="All strategies" readonly>
+      <select name="strategy" onchange="this.form.submit()">
+        {% for f in strategy_filters %}
+        <option value="{{ f.key }}" {% if selected_strategy_filter == f.key %}selected{% endif %}>{{ f.label }}{% if f.key != 'all' %} | {{ f.count }} Deals{% endif %}</option>
+        {% endfor %}
+      </select>
     </label>
-  </div>
+  </form>
 </section>
 
 <section class="card">

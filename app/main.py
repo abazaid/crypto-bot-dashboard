@@ -1,6 +1,6 @@
 import threading
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Form, Request
@@ -86,6 +86,132 @@ def _safe_float(value: str | None, default: float | None = None) -> float | None
         return float(str(value).replace("%", "").strip())
     except Exception:
         return default
+
+
+_DATE_FILTERS = [
+    ("all", "Disable Filter", None),
+    ("24h", "Last 24 hours", 24),
+    ("3d", "Last 3 days", 24 * 3),
+    ("7d", "Last 7 days", 24 * 7),
+    ("14d", "Last 14 days", 24 * 14),
+    ("30d", "Last 30 days", 24 * 30),
+    ("60d", "Last 60 days", 24 * 60),
+]
+
+_STRATEGY_FILTERS = [
+    ("all", "Disable Filter"),
+    ("loop_ai", "Loop AI"),
+    ("smart_ai", "Smart trade AI"),
+    ("manual", "Manual"),
+]
+
+
+def _strategy_key(campaign: Campaign) -> str:
+    if bool(campaign.loop_enabled):
+        return "loop_ai"
+    if bool(campaign.ai_dca_enabled):
+        return "smart_ai"
+    return "manual"
+
+
+def _match_date_filter(row: dict, date_key: str, now_dt: datetime) -> bool:
+    for key, _, hours in _DATE_FILTERS:
+        if date_key != key:
+            continue
+        if hours is None:
+            return True
+        closed_at = row.get("closed_at")
+        if not isinstance(closed_at, datetime):
+            return False
+        return closed_at >= (now_dt - timedelta(hours=hours))
+    return True
+
+
+def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> dict:
+    closed_positions = (
+        db.query(Position)
+        .join(Campaign, Campaign.id == Position.campaign_id)
+        .filter(Position.status == "closed", Campaign.mode == mode)
+        .order_by(desc(Position.closed_at), desc(Position.id))
+        .all()
+    )
+    position_ids = [p.id for p in closed_positions]
+    dca_total: dict[int, int] = {}
+    dca_done: dict[int, int] = {}
+    if position_ids:
+        states = db.query(PositionDcaState).filter(PositionDcaState.position_id.in_(position_ids)).all()
+        for st in states:
+            pid = int(st.position_id)
+            dca_total[pid] = int(dca_total.get(pid, 0)) + 1
+            if bool(st.executed):
+                dca_done[pid] = int(dca_done.get(pid, 0)) + 1
+
+    base_rows = []
+    now_dt = datetime.utcnow()
+    for p in closed_positions:
+        invested = float(p.total_invested_usdt or 0.0)
+        pnl = float(p.realized_pnl_usdt or 0.0)
+        base_rows.append(
+            {
+                "id": p.id,
+                "campaign_name": p.campaign.name,
+                "symbol": str(p.symbol or "").upper(),
+                "opened_at": p.opened_at,
+                "closed_at": p.closed_at,
+                "invested": invested,
+                "exit_value": float((p.close_price or 0.0) * (p.total_qty or 0.0)),
+                "pnl": pnl,
+                "pnl_pct": _pnl_pct(invested, pnl),
+                "close_reason": p.close_reason or "-",
+                "strategy_key": _strategy_key(p.campaign),
+                "dca_done": int(dca_done.get(p.id, 0)),
+                "dca_total": int(dca_total.get(p.id, 0)),
+            }
+        )
+
+    # Filter option counts over full dataset.
+    date_filters = []
+    for key, label, _ in _DATE_FILTERS:
+        cnt = sum(1 for r in base_rows if _match_date_filter(r, key, now_dt))
+        date_filters.append({"key": key, "label": label, "count": cnt})
+    strategy_filters = []
+    for key, label in _STRATEGY_FILTERS:
+        cnt = len(base_rows) if key == "all" else sum(1 for r in base_rows if r["strategy_key"] == key)
+        strategy_filters.append({"key": key, "label": label, "count": cnt})
+
+    # Apply selected filters.
+    rows = [r for r in base_rows if _match_date_filter(r, date_filter, now_dt)]
+    if strategy_filter != "all":
+        rows = [r for r in rows if r["strategy_key"] == strategy_filter]
+
+    symbol_totals: dict[str, float] = {}
+    wins = 0
+    net_pnl = 0.0
+    for row in rows:
+        pnl = float(row["pnl"])
+        if pnl > 0:
+            wins += 1
+        net_pnl += pnl
+        symbol_totals[row["symbol"]] = float(symbol_totals.get(row["symbol"], 0.0)) + pnl
+    for row in rows:
+        row["symbol_total_pnl"] = float(symbol_totals.get(row["symbol"], 0.0))
+
+    total = len(rows)
+    summary = {
+        "total_trades": total,
+        "wins": wins,
+        "losses": max(0, total - wins),
+        "win_rate": ((wins / total) * 100.0) if total else 0.0,
+        "net_pnl": net_pnl,
+    }
+    return {
+        "summary": summary,
+        "rows": rows,
+        "date_filters": date_filters,
+        "strategy_filters": strategy_filters,
+        "selected_date_filter": date_filter,
+        "selected_strategy_filter": strategy_filter,
+    }
 
 
 def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
@@ -319,54 +445,18 @@ async def live_create_campaign_page(request: Request) -> HTMLResponse:
 async def live_trading_history(request: Request) -> HTMLResponse:
     db = SessionLocal()
     try:
-        closed_positions = (
-            db.query(Position)
-            .join(Campaign, Campaign.id == Position.campaign_id)
-            .filter(Position.status == "closed", Campaign.mode == "live")
-            .order_by(desc(Position.closed_at), desc(Position.id))
-            .all()
-        )
-        rows = []
-        symbol_totals: dict[str, float] = {}
-        wins = 0
-        net_pnl = 0.0
-        for p in closed_positions:
-            invested = float(p.total_invested_usdt or 0.0)
-            pnl = float(p.realized_pnl_usdt or 0.0)
-            pnl_pct = _pnl_pct(invested, pnl)
-            if pnl > 0:
-                wins += 1
-            net_pnl += pnl
-            symbol_key = str(p.symbol or "").upper()
-            symbol_totals[symbol_key] = float(symbol_totals.get(symbol_key, 0.0)) + pnl
-            rows.append(
-                {
-                    "id": p.id,
-                    "campaign_name": p.campaign.name,
-                    "symbol": symbol_key,
-                    "opened_at": p.opened_at,
-                    "closed_at": p.closed_at,
-                    "invested": invested,
-                    "exit_value": float((p.close_price or 0.0) * (p.total_qty or 0.0)),
-                    "pnl": pnl,
-                    "pnl_pct": pnl_pct,
-                    "close_reason": p.close_reason or "-",
-                }
-            )
-        for row in rows:
-            row["symbol_total_pnl"] = float(symbol_totals.get(row["symbol"], 0.0))
-        total = len(rows)
-        win_rate = (wins / total * 100.0) if total else 0.0
-        summary = {
-            "total_trades": total,
-            "wins": wins,
-            "losses": max(0, total - wins),
-            "win_rate": win_rate,
-            "net_pnl": net_pnl,
-        }
+        date_filter = str(request.query_params.get("date_range", "all")).strip().lower()
+        strategy_filter = str(request.query_params.get("strategy", "all")).strip().lower()
+        valid_date = {x[0] for x in _DATE_FILTERS}
+        valid_strategy = {x[0] for x in _STRATEGY_FILTERS}
+        if date_filter not in valid_date:
+            date_filter = "all"
+        if strategy_filter not in valid_strategy:
+            strategy_filter = "all"
+        ctx = _history_context(db, "live", date_filter, strategy_filter)
         return templates.TemplateResponse(
             "live_history.html",
-            _context("live_history", request=request, summary=summary, rows=rows),
+            _context("live_history", request=request, **ctx),
         )
     finally:
         db.close()
@@ -448,54 +538,18 @@ async def live_campaign_details(request: Request, campaign_id: int) -> HTMLRespo
 async def paper_trading_history(request: Request) -> HTMLResponse:
     db = SessionLocal()
     try:
-        closed_positions = (
-            db.query(Position)
-            .join(Campaign, Campaign.id == Position.campaign_id)
-            .filter(Position.status == "closed", Campaign.mode == "paper")
-            .order_by(desc(Position.closed_at), desc(Position.id))
-            .all()
-        )
-        rows = []
-        symbol_totals: dict[str, float] = {}
-        wins = 0
-        net_pnl = 0.0
-        for p in closed_positions:
-            invested = float(p.total_invested_usdt or 0.0)
-            pnl = float(p.realized_pnl_usdt or 0.0)
-            pnl_pct = _pnl_pct(invested, pnl)
-            if pnl > 0:
-                wins += 1
-            net_pnl += pnl
-            symbol_key = str(p.symbol or "").upper()
-            symbol_totals[symbol_key] = float(symbol_totals.get(symbol_key, 0.0)) + pnl
-            rows.append(
-                {
-                    "id": p.id,
-                    "campaign_name": p.campaign.name,
-                    "symbol": symbol_key,
-                    "opened_at": p.opened_at,
-                    "closed_at": p.closed_at,
-                    "invested": invested,
-                    "exit_value": float((p.close_price or 0.0) * (p.total_qty or 0.0)),
-                    "pnl": pnl,
-                    "pnl_pct": pnl_pct,
-                    "close_reason": p.close_reason or "-",
-                }
-            )
-        for row in rows:
-            row["symbol_total_pnl"] = float(symbol_totals.get(row["symbol"], 0.0))
-        total = len(rows)
-        win_rate = (wins / total * 100.0) if total else 0.0
-        summary = {
-            "total_trades": total,
-            "wins": wins,
-            "losses": max(0, total - wins),
-            "win_rate": win_rate,
-            "net_pnl": net_pnl,
-        }
+        date_filter = str(request.query_params.get("date_range", "all")).strip().lower()
+        strategy_filter = str(request.query_params.get("strategy", "all")).strip().lower()
+        valid_date = {x[0] for x in _DATE_FILTERS}
+        valid_strategy = {x[0] for x in _STRATEGY_FILTERS}
+        if date_filter not in valid_date:
+            date_filter = "all"
+        if strategy_filter not in valid_strategy:
+            strategy_filter = "all"
+        ctx = _history_context(db, "paper", date_filter, strategy_filter)
         return templates.TemplateResponse(
             "trading_history.html",
-            _context("history", request=request, summary=summary, rows=rows),
+            _context("history", request=request, **ctx),
         )
     finally:
         db.close()

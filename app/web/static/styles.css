@@ -236,7 +236,7 @@ label {
   gap: 8px;
 }
 
-input, button {
+input, select, button {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px 11px;
@@ -253,7 +253,8 @@ textarea {
   min-height: 82px;
 }
 
-input:focus {
+input:focus,
+select:focus {
   outline: 2px solid #cfe0ff;
   border-color: #8ab2ff;
 }
