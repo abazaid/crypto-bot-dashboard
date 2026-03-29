@@ -698,7 +698,7 @@ async def create_paper_campaign(
                 scan = suggest_top_symbols(max(loop_target, 10), use_v2=False, max_candidates=max(18, loop_target * 2))
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
             picked = picked[:loop_target]
-        if not picked:
+        if not picked and not loop_mode:
             return RedirectResponse("/paper/create", status_code=303)
         campaign = Campaign(
             name=name.strip() or "Paper Campaign",
@@ -767,10 +767,24 @@ async def create_paper_campaign(
                 )
         db.commit()
 
-        try:
-            opened, errors = create_campaign_positions(db, campaign, picked)
-        except Exception as exc:
-            opened, errors = 0, [f"{type(exc).__name__}: {exc}"]
+        if loop_mode and not picked:
+            opened, errors = 0, []
+            db.add(
+                ActivityLog(
+                    event_type="LOOP_WAIT",
+                    symbol="-",
+                    message=(
+                        f"Campaign '{campaign.name}' created with 0 initial picks. "
+                        "Loop engine will keep scanning and open when candidates appear."
+                    ),
+                )
+            )
+            db.commit()
+        else:
+            try:
+                opened, errors = create_campaign_positions(db, campaign, picked)
+            except Exception as exc:
+                opened, errors = 0, [f"{type(exc).__name__}: {exc}"]
         if errors:
             campaign.status = "paused"
             db.add(
@@ -1060,7 +1074,7 @@ async def create_live_campaign(
                 scan = suggest_top_symbols(max(loop_target, 10), use_v2=False, max_candidates=max(18, loop_target * 2))
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
             picked = picked[:loop_target]
-        if not picked:
+        if not picked and not loop_mode:
             return RedirectResponse("/live/create", status_code=303)
         campaign = Campaign(
             name=name.strip() or "Live Campaign",
@@ -1101,12 +1115,26 @@ async def create_live_campaign(
                     continue
                 db.add(DcaRule(campaign_id=campaign.id, name=n, drop_pct=d, allocation_pct=a))
         db.commit()
-        try:
-            opened, errors = create_live_campaign_positions(db, campaign, picked)
-        except Exception as e:
-            db.add(ActivityLog(event_type="LIVE_CREATE_FAIL", symbol="-", message=f"Campaign='{campaign.name}' | error={e}"))
+        if loop_mode and not picked:
+            opened, errors = 0, []
+            db.add(
+                ActivityLog(
+                    event_type="LIVE_LOOP_WAIT",
+                    symbol="-",
+                    message=(
+                        f"Campaign '{campaign.name}' created with 0 initial picks. "
+                        "Live loop engine will keep scanning and open when candidates appear."
+                    ),
+                )
+            )
             db.commit()
-            return RedirectResponse("/live/create", status_code=303)
+        else:
+            try:
+                opened, errors = create_live_campaign_positions(db, campaign, picked)
+            except Exception as e:
+                db.add(ActivityLog(event_type="LIVE_CREATE_FAIL", symbol="-", message=f"Campaign='{campaign.name}' | error={e}"))
+                db.commit()
+                return RedirectResponse("/live/create", status_code=303)
         if errors:
             campaign.status = "paused"
             db.commit()
