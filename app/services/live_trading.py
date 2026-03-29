@@ -32,15 +32,26 @@ def _tp_target_price(pos: Position, campaign: Campaign) -> float | None:
     return float(pos.average_price) * (1 + (float(campaign.tp_pct) / 100.0))
 
 
-def _arm_or_rearm_tp_order(db: Session, pos: Position, campaign: Campaign) -> None:
+def _arm_or_rearm_tp_order(db: Session, pos: Position, campaign: Campaign, force_rearm: bool = False) -> None:
     target = _tp_target_price(pos, campaign)
     if target is None or pos.status != "open":
         return
-    if pos.tp_order_id:
+    if pos.tp_order_id and not force_rearm:
+        try:
+            existing = get_order(pos.symbol, int(pos.tp_order_id))
+            status = str(existing.get("status", "")).upper()
+            if status in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+                return
+            if status == "FILLED":
+                return
+        except Exception:
+            pass
+    if pos.tp_order_id and force_rearm:
         try:
             cancel_order(pos.symbol, int(pos.tp_order_id))
         except Exception:
             pass
+    _clear_tp_order_fields(pos)
     order = place_limit_sell_qty(pos.symbol, float(pos.total_qty), float(target))
     pos.tp_order_id = int(order.get("order_id") or 0) or None
     pos.tp_order_price = float(order.get("price") or target)
@@ -153,7 +164,7 @@ def _open_live_position(
         for rule in rules:
             db.add(PositionDcaState(position_id=pos.id, dca_rule_id=rule.id, executed=False))
     try:
-        _arm_or_rearm_tp_order(db, pos, campaign)
+        _arm_or_rearm_tp_order(db, pos, campaign, force_rearm=True)
     except Exception as e:
         add_live_log(db, "LIVE_TP_ARM_FAIL", symbol, f"Campaign={campaign.name} | error={e}")
 
@@ -265,6 +276,8 @@ def run_live_cycle(db: Session) -> None:
                     changed = True
             except Exception as e:
                 add_live_log(db, "LIVE_TP_CHECK_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
+                _clear_tp_order_fields(pos)
+                changed = True
 
         # 2) SL is enforced by bot. Cancel TP then market-close.
         if sl_hit:
@@ -302,7 +315,7 @@ def run_live_cycle(db: Session) -> None:
         # Keep TP order always armed (even when campaign is paused).
         if campaign.tp_pct is not None and not pos.tp_order_id:
             try:
-                _arm_or_rearm_tp_order(db, pos, campaign)
+                _arm_or_rearm_tp_order(db, pos, campaign, force_rearm=False)
                 changed = True
             except Exception as e:
                 add_live_log(db, "LIVE_TP_ARM_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
@@ -385,7 +398,7 @@ def run_live_cycle(db: Session) -> None:
             )
             # Average changed after DCA -> cancel old TP and set a new TP order.
             try:
-                _arm_or_rearm_tp_order(db, pos, campaign)
+                _arm_or_rearm_tp_order(db, pos, campaign, force_rearm=True)
             except Exception as e:
                 add_live_log(db, "LIVE_TP_REARM_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
             changed = True

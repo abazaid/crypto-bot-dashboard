@@ -14,6 +14,18 @@ BASE_URL = "https://api.binance.com"
 TIMEOUT = 15
 _SYMBOL_FILTER_CACHE: dict[str, dict[str, float]] = {}
 _CACHE_EXPIRES_AT = 0.0
+_KNOWN_QUOTES = [
+    "USDT",
+    "USDC",
+    "FDUSD",
+    "BUSD",
+    "TUSD",
+    "BTC",
+    "ETH",
+    "BNB",
+    "TRY",
+    "EUR",
+]
 
 
 def is_configured() -> bool:
@@ -116,6 +128,14 @@ def _order_summary(raw: dict) -> dict[str, float]:
     }
 
 
+def _base_asset_from_symbol(symbol: str) -> str:
+    s = symbol.upper()
+    for q in sorted(_KNOWN_QUOTES, key=len, reverse=True):
+        if s.endswith(q) and len(s) > len(q):
+            return s[: -len(q)]
+    return s
+
+
 def place_market_buy_quote(symbol: str, quote_usdt: float) -> dict[str, float]:
     if quote_usdt <= 0:
         raise RuntimeError("quote_usdt must be > 0")
@@ -139,7 +159,10 @@ def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
     filters = _SYMBOL_FILTER_CACHE.get(symbol.upper(), {})
     step = float(filters.get("step_size", 0.0))
     min_qty = float(filters.get("min_qty", 0.0))
-    qty = _round_step_down(float(quantity), step)
+    base_asset = _base_asset_from_symbol(symbol)
+    free_base = get_asset_free(base_asset)
+    qty = min(float(quantity), free_base * 0.999)
+    qty = _round_step_down(qty, step)
     if qty <= 0 or qty < min_qty:
         raise RuntimeError(f"quantity below min lot size for {symbol}: {qty}")
     raw = _signed_request(
@@ -166,7 +189,10 @@ def place_limit_sell_qty(symbol: str, quantity: float, price: float) -> dict[str
     min_qty = float(filters.get("min_qty", 0.0))
     min_notional = float(filters.get("min_notional", 0.0))
     tick = float(filters.get("tick_size", 0.0))
-    qty = _round_step_down(float(quantity), step)
+    base_asset = _base_asset_from_symbol(symbol)
+    free_base = get_asset_free(base_asset)
+    qty = min(float(quantity), free_base * 0.999)
+    qty = _round_step_down(qty, step)
     px = _round_step_down(float(price), tick)
     if qty <= 0 or qty < min_qty:
         raise RuntimeError(f"quantity below min lot size for {symbol}: {qty}")
