@@ -493,6 +493,15 @@ def _market_state_simple(symbol: str = "BTCUSDT", interval: str = "4h") -> str:
     return "bearish"
 
 
+def _auto_strategy_mode(symbol: str) -> tuple[str, str]:
+    state = _market_state_simple(symbol, "4h")
+    if state == "bullish":
+        return "aggressive", state
+    if state == "sideways":
+        return "balanced", state
+    return "conservative", state
+
+
 def _depth_multiplier(drop_pct: float) -> float:
     # Canonical table from design document.
     points = [
@@ -917,9 +926,14 @@ def build_smart_dca_plan(
 
     current_price = float(ctx["price"])
     max_levels = max(1, min(int(max_levels), 6))
-    mode = str(strategy_mode or "balanced").strip().lower()
-    if mode not in {"conservative", "balanced", "aggressive"}:
-        mode = "balanced"
+    mode_input = str(strategy_mode or "balanced").strip().lower()
+    if mode_input not in {"conservative", "balanced", "aggressive", "auto"}:
+        mode_input = "balanced"
+    auto_market_state = None
+    if mode_input == "auto":
+        mode, auto_market_state = _auto_strategy_mode(sym)
+    else:
+        mode = mode_input
 
     # Design-doc canonical drop levels.
     canonical_drops = [5.0, 10.0, 17.0, 25.0, 35.0, 45.0][:max_levels]
@@ -1111,8 +1125,11 @@ def build_smart_dca_plan(
         },
         "market_state": market_state,
         "strategy_mode": mode,
+        "strategy_mode_input": mode_input,
+        "strategy_auto_resolved": bool(mode_input == "auto"),
+        "strategy_auto_market_state": auto_market_state,
         "note": (
-            f"Smart DCA ({mode}) with canonical drop levels + dynamic zone score + risk-capped allocation."
+            f"Smart DCA ({mode}{' from auto' if mode_input == 'auto' else ''}) with canonical drop levels + dynamic zone score + risk-capped allocation."
         ),
     }
 

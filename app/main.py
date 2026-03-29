@@ -891,7 +891,7 @@ async def create_paper_smart_campaign(
     entry_amount_usdt: str = Form(...),
     tp_pct: str = Form(""),
     sl_pct: str = Form(""),
-    strategy_mode: str = Form("balanced"),
+    strategy_mode: str = Form("auto"),
     trend_filter_enabled: str | None = Form(None),
     strict_support_score_required: str | None = Form(None),
 ) -> RedirectResponse:
@@ -944,7 +944,7 @@ async def create_paper_smart_campaign(
             loop_enabled=False,
             loop_v2_enabled=False,
             loop_target_count=0,
-            ai_dca_profile=f"smart_weighted_{str(plan.get('strategy_mode', 'balanced'))}",
+            ai_dca_profile=f"smart_weighted_{str(strategy_mode or 'auto').strip().lower()}",
             ai_dca_notes=str(plan.get("note", "Smart weighted DCA.")),
             ai_dca_suggested_rules_json=json.dumps(plan.get("rules", [])),
         )
@@ -1351,7 +1351,7 @@ async def create_live_smart_campaign(
     entry_amount_usdt: str = Form(...),
     tp_pct: str = Form(""),
     sl_pct: str = Form(""),
-    strategy_mode: str = Form("balanced"),
+    strategy_mode: str = Form("auto"),
     trend_filter_enabled: str | None = Form(None),
     strict_support_score_required: str | None = Form(None),
 ) -> RedirectResponse:
@@ -1403,7 +1403,7 @@ async def create_live_smart_campaign(
             loop_enabled=False,
             loop_v2_enabled=False,
             loop_target_count=0,
-            ai_dca_profile=f"smart_weighted_{str(plan.get('strategy_mode', 'balanced'))}",
+            ai_dca_profile=f"smart_weighted_{str(strategy_mode or 'auto').strip().lower()}",
             ai_dca_notes=str(plan.get("note", "Smart weighted DCA.")),
             ai_dca_suggested_rules_json=json.dumps(plan.get("rules", [])),
         )
@@ -1638,7 +1638,7 @@ async def api_live_smart_plan(
     total_budget_usdt: float | None = None,
     tp_pct: float | None = None,
     sl_pct: float | None = None,
-    strategy_mode: str = "balanced",
+    strategy_mode: str = "auto",
 ) -> JSONResponse:
     entry = float(entry_amount_usdt or 0.0)
     budget = float(total_budget_usdt or 0.0)
@@ -1724,7 +1724,7 @@ async def api_symbol_search(q: str = "") -> JSONResponse:
 @app.get("/api/smart-backtest")
 async def api_smart_backtest(
     symbol: str,
-    strategy_mode: str = "balanced",
+    strategy_mode: str = "auto",
     entry_amount_usdt: float = 15.0,
     tp_pct: float = 1.5,
     sl_pct: float | None = 5.0,
@@ -1757,7 +1757,7 @@ async def api_paper_smart_plan(
     total_budget_usdt: float | None = None,
     tp_pct: float | None = None,
     sl_pct: float | None = None,
-    strategy_mode: str = "balanced",
+    strategy_mode: str = "auto",
 ) -> JSONResponse:
     entry = float(entry_amount_usdt or 0.0)
     budget = float(total_budget_usdt or 0.0)

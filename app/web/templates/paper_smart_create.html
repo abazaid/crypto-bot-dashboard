@@ -38,8 +38,9 @@
         </label>
         <label>Strategy Mode
           <select id="strategy_mode" name="strategy_mode">
+            <option value="auto" selected>AUTO (EMA200 driven)</option>
             <option value="conservative">Conservative (deeper accumulation)</option>
-            <option value="balanced" selected>Balanced (recommended)</option>
+            <option value="balanced">Balanced (recommended)</option>
             <option value="aggressive">Aggressive (early allocation)</option>
           </select>
         </label>
@@ -302,7 +303,13 @@
         planInputMode.textContent = String(cp.input_mode || "base_entry");
         planCoverage.textContent = `${f2(cp.planned_drawdown_coverage_pct || 0)}%`;
         planCard.style.display = "block";
-        statusLine.textContent = `Plan ready (${String(data.strategy_mode || "balanced")}). Market state: ${data.market_state || "unknown"}.`;
+        const modeIn = String(data.strategy_mode_input || strategyInput.value || "balanced");
+        const modeOut = String(data.strategy_mode || "balanced");
+        if (modeIn === "auto") {
+          statusLine.textContent = `Plan ready (AUTO -> ${modeOut}). Auto state: ${data.strategy_auto_market_state || "unknown"}, market state: ${data.market_state || "unknown"}.`;
+        } else {
+          statusLine.textContent = `Plan ready (${modeOut}). Market state: ${data.market_state || "unknown"}.`;
+        }
       } catch (e) {
         statusLine.textContent = "Failed to calculate plan.";
       } finally {

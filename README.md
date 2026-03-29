@@ -79,7 +79,7 @@ Per-symbol rules generated from support context and filtered by confirmation log
 ## SMART DCA
 
 Dedicated campaign flow with:
-- strategy profile (`Aggressive`, `Balanced`, `Conservative`)
+- strategy profile (`AUTO`, `Aggressive`, `Balanced`, `Conservative`)
 - dynamic support-aware drop/allocation planning
 - capital planner before campaign start
 

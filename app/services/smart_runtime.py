@@ -31,8 +31,18 @@ def _latest_symbol_for_campaign(db: Session, campaign_id: int) -> str | None:
     return None
 
 
-def _strategy_mode_from_campaign(campaign: Campaign) -> str:
+def _strategy_mode_from_campaign(campaign: Campaign, symbol: str) -> str:
     profile = str(campaign.ai_dca_profile or "").strip().lower()
+    if "auto" in profile:
+        try:
+            state, _, _ = _simple_state(symbol)
+            if state == "bullish":
+                return "aggressive"
+            if state == "sideways":
+                return "balanced"
+            return "conservative"
+        except Exception:
+            return "balanced"
     if "aggressive" in profile:
         return "aggressive"
     if "conservative" in profile:
@@ -152,7 +162,7 @@ def refresh_smart_slow(db: Session) -> tuple[int, int]:
         symbol = _latest_symbol_for_campaign(db, c.id)
         if not symbol:
             continue
-        mode = _strategy_mode_from_campaign(c)
+        mode = _strategy_mode_from_campaign(c, symbol)
         plan = build_smart_dca_plan(
             symbol=symbol,
             entry_amount_usdt=float(c.entry_amount_usdt),
