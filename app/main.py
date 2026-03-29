@@ -261,6 +261,11 @@ async def paper_dashboard(request: Request) -> HTMLResponse:
         db.close()
 
 
+@app.get("/paper/campaigns")
+async def paper_campaigns_alias() -> RedirectResponse:
+    return RedirectResponse("/paper", status_code=303)
+
+
 @app.get("/paper/create", response_class=HTMLResponse)
 async def paper_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("paper_create.html", _context("paper_create", request=request))
@@ -295,6 +300,11 @@ async def live_dashboard(request: Request) -> HTMLResponse:
         )
     finally:
         db.close()
+
+
+@app.get("/live/campaigns")
+async def live_campaigns_alias() -> RedirectResponse:
+    return RedirectResponse("/live", status_code=303)
 
 
 @app.get("/live/create", response_class=HTMLResponse)
