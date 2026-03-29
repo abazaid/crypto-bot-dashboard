@@ -425,6 +425,107 @@ tbody tr:hover {
   margin-top: 10px;
 }
 
+.deals-shell {
+  margin: 24px 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(115deg, #fffdf9 0%, #f4f8ff 52%, #f4fff9 100%);
+}
+
+.deals-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 16px;
+  border-bottom: 1px solid #ebf0f7;
+}
+
+.deals-top h1 {
+  margin: 0;
+  font-size: 36px;
+}
+
+.deals-top p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.deals-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.soft-btn {
+  border: 1px solid #d7e5ef;
+  background: #fff;
+  color: #3b4d66;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-weight: 700;
+}
+
+.soft-btn-gold {
+  border-color: #ecd093;
+  background: #fff7df;
+  color: #815f1c;
+}
+
+.deals-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 8px;
+  background: #f3f5f8;
+}
+
+.tab {
+  background: #fff;
+  border: 1px solid #e1e7f0;
+  color: #4b5c75;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.tab-active {
+  background: #efb126;
+  border-color: #efb126;
+  color: #1e1e1e;
+}
+
+.deals-cards .deals-card {
+  border-radius: 16px;
+  box-shadow: 0 10px 24px rgba(21, 37, 58, 0.08);
+}
+
+.deals-cards .deals-card.good {
+  border-color: #bce9d1;
+}
+
+.deals-inline-stats {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+
+.deals-filter-card {
+  margin-top: 0;
+}
+
+.deals-filters {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.deals-table td .pnl-pos,
+.deals-table td .pnl-neg {
+  margin-right: 6px;
+}
+
 @media (max-width: 840px) {
   .topbar-inner {
     flex-wrap: wrap;
@@ -442,6 +543,16 @@ tbody tr:hover {
   }
   .symbol-search {
     flex-direction: column;
+  }
+  .deals-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .deals-top h1 {
+    font-size: 30px;
+  }
+  .deals-tabs {
+    overflow-x: auto;
   }
   th, td {
     font-size: 13px;

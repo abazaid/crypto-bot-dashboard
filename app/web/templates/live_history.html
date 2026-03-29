@@ -1,69 +1,100 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="hero hero-gradient">
-  <h1>Live Trading History</h1>
-  <p>Complete closed trades journal with percentage and amount performance.</p>
+<section class="deals-shell">
+  <div class="deals-top">
+    <div>
+      <h1>My Deals</h1>
+      <p>Live closed positions and performance journal.</p>
+    </div>
+    <div class="deals-actions">
+      <button type="button" class="soft-btn">Safety Lock</button>
+      <button type="button" class="soft-btn">Terminal</button>
+      <button type="button" class="soft-btn soft-btn-gold">Import Pairs</button>
+    </div>
+  </div>
+  <div class="deals-tabs">
+    <span class="tab">Open Deals</span>
+    <span class="tab tab-active">Closed Deals</span>
+    <span class="tab">Error Deals</span>
+    <span class="tab">Entry Queue</span>
+  </div>
 </section>
 
-<section class="cards four">
-  <article class="card stat glow">
+<section class="cards four deals-cards">
+  <article class="card stat glow deals-card good">
     <h3>Total Trades</h3>
     <p>{{ summary.total_trades }}</p>
   </article>
-  <article class="card stat glow">
+  <article class="card stat glow deals-card">
     <h3>Win Rate</h3>
     <p class="{{ 'pnl-pos' if summary.win_rate >= 50 else 'pnl-neg' }}">{{ "%.2f"|format(summary.win_rate) }}%</p>
   </article>
-  <article class="card stat glow">
+  <article class="card stat glow deals-card">
     <h3>Wins / Losses</h3>
     <p>{{ summary.wins }} / {{ summary.losses }}</p>
   </article>
-  <article class="card stat glow">
+  <article class="card stat glow deals-card">
     <h3>Net PnL</h3>
     <p class="{{ 'pnl-pos' if summary.net_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(summary.net_pnl) }} USDT</p>
   </article>
 </section>
 
+<section class="deals-inline-stats">
+  <span class="pnl-pos">{{ summary.wins }} Winning</span>
+  <span class="pnl-neg">{{ summary.losses }} Losing</span>
+</section>
+
+<section class="card deals-filter-card">
+  <div class="deals-filters">
+    <label>Date Filter
+      <input type="text" value="All time" readonly>
+    </label>
+    <label>Strategy Type
+      <input type="text" value="All strategies" readonly>
+    </label>
+  </div>
+</section>
+
 <section class="card">
   <h2>Closed Positions</h2>
   {% if rows %}
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Campaign</th>
-        <th>Symbol</th>
-        <th>Open Time</th>
-        <th>Close Time</th>
-        <th>Invested</th>
-        <th>Exit Value</th>
-        <th>PnL (USDT)</th>
-        <th>PnL (%)</th>
-        <th>Reason</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-      <tr>
-        <td>#{{ row.id }}</td>
-        <td>{{ row.campaign_name }}</td>
-        <td>
-          {{ row.symbol }}
-          <span class="{{ 'pnl-pos' if row.symbol_total_pnl >= 0 else 'pnl-neg' }}" style="margin-left:6px;">
-            {{ "%+.2f"|format(row.symbol_total_pnl) }}
-          </span>
-        </td>
-        <td>{{ row.opened_at.strftime("%Y-%m-%d %H:%M") if row.opened_at else "-" }}</td>
-        <td>{{ row.closed_at.strftime("%Y-%m-%d %H:%M") if row.closed_at else "-" }}</td>
-        <td>{{ "%.2f"|format(row.invested) }}</td>
-        <td>{{ "%.2f"|format(row.exit_value) }}</td>
-        <td class="{{ 'pnl-pos' if row.pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl) }}</td>
-        <td class="{{ 'pnl-pos' if row.pnl_pct >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl_pct) }}%</td>
-        <td><span class="badge">{{ row.close_reason }}</span></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-scroll">
+    <table class="deals-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Campaign</th>
+          <th>Symbol</th>
+          <th>Start</th>
+          <th>Closed</th>
+          <th>Invested</th>
+          <th>Exit</th>
+          <th>PnL</th>
+          <th>DCA</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>#{{ row.id }}</td>
+          <td>{{ row.campaign_name }}</td>
+          <td>{{ row.symbol }}</td>
+          <td>{{ row.opened_at.strftime("%b %d, %H:%M") if row.opened_at else "-" }}</td>
+          <td>{{ row.closed_at.strftime("%b %d, %H:%M") if row.closed_at else "-" }}</td>
+          <td>{{ "%.2f"|format(row.invested) }}</td>
+          <td>{{ "%.2f"|format(row.exit_value) }}</td>
+          <td>
+            <span class="{{ 'pnl-pos' if row.pnl_pct >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl_pct) }}%</span>
+            <span class="{{ 'pnl-pos' if row.pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl) }}</span>
+          </td>
+          <td>{{ row.dca_done }}/{{ row.dca_total }}</td>
+          <td><span class="badge">{{ row.close_reason }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
   <p>No closed trades yet.</p>
   {% endif %}
