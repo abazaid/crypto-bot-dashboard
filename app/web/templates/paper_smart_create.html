@@ -39,6 +39,46 @@
             <option value="aggressive">Aggressive (early allocation)</option>
           </select>
         </label>
+        <div class="full">
+          <div class="card" style="margin-top: 4px;">
+            <h3 style="margin-top:0;">Strategy Mode Guide</h3>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Mode</th>
+                    <th>Behavior</th>
+                    <th>Best For</th>
+                    <th>Capital Profile</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Conservative</td>
+                    <td>Heavier weighting to deeper zones, stronger average improvement if price drops more.</td>
+                    <td>Accumulation near deeper corrections.</td>
+                    <td>Highest expected total budget.</td>
+                  </tr>
+                  <tr>
+                    <td>Balanced</td>
+                    <td>Middle weighting between early and deep zones using real support depth + score.</td>
+                    <td>General use (recommended).</td>
+                    <td>Medium expected total budget.</td>
+                  </tr>
+                  <tr>
+                    <td>Aggressive</td>
+                    <td>More allocation in early zones to catch rebounds sooner.</td>
+                    <td>Fast rebounds / short swing entries.</td>
+                    <td>Lowest expected total budget.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="muted-line" style="margin-bottom:0;">
+              Note: modes are not fixed percentages. Allocation is dynamically built from real support zones, support score, and depth context.
+            </p>
+          </div>
+        </div>
         <label>No Score = No DCA (Strict)
           <span class="inline-check">
             <input id="strict_support_score_required" name="strict_support_score_required" type="checkbox" checked>
@@ -79,6 +119,7 @@
         <article class="card stat">
           <h3>Total Estimated</h3>
           <p id="plan-total-estimated">-</p>
+          <small id="plan-total-formula" class="muted-line">Formula: Total = Entry + Sum(DCA Amounts)</small>
         </article>
         <article class="card stat">
           <h3>Est. Avg / Target</h3>
@@ -130,6 +171,7 @@
     const planRows = document.getElementById("smart-plan-rows");
     const planEntryPrice = document.getElementById("plan-entry-price");
     const planTotalEstimated = document.getElementById("plan-total-estimated");
+    const planTotalFormula = document.getElementById("plan-total-formula");
     const planAvgTarget = document.getElementById("plan-avg-target");
     const planRequiredCapital = document.getElementById("plan-required-capital");
     const planDrawdown = document.getElementById("plan-drawdown");
@@ -213,6 +255,8 @@
 
         planEntryPrice.textContent = `${f6(data.entry_price)} USDT`;
         planTotalEstimated.textContent = `${f2(data.estimate.total_if_all_filled_usdt)} USDT`;
+        planTotalFormula.textContent =
+          `Total = ${f2(entry)} + ${f2(data.estimate.dca_total_usdt)} = ${f2(data.estimate.total_if_all_filled_usdt)} USDT`;
         const avg = f6(data.estimate.estimated_avg_price_if_all_filled);
         const tp = data.estimate.estimated_target_price_if_all_filled;
         planAvgTarget.textContent = tp ? `${avg} / ${f6(tp)}` : `${avg} / -`;

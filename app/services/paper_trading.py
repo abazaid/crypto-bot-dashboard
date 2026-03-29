@@ -433,6 +433,28 @@ def _smart_allocations_pct(
     return [round((w / total_w) * budget_pct, 2) for w in raw_weights]
 
 
+def _adaptive_drop_targets(expected_drawdown_pct: float, strategy_mode: str, count: int = 4) -> list[float]:
+    mode = str(strategy_mode or "balanced").strip().lower()
+    if mode not in {"conservative", "balanced", "aggressive"}:
+        mode = "balanced"
+    e = max(4.0, float(expected_drawdown_pct or 0.0))
+    if mode == "aggressive":
+        end_depth = max(6.0, min(20.0, e * 0.80))
+        mult = [0.28, 0.48, 0.72, 1.00, 1.15]
+    elif mode == "conservative":
+        end_depth = max(10.0, min(35.0, e * 1.20))
+        mult = [0.15, 0.35, 0.62, 1.00, 1.30]
+    else:
+        end_depth = max(8.0, min(28.0, e * 1.00))
+        mult = [0.20, 0.42, 0.68, 1.00, 1.20]
+    out: list[float] = []
+    for m in mult:
+        v = round(max(0.7, end_depth * m), 2)
+        if not out or abs(v - out[-1]) >= 0.4:
+            out.append(v)
+    return out[: max(1, int(count))]
+
+
 def _sl_drop_cap(sl_pct: float | None) -> float | None:
     if sl_pct is None:
         return None
@@ -722,12 +744,13 @@ def build_smart_dca_plan(
     current_price = float(ctx["price"])
     max_levels = max(1, min(int(max_levels), 5))
     max_levels = min(max_levels, _max_dca_levels_for_sl(sl_pct, 5))
+    mode = str(strategy_mode or "balanced").strip().lower()
+    if mode not in {"conservative", "balanced", "aggressive"}:
+        mode = "balanced"
 
     # Build support zones from strongest detected supports under current price.
     supports = [s for s in (ctx.get("supports") or []) if float(s.get("price", 0.0)) < current_price]
     supports.sort(key=lambda x: float(x.get("price", 0.0)), reverse=True)
-    if not supports:
-        return {"ok": False, "error": f"No valid support zones found for {sym}."}
 
     sl_cap = _sl_drop_cap(sl_pct)
     zones: list[dict] = []
@@ -757,10 +780,16 @@ def build_smart_dca_plan(
         if len(zones) >= max_levels:
             break
 
+    desired_levels = min(max_levels, 4)
+    expected_drawdown_raw = max(float(ctx.get("drawdown_pct", 0.0)), 6.0)
+    adaptive_targets = _cap_drop_levels_to_sl(
+        _adaptive_drop_targets(expected_drawdown_raw, strategy_mode=mode, count=max_levels),
+        sl_pct,
+    )
+    adaptive_targets = adaptive_targets[:max_levels]
+
     if not zones:
-        # fallback safe levels if strict support map is empty
-        fallback_drops = _cap_drop_levels_to_sl([1.5, 3.0, 5.0, 7.5, 10.5], sl_pct)[:max_levels]
-        if not fallback_drops:
+        if not adaptive_targets:
             return {"ok": False, "error": f"No safe DCA levels available for {sym} with current SL."}
         zones = [
             {
@@ -769,16 +798,39 @@ def build_smart_dca_plan(
                 "score": 50.0,
                 "sources": ["fallback"],
             }
-            for d in fallback_drops
+            for d in adaptive_targets
         ]
+    elif len(zones) < desired_levels:
+        # Augment with adaptive targets so plan does not collapse to a single level.
+        existing = {round(float(z["drop_pct"]), 2) for z in zones}
+        for d in adaptive_targets:
+            d2 = round(float(d), 2)
+            if d2 in existing:
+                continue
+            zones.append(
+                {
+                    "trigger_price": round(current_price * (1.0 - (d2 / 100.0)), 8),
+                    "drop_pct": d2,
+                    "score": 45.0,
+                    "sources": ["adaptive_fallback"],
+                }
+            )
+            existing.add(d2)
+            if len(zones) >= desired_levels:
+                break
 
     zones = sorted(zones, key=lambda x: float(x["drop_pct"]))
     drops = [float(z["drop_pct"]) for z in zones]
     scores = [float(z["score"]) for z in zones]
     budget_pct = max(10.0, (max(1.2, float(settings.dca_max_symbol_allocation_x)) - 1.0) * 100.0)
-    mode = str(strategy_mode or "balanced").strip().lower()
-    if mode not in {"conservative", "balanced", "aggressive"}:
-        mode = "balanced"
+    # Strategy budget ceiling (still respects env cap when smaller):
+    # aggressive ~ early-entry lighter total, balanced ~ medium total, conservative ~ deeper total.
+    if mode == "aggressive":
+        budget_pct = min(budget_pct, 230.0)
+    elif mode == "balanced":
+        budget_pct = min(budget_pct, 400.0)
+    else:
+        budget_pct = min(budget_pct, 600.0)
     allocs = _smart_allocations_pct(drops, scores, budget_pct, mode)
 
     # Build final rules shallow -> deep.
@@ -813,11 +865,7 @@ def build_smart_dca_plan(
 
     deepest_drop_pct = max([float(r["drop_pct"]) for r in rows], default=0.0)
     first_zone_weight_pct = float(rows[0]["allocation_pct"]) if rows else 0.0
-    theoretical_total = (
-        entry_amount_usdt / (first_zone_weight_pct / 100.0)
-        if first_zone_weight_pct > 0
-        else total_invested
-    )
+    theoretical_total = max(float(total_invested), float(entry_amount_usdt))
     expected_drawdown_pct = max(float(ctx.get("drawdown_pct", 0.0)), deepest_drop_pct)
     if expected_drawdown_pct <= 12.0:
         risk_level = "low"
