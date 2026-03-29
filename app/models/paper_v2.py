@@ -20,6 +20,7 @@ class Campaign(Base):
     ai_dca_profile: Mapped[str | None] = mapped_column(String(40), nullable=True)
     ai_dca_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_dca_suggested_rules_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strict_support_score_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     trend_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_reentry_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     loop_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

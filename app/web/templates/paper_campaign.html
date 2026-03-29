@@ -30,6 +30,7 @@
   <p>Take Profit: <strong>{{ campaign.tp_pct if campaign.tp_pct is not none else "-" }}%</strong></p>
   <p>Stop Loss: <strong>{{ campaign.sl_pct if campaign.sl_pct is not none else "-" }}%</strong></p>
   <p>DCA Mode: <strong>{{ "AI DCA" if campaign.ai_dca_enabled else "Manual DCA" }}</strong></p>
+  <p>Strict AI (No Score = No DCA): <strong>{{ "Enabled" if campaign.strict_support_score_required else "Disabled" }}</strong></p>
   <p>Campaign Type: <strong>{{ "Loop AI" if campaign.loop_enabled else "Standard" }}</strong></p>
   {% if campaign.loop_enabled %}
   <p>Loop Target Open Symbols: <strong>{{ campaign.loop_target_count }}</strong></p>
@@ -66,6 +67,12 @@
       <span class="inline-check">
         <input name="trend_filter_enabled" type="checkbox" {% if campaign.trend_filter_enabled %}checked{% endif %}>
         <span>Reduce/block DCA buys in bearish BTC trend.</span>
+      </span>
+    </label>
+    <label>Strict AI (No Score = No DCA)
+      <span class="inline-check">
+        <input name="strict_support_score_required" type="checkbox" {% if campaign.strict_support_score_required %}checked{% endif %} {% if campaign.loop_enabled %}disabled{% endif %}>
+        <span>Skip any AI DCA level that has no support score.</span>
       </span>
     </label>
     <label>Auto Re-entry

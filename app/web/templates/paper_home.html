@@ -32,6 +32,7 @@
     <section class="card">
       <h2>Campaigns</h2>
       {% if campaigns %}
+      <div class="table-scroll">
       <table>
         <thead>
           <tr>
@@ -44,8 +45,8 @@
             <th>Open</th>
             <th>Closed</th>
             <th>DCA Done</th>
-            <th>Realized</th>
-            <th>Unrealized</th>
+            <th>Realized (Confirmed)</th>
+            <th>Unrealized (Floating)</th>
             <th></th>
           </tr>
         </thead>
@@ -68,9 +69,64 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
       {% else %}
       <p>No campaigns yet.</p>
       {% endif %}
+    </section>
+
+    <section class="cards two">
+      <article class="card">
+        <h2>Realized (Confirmed)</h2>
+        {% if realized_rows %}
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Campaign</th>
+              <th>Amount (USDT)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in realized_rows %}
+            <tr>
+              <td>{{ row.campaign.name }}</td>
+              <td class="{{ 'pnl-pos' if row.amount >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.amount) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        {% else %}
+        <p>No realized data yet.</p>
+        {% endif %}
+      </article>
+
+      <article class="card">
+        <h2>Unrealized (Floating)</h2>
+        {% if unrealized_rows %}
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Campaign</th>
+              <th>Amount (USDT)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in unrealized_rows %}
+            <tr>
+              <td>{{ row.campaign.name }}</td>
+              <td class="{{ 'pnl-pos' if row.amount >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.amount) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        {% else %}
+        <p>No unrealized data yet.</p>
+        {% endif %}
+      </article>
     </section>
 
     <section class="card">

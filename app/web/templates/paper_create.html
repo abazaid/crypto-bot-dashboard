@@ -34,6 +34,12 @@
             <span>Enable Auto DCA from support levels</span>
           </span>
         </label>
+        <label>No Score = No DCA (Strict AI)
+          <span class="inline-check">
+            <input id="strict_support_score_required" name="strict_support_score_required" type="checkbox">
+            <span>If support score is missing, skip DCA for that level.</span>
+          </span>
+        </label>
         <label>Loop Campaign (Top N AI)
           <span class="inline-check">
             <input id="loop_enabled" name="loop_enabled" type="checkbox">
@@ -137,6 +143,7 @@
   const aiDcaToggle = document.getElementById("ai_dca_enabled");
   const loopToggle = document.getElementById("loop_enabled");
   const autoReentryToggle = document.getElementById("auto_reentry_enabled");
+  const strictScoreToggle = document.getElementById("strict_support_score_required");
   const manualDcaFields = document.querySelectorAll(".manual-dca");
   const createForm = document.getElementById("create-campaign-form");
   const startCampaignBtn = document.getElementById("start-campaign-btn");
@@ -204,10 +211,14 @@
     if (isLoop) {
       aiDcaToggle.checked = true;
       aiDcaToggle.disabled = true;
+      strictScoreToggle.checked = true;
+      strictScoreToggle.disabled = true;
       autoReentryToggle.checked = false;
       autoReentryToggle.disabled = true;
     } else {
       aiDcaToggle.disabled = false;
+      strictScoreToggle.disabled = !aiDcaToggle.checked;
+      if (!aiDcaToggle.checked) strictScoreToggle.checked = false;
       autoReentryToggle.disabled = false;
     }
     const disabled = aiDcaToggle.checked || isLoop;

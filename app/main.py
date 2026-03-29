@@ -131,6 +131,7 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE campaigns ADD COLUMN ai_dca_profile VARCHAR(40)",
         "ALTER TABLE campaigns ADD COLUMN ai_dca_notes TEXT",
         "ALTER TABLE campaigns ADD COLUMN ai_dca_suggested_rules_json TEXT",
+        "ALTER TABLE campaigns ADD COLUMN strict_support_score_required BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN trend_filter_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN auto_reentry_enabled BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE campaigns ADD COLUMN loop_enabled BOOLEAN NOT NULL DEFAULT 0",
@@ -195,10 +196,34 @@ async def paper_dashboard(request: Request) -> HTMLResponse:
         for c in campaigns:
             stats = _campaign_stats(db, c)
             items.append({"campaign": c, "stats": stats})
+        realized_rows = sorted(
+            [
+                {"campaign": item["campaign"], "amount": float(item["stats"]["realized_pnl"])}
+                for item in items
+            ],
+            key=lambda x: x["amount"],
+            reverse=True,
+        )
+        unrealized_rows = sorted(
+            [
+                {"campaign": item["campaign"], "amount": float(item["stats"]["unrealized_pnl"])}
+                for item in items
+            ],
+            key=lambda x: x["amount"],
+            reverse=True,
+        )
         logs = db.query(ActivityLog).order_by(desc(ActivityLog.id)).limit(50).all()
         return templates.TemplateResponse(
             "paper_home.html",
-            _context("paper_home", request=request, wallet=wallet, campaigns=items, logs=logs),
+            _context(
+                "paper_home",
+                request=request,
+                wallet=wallet,
+                campaigns=items,
+                realized_rows=realized_rows,
+                unrealized_rows=unrealized_rows,
+                logs=logs,
+            ),
         )
     finally:
         db.close()
@@ -366,6 +391,7 @@ async def create_paper_campaign(
     dca_drop_5: str = Form(""),
     dca_alloc_5: str = Form(""),
     ai_dca_enabled: str | None = Form(None),
+    strict_support_score_required: str | None = Form(None),
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
     loop_enabled: str | None = Form(None),
@@ -382,10 +408,12 @@ async def create_paper_campaign(
         loop_target = int(_safe_float(loop_target_count, 5.0) or 5.0)
         loop_target = min(max(loop_target, 1), 30)
         ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
+        strict_score_mode = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
         trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
         reentry_mode = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
         if loop_mode:
             ai_mode = True
+            strict_score_mode = True
             reentry_mode = False
             scan = suggest_top_symbols(max(loop_target, 10))
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
@@ -400,6 +428,7 @@ async def create_paper_campaign(
             tp_pct=_safe_float(tp_pct, None),
             sl_pct=_safe_float(sl_pct, None),
             ai_dca_enabled=ai_mode,
+            strict_support_score_required=strict_score_mode,
             trend_filter_enabled=trend_mode,
             auto_reentry_enabled=reentry_mode,
             loop_enabled=loop_mode,
@@ -605,6 +634,7 @@ async def edit_paper_campaign(
     sl_pct: str = Form(""),
     trend_filter_enabled: str | None = Form(None),
     auto_reentry_enabled: str | None = Form(None),
+    strict_support_score_required: str | None = Form(None),
     loop_target_count: str = Form(""),
     dca_drop_1: str = Form(""),
     dca_alloc_1: str = Form(""),
@@ -627,6 +657,9 @@ async def edit_paper_campaign(
         campaign.sl_pct = _safe_float(sl_pct, None)
         campaign.trend_filter_enabled = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
         campaign.auto_reentry_enabled = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
+        campaign.strict_support_score_required = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
+        if campaign.loop_enabled:
+            campaign.strict_support_score_required = True
         if campaign.loop_enabled:
             desired = int(_safe_float(loop_target_count, float(campaign.loop_target_count or 5)) or 5)
             campaign.loop_target_count = min(max(desired, 1), 30)

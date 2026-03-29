@@ -833,9 +833,19 @@ def run_cycle(db: Session) -> None:
                 alloc_pct = float(
                     state.custom_allocation_pct if state.custom_allocation_pct is not None else rule.allocation_pct
                 )
-                support_score = float(state.custom_support_score or 0.0)
-                if campaign.ai_dca_enabled and support_score and support_score < settings.dca_support_score_threshold:
-                    continue
+                support_score_raw = state.custom_support_score
+                support_score = float(support_score_raw or 0.0)
+                if campaign.ai_dca_enabled:
+                    if bool(campaign.strict_support_score_required) and support_score_raw is None:
+                        add_log(
+                            db,
+                            "AI_DCA_SKIP",
+                            pos.symbol,
+                            f"Campaign={campaign.name} | Rule={rule.name} | skipped: missing support score (strict mode).",
+                        )
+                        continue
+                    if support_score and support_score < settings.dca_support_score_threshold:
+                        continue
                 trigger_price = pos.initial_price * (1 - (drop_pct / 100.0))
                 if price > trigger_price:
                     continue
