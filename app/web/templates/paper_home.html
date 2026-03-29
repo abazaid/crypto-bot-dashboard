@@ -33,7 +33,7 @@
       <h2>Campaigns</h2>
       {% if campaigns %}
       <div class="table-scroll">
-      <table>
+      <table class="campaigns-table">
         <thead>
           <tr>
             <th>Name</th>
@@ -45,9 +45,7 @@
             <th>Open</th>
             <th>Closed</th>
             <th>DCA Done</th>
-            <th>Realized (Confirmed)</th>
-            <th>Unrealized (Floating)</th>
-            <th></th>
+            <th>Details</th>
           </tr>
         </thead>
         <tbody>
@@ -62,8 +60,6 @@
             <td>{{ item.stats.open_count }}</td>
             <td>{{ item.stats.closed_count }}</td>
             <td>{{ item.stats.dca_done_count }}</td>
-            <td class="{{ 'pnl-pos' if item.stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.realized_pnl) }}</td>
-            <td class="{{ 'pnl-pos' if item.stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.unrealized_pnl) }}</td>
             <td><a href="/paper/campaigns/{{ item.campaign.id }}">Open</a></td>
           </tr>
           {% endfor %}
