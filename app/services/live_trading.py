@@ -437,7 +437,18 @@ def run_live_cycle(db: Session) -> None:
         fallback_ai_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct)) for r in rules]
         ai_profile = campaign.ai_dca_profile or "neutral"
 
-        scan = suggest_top_symbols(max(15, target_count * 4), use_v2=bool(campaign.loop_v2_enabled))
+        try:
+            scan = suggest_top_symbols(
+                max(15, target_count * 2),
+                use_v2=bool(campaign.loop_v2_enabled),
+                max_candidates=max(18, target_count * 2),
+            )
+        except Exception:
+            scan = suggest_top_symbols(
+                max(15, target_count * 2),
+                use_v2=False,
+                max_candidates=max(18, target_count * 2),
+            )
         ranked_symbols = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
         picks = []
         for symbol in ranked_symbols:

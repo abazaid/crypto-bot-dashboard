@@ -687,7 +687,15 @@ async def create_paper_campaign(
             ai_mode = True
             strict_score_mode = True
             reentry_mode = False
-            scan = suggest_top_symbols(max(loop_target, 10), use_v2=loop_v2_mode)
+            try:
+                scan = suggest_top_symbols(
+                    max(loop_target, 10),
+                    use_v2=loop_v2_mode,
+                    max_candidates=max(18, loop_target * 2),
+                )
+            except Exception:
+                # Safe fallback so campaign creation never crashes on scanner errors.
+                scan = suggest_top_symbols(max(loop_target, 10), use_v2=False, max_candidates=max(18, loop_target * 2))
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
             picked = picked[:loop_target]
         if not picked:
@@ -1042,7 +1050,14 @@ async def create_live_campaign(
             ai_mode = True
             strict_score_mode = True
             reentry_mode = False
-            scan = suggest_top_symbols(max(loop_target, 10), use_v2=loop_v2_mode)
+            try:
+                scan = suggest_top_symbols(
+                    max(loop_target, 10),
+                    use_v2=loop_v2_mode,
+                    max_candidates=max(18, loop_target * 2),
+                )
+            except Exception:
+                scan = suggest_top_symbols(max(loop_target, 10), use_v2=False, max_candidates=max(18, loop_target * 2))
             picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
             picked = picked[:loop_target]
         if not picked:
