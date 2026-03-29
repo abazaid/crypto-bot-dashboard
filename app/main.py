@@ -681,6 +681,13 @@ async def create_paper_campaign(
         opened, errors = create_campaign_positions(db, campaign, picked)
         if errors:
             campaign.status = "paused"
+            db.add(
+                ActivityLog(
+                    event_type="CAMPAIGN_ERROR",
+                    symbol="-",
+                    message=f"Campaign '{campaign.name}' failed to open positions: {' | '.join(errors)}",
+                )
+            )
             db.commit()
         if opened > 0:
             db.add(

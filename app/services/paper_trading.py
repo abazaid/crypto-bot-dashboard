@@ -840,13 +840,8 @@ def run_cycle(db: Session) -> None:
         .filter(Position.status == "open", Campaign.mode == "paper")
         .all()
     )
-    if not open_positions:
-        return
-
     symbols = sorted({p.symbol for p in open_positions})
-    prices = get_prices(symbols)
-    if not prices:
-        return
+    prices = get_prices(symbols) if symbols else {}
 
     cash = float(get_setting(db, "paper_cash", "0"))
     changed = False
@@ -993,6 +988,21 @@ def run_cycle(db: Session) -> None:
         if missing <= 0:
             continue
 
+        cash = float(get_setting(db, "paper_cash", "0"))
+        min_required = campaign.entry_amount_usdt
+        if cash < min_required:
+            add_log(
+                db,
+                "LOOP_SKIP",
+                "-",
+                (
+                    f"Campaign={campaign.name} | reason=insufficient_cash "
+                    f"| cash={cash:.2f} | required_per_symbol={min_required:.2f}"
+                ),
+            )
+            changed = True
+            continue
+
         rules = (
             db.query(DcaRule)
             .filter(DcaRule.campaign_id == campaign.id)
@@ -1013,6 +1023,16 @@ def run_cycle(db: Session) -> None:
             if len(picks) >= missing:
                 break
         if not picks:
+            add_log(
+                db,
+                "LOOP_SKIP",
+                "-",
+                (
+                    f"Campaign={campaign.name} | reason=no_candidates "
+                    f"| target={target_count} | open={len(open_symbols)} | missing={missing}"
+                ),
+            )
+            changed = True
             continue
 
         price_map = get_prices(picks)
