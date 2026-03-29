@@ -148,6 +148,9 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE position_dca_states ADD COLUMN custom_support_score FLOAT",
         "ALTER TABLE positions ADD COLUMN dca_paused BOOLEAN NOT NULL DEFAULT 0",
         "ALTER TABLE positions ADD COLUMN dca_pause_reason VARCHAR(160)",
+        "ALTER TABLE positions ADD COLUMN tp_order_id INTEGER",
+        "ALTER TABLE positions ADD COLUMN tp_order_price FLOAT",
+        "ALTER TABLE positions ADD COLUMN tp_order_qty FLOAT",
     ]
     with engine.begin() as conn:
         for stmt in stmts:
@@ -1064,7 +1067,7 @@ async def recalculate_live_campaign_dca_now(campaign_id: int) -> RedirectRespons
 
 @app.post("/live/positions/{position_id}/sell")
 async def manual_sell_live_position(position_id: int) -> RedirectResponse:
-    from app.services.binance_live import place_market_sell_qty
+    from app.services.binance_live import cancel_order, place_market_sell_qty
 
     db = SessionLocal()
     try:
@@ -1077,6 +1080,11 @@ async def manual_sell_live_position(position_id: int) -> RedirectResponse:
         if not pos:
             return RedirectResponse("/live", status_code=303)
         campaign_id = pos.campaign_id
+        if pos.tp_order_id:
+            try:
+                cancel_order(pos.symbol, int(pos.tp_order_id))
+            except Exception:
+                pass
         sell = place_market_sell_qty(pos.symbol, pos.total_qty)
         proceeds = float(sell["quote_qty"])
         close_price = float(sell["avg_price"] or 0.0)
@@ -1086,6 +1094,9 @@ async def manual_sell_live_position(position_id: int) -> RedirectResponse:
         pos.close_price = close_price
         pos.realized_pnl_usdt = pnl
         pos.close_reason = "MANUAL_SELL"
+        pos.tp_order_id = None
+        pos.tp_order_price = None
+        pos.tp_order_qty = None
         db.add(
             ActivityLog(
                 event_type="LIVE_MANUAL_SELL",

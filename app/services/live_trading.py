@@ -4,7 +4,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.paper_v2 import ActivityLog, Campaign, DcaRule, Position, PositionDcaState
-from app.services.binance_live import get_balances, get_usdt_free, place_market_buy_quote, place_market_sell_qty
+from app.services.binance_live import (
+    cancel_order,
+    get_balances,
+    get_order,
+    get_usdt_free,
+    place_limit_sell_qty,
+    place_market_buy_quote,
+    place_market_sell_qty,
+)
 from app.services.binance_public import get_prices
 from app.services.paper_trading import (
     _ai_dca_confirm,
@@ -15,6 +23,42 @@ from app.services.paper_trading import (
 
 def add_live_log(db: Session, event_type: str, symbol: str, message: str) -> None:
     db.add(ActivityLog(event_type=event_type, symbol=symbol or "-", message=message))
+
+
+def _tp_target_price(pos: Position, campaign: Campaign) -> float | None:
+    if campaign.tp_pct is None:
+        return None
+    return float(pos.average_price) * (1 + (float(campaign.tp_pct) / 100.0))
+
+
+def _arm_or_rearm_tp_order(db: Session, pos: Position, campaign: Campaign) -> None:
+    target = _tp_target_price(pos, campaign)
+    if target is None or pos.status != "open":
+        return
+    if pos.tp_order_id:
+        try:
+            cancel_order(pos.symbol, int(pos.tp_order_id))
+        except Exception:
+            pass
+    order = place_limit_sell_qty(pos.symbol, float(pos.total_qty), float(target))
+    pos.tp_order_id = int(order.get("order_id") or 0) or None
+    pos.tp_order_price = float(order.get("price") or target)
+    pos.tp_order_qty = float(order.get("orig_qty") or pos.total_qty)
+    add_live_log(
+        db,
+        "LIVE_TP_ARM",
+        pos.symbol,
+        (
+            f"Campaign={campaign.name} | TP armed at {pos.tp_order_price:.6f} "
+            f"| Qty={pos.tp_order_qty:.8f} | OrderId={pos.tp_order_id}"
+        ),
+    )
+
+
+def _clear_tp_order_fields(pos: Position) -> None:
+    pos.tp_order_id = None
+    pos.tp_order_price = None
+    pos.tp_order_qty = None
 
 
 def live_wallet_snapshot(db: Session) -> dict:
@@ -92,6 +136,10 @@ def _open_live_position(
     else:
         for rule in rules:
             db.add(PositionDcaState(position_id=pos.id, dca_rule_id=rule.id, executed=False))
+    try:
+        _arm_or_rearm_tp_order(db, pos, campaign)
+    except Exception as e:
+        add_live_log(db, "LIVE_TP_ARM_FAIL", symbol, f"Campaign={campaign.name} | error={e}")
 
     add_live_log(
         db,
@@ -168,9 +216,47 @@ def run_live_cycle(db: Session) -> None:
             continue
         campaign = pos.campaign
 
-        tp_hit = campaign.tp_pct is not None and price >= (pos.average_price * (1 + (campaign.tp_pct / 100.0)))
         sl_hit = campaign.sl_pct is not None and price <= (pos.average_price * (1 - (campaign.sl_pct / 100.0)))
-        if tp_hit or sl_hit:
+        # 1) Prefer exchange-side TP fill detection.
+        if pos.tp_order_id:
+            try:
+                order = get_order(pos.symbol, int(pos.tp_order_id))
+                status = str(order.get("status", "")).upper()
+                if status == "FILLED":
+                    proceeds = float(order.get("cummulativeQuoteQty", 0.0))
+                    exec_qty = float(order.get("executedQty", 0.0))
+                    close_price = (proceeds / exec_qty) if exec_qty > 0 else float(pos.tp_order_price or price)
+                    pnl = proceeds - pos.total_invested_usdt
+                    pos.status = "closed"
+                    pos.closed_at = now
+                    pos.close_price = close_price
+                    pos.realized_pnl_usdt = pnl
+                    pos.close_reason = "TP"
+                    _clear_tp_order_fields(pos)
+                    add_live_log(
+                        db,
+                        "LIVE_CLOSE",
+                        pos.symbol,
+                        (
+                            f"Campaign={campaign.name} | Reason=TP | Close={close_price:.6f} "
+                            f"| Invested={pos.total_invested_usdt:.2f} | Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
+                        ),
+                    )
+                    changed = True
+                    continue
+                if status in {"CANCELED", "EXPIRED", "REJECTED"}:
+                    _clear_tp_order_fields(pos)
+                    changed = True
+            except Exception as e:
+                add_live_log(db, "LIVE_TP_CHECK_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
+
+        # 2) SL is enforced by bot. Cancel TP then market-close.
+        if sl_hit:
+            if pos.tp_order_id:
+                try:
+                    cancel_order(pos.symbol, int(pos.tp_order_id))
+                except Exception:
+                    pass
             try:
                 sell = place_market_sell_qty(pos.symbol, pos.total_qty)
                 proceeds = float(sell["quote_qty"])
@@ -183,18 +269,27 @@ def run_live_cycle(db: Session) -> None:
             pos.closed_at = now
             pos.close_price = close_price
             pos.realized_pnl_usdt = pnl
-            pos.close_reason = "TP" if tp_hit else "SL"
+            pos.close_reason = "SL"
+            _clear_tp_order_fields(pos)
             add_live_log(
                 db,
                 "LIVE_CLOSE",
                 pos.symbol,
                 (
-                    f"Campaign={campaign.name} | Reason={pos.close_reason} | Close={close_price:.6f} "
+                    f"Campaign={campaign.name} | Reason=SL | Close={close_price:.6f} "
                     f"| Invested={pos.total_invested_usdt:.2f} | Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
                 ),
             )
             changed = True
             continue
+
+        # Keep TP order always armed (even when campaign is paused).
+        if campaign.tp_pct is not None and not pos.tp_order_id:
+            try:
+                _arm_or_rearm_tp_order(db, pos, campaign)
+                changed = True
+            except Exception as e:
+                add_live_log(db, "LIVE_TP_ARM_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
 
         if campaign.status != "active" or pos.dca_paused:
             continue
@@ -272,6 +367,11 @@ def run_live_cycle(db: Session) -> None:
                     f"| USDT={spent:.2f} | Avg={pos.average_price:.6f}"
                 ),
             )
+            # Average changed after DCA -> cancel old TP and set a new TP order.
+            try:
+                _arm_or_rearm_tp_order(db, pos, campaign)
+            except Exception as e:
+                add_live_log(db, "LIVE_TP_REARM_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
             changed = True
 
     if changed:

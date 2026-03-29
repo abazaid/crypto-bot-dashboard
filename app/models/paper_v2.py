@@ -66,6 +66,9 @@ class Position(Base):
     close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
     realized_pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tp_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tp_order_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tp_order_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
     dca_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     dca_pause_reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
 

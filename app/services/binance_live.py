@@ -80,17 +80,21 @@ def _load_symbol_filters() -> None:
         min_qty = 0.0
         step_size = 0.0
         min_notional = 0.0
+        tick_size = 0.0
         for f in row.get("filters", []):
             ftype = str(f.get("filterType", "")).upper()
             if ftype == "LOT_SIZE":
                 min_qty = float(f.get("minQty", 0.0))
                 step_size = float(f.get("stepSize", 0.0))
+            if ftype == "PRICE_FILTER":
+                tick_size = float(f.get("tickSize", 0.0))
             if ftype in {"NOTIONAL", "MIN_NOTIONAL"}:
                 min_notional = float(f.get("minNotional", 0.0))
         _SYMBOL_FILTER_CACHE[symbol] = {
             "min_qty": min_qty,
             "step_size": step_size,
             "min_notional": min_notional,
+            "tick_size": tick_size,
         }
     _CACHE_EXPIRES_AT = time.time() + 900
 
@@ -149,3 +153,64 @@ def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
         },
     )
     return _order_summary(raw)
+
+
+def place_limit_sell_qty(symbol: str, quantity: float, price: float) -> dict[str, float]:
+    if quantity <= 0:
+        raise RuntimeError("quantity must be > 0")
+    if price <= 0:
+        raise RuntimeError("price must be > 0")
+    _load_symbol_filters()
+    filters = _SYMBOL_FILTER_CACHE.get(symbol.upper(), {})
+    step = float(filters.get("step_size", 0.0))
+    min_qty = float(filters.get("min_qty", 0.0))
+    min_notional = float(filters.get("min_notional", 0.0))
+    tick = float(filters.get("tick_size", 0.0))
+    qty = _round_step_down(float(quantity), step)
+    px = _round_step_down(float(price), tick)
+    if qty <= 0 or qty < min_qty:
+        raise RuntimeError(f"quantity below min lot size for {symbol}: {qty}")
+    if px <= 0:
+        raise RuntimeError(f"invalid limit price for {symbol}: {px}")
+    if min_notional > 0 and (qty * px) < min_notional:
+        raise RuntimeError(f"order below min notional for {symbol}: {qty * px}")
+    raw = _signed_request(
+        "POST",
+        "/api/v3/order",
+        {
+            "symbol": symbol.upper(),
+            "side": "SELL",
+            "type": "LIMIT",
+            "timeInForce": "GTC",
+            "quantity": f"{qty:.8f}",
+            "price": f"{px:.8f}",
+        },
+    )
+    return {
+        "order_id": int(raw.get("orderId", 0)),
+        "orig_qty": float(raw.get("origQty", 0.0)),
+        "price": float(raw.get("price", 0.0)),
+        "status": str(raw.get("status", "")),
+    }
+
+
+def cancel_order(symbol: str, order_id: int) -> dict:
+    return _signed_request(
+        "DELETE",
+        "/api/v3/order",
+        {
+            "symbol": symbol.upper(),
+            "orderId": int(order_id),
+        },
+    )
+
+
+def get_order(symbol: str, order_id: int) -> dict:
+    return _signed_request(
+        "GET",
+        "/api/v3/order",
+        {
+            "symbol": symbol.upper(),
+            "orderId": int(order_id),
+        },
+    )
