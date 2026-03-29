@@ -218,6 +218,11 @@
       return Number(v || 0).toFixed(6);
     }
 
+    function optionalFieldValue(el) {
+      const raw = (el?.value || "").trim();
+      return raw === "" ? null : raw;
+    }
+
     async function calculatePlan() {
       const symbol = (symbolInput.value || "").trim().toUpperCase();
       const entry = parseFloat(entryInput.value || "0");
@@ -228,13 +233,14 @@
       statusLine.textContent = "Calculating SMART plan...";
       calcBtn.disabled = true;
       try {
-        const params = new URLSearchParams({
-          symbol,
-          entry_amount_usdt: String(entry),
-          tp_pct: String(parseFloat(tpInput.value || "0") || 0),
-          sl_pct: String(parseFloat(slInput.value || "0") || 0),
-          strategy_mode: String(strategyInput.value || "balanced"),
-        });
+        const params = new URLSearchParams();
+        params.set("symbol", symbol);
+        params.set("entry_amount_usdt", String(entry));
+        const tpRaw = optionalFieldValue(tpInput);
+        const slRaw = optionalFieldValue(slInput);
+        if (tpRaw !== null) params.set("tp_pct", tpRaw);
+        if (slRaw !== null) params.set("sl_pct", slRaw);
+        params.set("strategy_mode", String(strategyInput.value || "balanced"));
         const res = await fetch(`/api/live/smart-plan?${params.toString()}`);
         const data = await res.json();
         if (!data.ok) {

@@ -741,6 +741,14 @@ def build_smart_dca_plan(
     if not ctx:
         return {"ok": False, "error": f"No enough market context for {sym} now."}
 
+    # Treat empty/zero/negative stop-loss as "not set".
+    if sl_pct is not None:
+        try:
+            if float(sl_pct) <= 0:
+                sl_pct = None
+        except Exception:
+            sl_pct = None
+
     current_price = float(ctx["price"])
     max_levels = max(1, min(int(max_levels), 5))
     max_levels = min(max_levels, _max_dca_levels_for_sl(sl_pct, 5))
@@ -831,6 +839,9 @@ def build_smart_dca_plan(
         budget_pct = min(budget_pct, 400.0)
     else:
         budget_pct = min(budget_pct, 600.0)
+    # Single-level DCA should not consume extreme budget.
+    if len(drops) <= 1:
+        budget_pct = min(budget_pct, 100.0)
     allocs = _smart_allocations_pct(drops, scores, budget_pct, mode)
 
     # Build final rules shallow -> deep.
