@@ -18,6 +18,7 @@ from app.services.paper_trading import (
     _ai_dca_confirm,
     btc_market_state,
     build_symbol_ai_dca_rules,
+    suggest_top_symbols,
 )
 
 
@@ -98,6 +99,21 @@ def _open_live_position(
     event_type: str,
     event_label: str,
 ) -> bool:
+    if bool(campaign.loop_enabled):
+        exists_open = (
+            db.query(Position.id)
+            .filter(
+                Position.campaign_id == campaign.id,
+                Position.symbol == symbol,
+                Position.status == "open",
+            )
+            .first()
+            is not None
+        )
+        if exists_open:
+            add_live_log(db, "LIVE_LOOP_SKIP", symbol, f"Campaign={campaign.name} | reason=duplicate_open_symbol")
+            return False
+
     order = place_market_buy_quote(symbol, campaign.entry_amount_usdt)
     qty = float(order["executed_qty"])
     spent = float(order["quote_qty"])
@@ -373,6 +389,86 @@ def run_live_cycle(db: Session) -> None:
             except Exception as e:
                 add_live_log(db, "LIVE_TP_REARM_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
             changed = True
+
+    # Loop mode (live): keep target open count with best-score symbols.
+    for campaign in campaigns:
+        if campaign.mode != "live" or campaign.status != "active" or not campaign.loop_enabled:
+            continue
+        target_count = max(1, int(campaign.loop_target_count or 5))
+        open_rows = db.query(Position.symbol).filter(Position.campaign_id == campaign.id, Position.status == "open").all()
+        open_symbols = {str(s).upper() for (s,) in open_rows if s}
+        missing = target_count - len(open_symbols)
+        if missing <= 0:
+            continue
+
+        if get_usdt_free() < campaign.entry_amount_usdt:
+            add_live_log(
+                db,
+                "LIVE_LOOP_SKIP",
+                "-",
+                (
+                    f"Campaign={campaign.name} | reason=insufficient_cash "
+                    f"| required_per_symbol={campaign.entry_amount_usdt:.2f}"
+                ),
+            )
+            changed = True
+            continue
+
+        rules = (
+            db.query(DcaRule)
+            .filter(DcaRule.campaign_id == campaign.id)
+            .order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc())
+            .all()
+        )
+        rules_by_name = {r.name: r for r in rules}
+        fallback_ai_rules = [(r.name, float(r.drop_pct), float(r.allocation_pct)) for r in rules]
+        ai_profile = campaign.ai_dca_profile or "neutral"
+
+        scan = suggest_top_symbols(max(15, target_count * 4))
+        ranked_symbols = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
+        picks = []
+        for symbol in ranked_symbols:
+            if symbol in open_symbols:
+                continue
+            picks.append(symbol)
+            if len(picks) >= missing:
+                break
+
+        if not picks:
+            add_live_log(
+                db,
+                "LIVE_LOOP_SKIP",
+                "-",
+                (
+                    f"Campaign={campaign.name} | reason=no_candidates "
+                    f"| target={target_count} | open={len(open_symbols)} | missing={missing}"
+                ),
+            )
+            changed = True
+            continue
+
+        for symbol in picks:
+            if symbol in open_symbols:
+                continue
+            if get_usdt_free() < campaign.entry_amount_usdt:
+                break
+            try:
+                ok = _open_live_position(
+                    db=db,
+                    campaign=campaign,
+                    symbol=symbol,
+                    rules=rules,
+                    rules_by_name=rules_by_name,
+                    fallback_ai_rules=fallback_ai_rules,
+                    ai_profile=ai_profile,
+                    event_type="LIVE_LOOP_OPEN",
+                    event_label="Loop refill buy",
+                )
+                if ok:
+                    open_symbols.add(symbol)
+                    changed = True
+            except Exception as e:
+                add_live_log(db, "LIVE_LOOP_OPEN_FAIL", symbol, f"Campaign={campaign.name} | error={e}")
 
     if changed:
         db.commit()
