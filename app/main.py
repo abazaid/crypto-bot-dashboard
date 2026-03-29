@@ -148,6 +148,17 @@ def _apply_schema_updates() -> None:
                 conn.execute(text(stmt))
             except Exception:
                 pass
+        # Backfill: old loop campaigns should run in strict AI mode.
+        try:
+            conn.execute(
+                text(
+                    "UPDATE campaigns "
+                    "SET strict_support_score_required = 1 "
+                    "WHERE loop_enabled = 1 AND strict_support_score_required = 0"
+                )
+            )
+        except Exception:
+            pass
 
 
 def _scheduled_cycle() -> None:
