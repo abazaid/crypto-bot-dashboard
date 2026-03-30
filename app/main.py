@@ -778,7 +778,11 @@ async def create_paper_campaign(
             except Exception:
                 # Safe fallback so campaign creation never crashes on scanner errors.
                 scan = suggest_top_symbols(max(loop_target, 10), use_v2=False, max_candidates=max(18, loop_target * 2))
-            picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
+            picked = [
+                str(item.get("symbol", "")).upper()
+                for item in (scan.get("items") or [])
+                if item.get("symbol") and str(item.get("symbol", "")).upper() != "BTCUSDT"
+            ]
             picked = picked[:loop_target]
         if not picked and not loop_mode:
             return RedirectResponse("/paper/create", status_code=303)
@@ -1277,7 +1281,11 @@ async def create_live_campaign(
                 )
             except Exception:
                 scan = suggest_top_symbols(max(loop_target, 10), use_v2=False, max_candidates=max(18, loop_target * 2))
-            picked = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
+            picked = [
+                str(item.get("symbol", "")).upper()
+                for item in (scan.get("items") or [])
+                if item.get("symbol") and str(item.get("symbol", "")).upper() != "BTCUSDT"
+            ]
             picked = picked[:loop_target]
         if not picked and not loop_mode:
             return RedirectResponse("/live/create", status_code=303)

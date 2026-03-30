@@ -1647,6 +1647,8 @@ def run_cycle(db: Session) -> None:
         ranked_symbols = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
         picks = []
         for symbol in ranked_symbols:
+            if symbol == "BTCUSDT":
+                continue
             if symbol in open_symbols:
                 continue
             picks.append(symbol)
