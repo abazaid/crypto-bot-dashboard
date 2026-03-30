@@ -34,7 +34,7 @@
 
     <section class="card">
       <h2>Campaigns</h2>
-      {% if campaigns %}
+      {% if campaigns or accumulation_rows %}
       <div class="table-scroll">
       <table class="campaigns-table">
         <thead>
@@ -70,43 +70,17 @@
             <td><a href="/paper/campaigns/{{ item.campaign.id }}">Open</a></td>
           </tr>
           {% endfor %}
-        </tbody>
-      </table>
-      </div>
-      {% else %}
-      <p>No campaigns yet.</p>
-      {% endif %}
-    </section>
-
-    <section class="card">
-      <h2>Accumulation Open Positions</h2>
-      {% if accumulation_rows %}
-      <div class="table-scroll">
-      <table class="campaigns-table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Status</th>
-            <th>Type</th>
-            <th>Symbol</th>
-            <th>Coin Qty</th>
-            <th>Avg Entry</th>
-            <th>Last Price</th>
-            <th>Realized (Confirmed)</th>
-            <th>Unrealized (Floating)</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
           {% for r in accumulation_rows %}
           <tr>
             <td>{{ r.plan.name }}</td>
             <td>{{ r.plan.status }}</td>
             <td>Accumulation</td>
-            <td>{{ r.plan.symbol }}</td>
-            <td>{{ "%.8f"|format(r.plan.coin_qty or 0) }}</td>
-            <td>{{ "%.6f"|format(r.plan.avg_entry_price or 0) }}</td>
-            <td>{{ "%.6f"|format(r.plan.last_price or 0) }}</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+            <td>{{ 1 if (r.plan.coin_qty or 0) > 0 else 0 }}</td>
+            <td>{{ 0 if (r.plan.coin_qty or 0) > 0 else 1 }}</td>
+            <td>-</td>
             <td class="{{ 'pnl-pos' if (r.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.plan.realized_pnl_usdt or 0) }}</td>
             <td class="{{ 'pnl-pos' if (r.unrealized_pnl or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.unrealized_pnl or 0) }}</td>
             <td><a href="/paper/accumulation/{{ r.plan.id }}">Open</a></td>
@@ -116,7 +90,7 @@
       </table>
       </div>
       {% else %}
-      <p>No open accumulation positions.</p>
+      <p>No campaigns yet.</p>
       {% endif %}
     </section>
 
