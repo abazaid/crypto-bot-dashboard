@@ -580,6 +580,14 @@ async def paper_dashboard(request: Request) -> HTMLResponse:
             key=lambda x: x["amount"],
             reverse=True,
         )
+        acc_plans = (
+            db.query(AccumulationPlan)
+            .filter(AccumulationPlan.mode == "paper")
+            .order_by(desc(AccumulationPlan.created_at))
+            .all()
+        )
+        acc_rows = [_acc_plan_view_row(p) for p in acc_plans]
+        acc_open_rows = [r for r in acc_rows if float(r["plan"].coin_qty or 0.0) > 0.0]
         logs = _dashboard_logs(db, "paper")
         return templates.TemplateResponse(
             "paper_home.html",
@@ -588,6 +596,7 @@ async def paper_dashboard(request: Request) -> HTMLResponse:
                 request=request,
                 wallet=wallet,
                 campaigns=items,
+                accumulation_rows=acc_open_rows,
                 realized_rows=realized_rows,
                 unrealized_rows=unrealized_rows,
                 logs=logs,
@@ -763,10 +772,26 @@ async def live_dashboard(request: Request) -> HTMLResponse:
         for c in campaigns:
             stats = _campaign_stats(db, c)
             items.append({"campaign": c, "stats": stats})
+        acc_plans = (
+            db.query(AccumulationPlan)
+            .filter(AccumulationPlan.mode == "live")
+            .order_by(desc(AccumulationPlan.created_at))
+            .all()
+        )
+        acc_rows = [_acc_plan_view_row(p) for p in acc_plans]
+        acc_open_rows = [r for r in acc_rows if float(r["plan"].coin_qty or 0.0) > 0.0]
         logs = _dashboard_logs(db, "live")
         return templates.TemplateResponse(
             "live_home.html",
-            _context("live_home", request=request, wallet=wallet, campaigns=items, logs=logs, live_error=live_error),
+            _context(
+                "live_home",
+                request=request,
+                wallet=wallet,
+                campaigns=items,
+                accumulation_rows=acc_open_rows,
+                logs=logs,
+                live_error=live_error,
+            ),
         )
     finally:
         db.close()
