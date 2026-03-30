@@ -77,7 +77,8 @@
           <th>Closed</th>
           <th>Invested</th>
           <th>Exit</th>
-          <th>PnL</th>
+          <th>Fees</th>
+          <th>PnL Net</th>
           <th>DCA</th>
           <th>Notes</th>
         </tr>
@@ -92,6 +93,7 @@
           <td>{{ row.closed_at.strftime("%b %d, %H:%M") if row.closed_at else "-" }}</td>
           <td>{{ "%.2f"|format(row.invested) }}</td>
           <td>{{ "%.2f"|format(row.exit_value) }}</td>
+          <td>{{ "%.4f"|format(row.fees or 0) }}</td>
           <td>
             <span class="{{ 'pnl-pos' if row.pnl_pct >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl_pct) }}%</span>
             <span class="{{ 'pnl-pos' if row.pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl) }}</span>

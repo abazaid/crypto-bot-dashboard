@@ -8,6 +8,7 @@ from app.models.paper_v2 import ActivityLog, Campaign, DcaRule, Position, Positi
 from app.services.binance_live import (
     cancel_order,
     get_balances,
+    get_order_fee_usdt,
     get_order,
     get_usdt_free,
     place_limit_buy_quote,
@@ -112,6 +113,30 @@ def _open_live_position(
     event_type: str,
     event_label: str,
 ) -> bool:
+    # Live accounting is symbol-asset based on Binance wallet.
+    # To avoid position attribution conflicts across campaigns,
+    # block opening same symbol if already open in any live campaign.
+    exists_open_global = (
+        db.query(Position.id)
+        .join(Campaign, Campaign.id == Position.campaign_id)
+        .filter(
+            Campaign.mode == "live",
+            Position.symbol == symbol,
+            Position.status == "open",
+            Position.campaign_id != campaign.id,
+        )
+        .first()
+        is not None
+    )
+    if exists_open_global:
+        add_live_log(
+            db,
+            "LIVE_OPEN_SKIP",
+            symbol,
+            f"Campaign={campaign.name} | reason=duplicate_open_symbol_across_live_campaigns",
+        )
+        return False
+
     if bool(campaign.loop_enabled):
         exists_open = (
             db.query(Position.id)
@@ -180,6 +205,13 @@ def _open_live_position(
     qty = float(order["executed_qty"])
     spent = float(order["quote_qty"])
     avg = float(order["avg_price"])
+    open_fee_usdt = 0.0
+    entry_order_id = int(float(order.get("order_id", 0.0) or 0.0))
+    if entry_order_id > 0:
+        try:
+            open_fee_usdt = float(get_order_fee_usdt(symbol, entry_order_id))
+        except Exception:
+            open_fee_usdt = 0.0
     if qty <= 0 or spent <= 0:
         return False
 
@@ -188,9 +220,11 @@ def _open_live_position(
         symbol=symbol,
         initial_price=avg,
         initial_qty=qty,
-        total_invested_usdt=spent,
+        total_invested_usdt=spent + open_fee_usdt,
         total_qty=qty,
         average_price=avg,
+        open_fee_usdt=open_fee_usdt,
+        close_fee_usdt=0.0,
     )
     db.add(pos)
     db.flush()
@@ -318,23 +352,63 @@ def run_live_cycle(db: Session) -> None:
                 if status == "FILLED":
                     proceeds = float(order.get("cummulativeQuoteQty", 0.0))
                     exec_qty = float(order.get("executedQty", 0.0))
+                    sell_fee_usdt = 0.0
+                    try:
+                        sell_fee_usdt = float(get_order_fee_usdt(pos.symbol, int(pos.tp_order_id)))
+                    except Exception:
+                        sell_fee_usdt = 0.0
+                    if exec_qty <= 0:
+                        _clear_tp_order_fields(pos)
+                        changed = True
+                        continue
                     close_price = (proceeds / exec_qty) if exec_qty > 0 else float(pos.tp_order_price or price)
-                    pnl = proceeds - pos.total_invested_usdt
-                    pos.status = "closed"
-                    pos.closed_at = now
-                    pos.close_price = close_price
-                    pos.realized_pnl_usdt = pnl
-                    pos.close_reason = "TP"
+
+                    full_close = exec_qty >= (float(pos.total_qty) * 0.999)
+                    if full_close:
+                        pnl = (proceeds - sell_fee_usdt) - pos.total_invested_usdt
+                        pos.status = "closed"
+                        pos.closed_at = now
+                        pos.close_price = close_price
+                        pos.realized_pnl_usdt = pnl
+                        pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + sell_fee_usdt
+                        pos.close_reason = "TP"
+                        _clear_tp_order_fields(pos)
+                        add_live_log(
+                            db,
+                            "LIVE_CLOSE",
+                            pos.symbol,
+                            (
+                                f"Campaign={campaign.name} | Reason=TP | Close={close_price:.6f} "
+                                f"| Invested={pos.total_invested_usdt:.2f} | Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
+                            ),
+                        )
+                        changed = True
+                        continue
+
+                    # Partial TP fill: realize proportional pnl, keep position open.
+                    cost_closed = min(float(pos.total_invested_usdt), float(pos.average_price) * exec_qty)
+                    realized_piece = (proceeds - sell_fee_usdt) - cost_closed
+                    pos.total_qty = max(0.0, float(pos.total_qty) - exec_qty)
+                    pos.total_invested_usdt = max(0.0, float(pos.total_invested_usdt) - cost_closed)
+                    pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + sell_fee_usdt
+                    pos.average_price = (
+                        (pos.total_invested_usdt / pos.total_qty) if pos.total_qty > 0 else float(pos.average_price)
+                    )
                     _clear_tp_order_fields(pos)
                     add_live_log(
                         db,
-                        "LIVE_CLOSE",
+                        "LIVE_TP_PARTIAL",
                         pos.symbol,
                         (
-                            f"Campaign={campaign.name} | Reason=TP | Close={close_price:.6f} "
-                            f"| Invested={pos.total_invested_usdt:.2f} | Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
+                            f"Campaign={campaign.name} | Partial TP fill | ExecQty={exec_qty:.8f} "
+                            f"| Proceeds={proceeds:.2f} | RealizedPiece={realized_piece:+.2f} "
+                            f"| RemainingQty={pos.total_qty:.8f}"
                         ),
                     )
+                    try:
+                        _arm_or_rearm_tp_order(db, pos, campaign, force_rearm=True)
+                    except Exception as e:
+                        add_live_log(db, "LIVE_TP_REARM_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
                     changed = True
                     continue
                 if status in {"CANCELED", "EXPIRED", "REJECTED"}:
@@ -356,14 +430,22 @@ def run_live_cycle(db: Session) -> None:
                 sell = place_market_sell_qty(pos.symbol, pos.total_qty)
                 proceeds = float(sell["quote_qty"])
                 close_price = float(sell["avg_price"] or price)
+                sell_order_id = int(float(sell.get("order_id", 0.0) or 0.0))
+                sell_fee_usdt = 0.0
+                if sell_order_id > 0:
+                    try:
+                        sell_fee_usdt = float(get_order_fee_usdt(pos.symbol, sell_order_id))
+                    except Exception:
+                        sell_fee_usdt = 0.0
             except Exception as e:
                 add_live_log(db, "LIVE_CLOSE_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
                 continue
-            pnl = proceeds - pos.total_invested_usdt
+            pnl = (proceeds - sell_fee_usdt) - pos.total_invested_usdt
             pos.status = "closed"
             pos.closed_at = now
             pos.close_price = close_price
             pos.realized_pnl_usdt = pnl
+            pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + sell_fee_usdt
             pos.close_reason = "SL"
             _clear_tp_order_fields(pos)
             add_live_log(
@@ -493,7 +575,15 @@ def run_live_cycle(db: Session) -> None:
             if qty <= 0 or spent <= 0:
                 continue
             avg = float(buy["avg_price"] or price)
-            pos.total_invested_usdt += spent
+            buy_order_id = int(float(buy.get("order_id", 0.0) or 0.0))
+            buy_fee_usdt = 0.0
+            if buy_order_id > 0:
+                try:
+                    buy_fee_usdt = float(get_order_fee_usdt(pos.symbol, buy_order_id))
+                except Exception:
+                    buy_fee_usdt = 0.0
+            pos.total_invested_usdt += spent + buy_fee_usdt
+            pos.open_fee_usdt = float(pos.open_fee_usdt or 0.0) + buy_fee_usdt
             pos.total_qty += qty
             pos.average_price = pos.total_invested_usdt / pos.total_qty
             state.executed = True

@@ -64,6 +64,8 @@ class Position(Base):
     total_invested_usdt: Mapped[float] = mapped_column(Float, nullable=False)
     total_qty: Mapped[float] = mapped_column(Float, nullable=False)
     average_price: Mapped[float] = mapped_column(Float, nullable=False)
+    open_fee_usdt: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    close_fee_usdt: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
     close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)

@@ -138,6 +138,8 @@ def _order_summary(raw: dict) -> dict[str, float]:
     quote_qty = float(raw.get("cummulativeQuoteQty", 0.0))
     avg_price = quote_qty / executed_qty if executed_qty > 0 else 0.0
     return {
+        "order_id": float(raw.get("orderId", 0) or 0),
+        "status": str(raw.get("status", "")),
         "executed_qty": executed_qty,
         "quote_qty": quote_qty,
         "avg_price": avg_price,
@@ -150,6 +152,61 @@ def _base_asset_from_symbol(symbol: str) -> str:
         if s.endswith(q) and len(s) > len(q):
             return s[: -len(q)]
     return s
+
+
+def _quote_asset_from_symbol(symbol: str) -> str:
+    s = symbol.upper()
+    for q in sorted(_KNOWN_QUOTES, key=len, reverse=True):
+        if s.endswith(q) and len(s) > len(q):
+            return q
+    return "USDT"
+
+
+def _asset_to_usdt(asset: str, amount: float, symbol: str, trade_price: float) -> float:
+    a = str(asset or "").upper()
+    if amount <= 0:
+        return 0.0
+    if a == "USDT":
+        return float(amount)
+    base = _base_asset_from_symbol(symbol)
+    quote = _quote_asset_from_symbol(symbol)
+    if a == quote:
+        return float(amount)
+    if a == base:
+        return float(amount) * max(0.0, float(trade_price))
+    # fallback: try direct asset/USDT ticker
+    try:
+        rows = requests.get(f"{BASE_URL}/api/v3/ticker/price", timeout=TIMEOUT).json()
+        pair = f"{a}USDT"
+        row = next((x for x in rows if str(x.get("symbol", "")).upper() == pair), None)
+        if row:
+            return float(amount) * float(row.get("price", 0.0))
+    except Exception:
+        pass
+    return 0.0
+
+
+def get_order_fee_usdt(symbol: str, order_id: int) -> float:
+    if int(order_id or 0) <= 0:
+        return 0.0
+    trades = _signed_request(
+        "GET",
+        "/api/v3/myTrades",
+        {
+            "symbol": symbol.upper(),
+            "orderId": int(order_id),
+            "limit": 1000,
+        },
+    )
+    total = 0.0
+    for t in trades:
+        if int(t.get("orderId", 0)) != int(order_id):
+            continue
+        commission = float(t.get("commission", 0.0))
+        commission_asset = str(t.get("commissionAsset", "")).upper()
+        trade_price = float(t.get("price", 0.0))
+        total += _asset_to_usdt(commission_asset, commission, symbol, trade_price)
+    return float(total)
 
 
 def place_market_buy_quote(symbol: str, quote_usdt: float) -> dict[str, float]:

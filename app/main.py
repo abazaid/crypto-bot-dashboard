@@ -159,6 +159,11 @@ def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> d
     for p in closed_positions:
         invested = float(p.total_invested_usdt or 0.0)
         pnl = float(p.realized_pnl_usdt or 0.0)
+        fees = float(p.open_fee_usdt or 0.0) + float(p.close_fee_usdt or 0.0)
+        exit_value = float((p.close_price or 0.0) * (p.total_qty or 0.0))
+        if p.status == "closed" and p.realized_pnl_usdt is not None:
+            # Keep history consistent with realized PnL accounting.
+            exit_value = invested + pnl
         base_rows.append(
             {
                 "id": p.id,
@@ -167,9 +172,10 @@ def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> d
                 "opened_at": p.opened_at,
                 "closed_at": p.closed_at,
                 "invested": invested,
-                "exit_value": float((p.close_price or 0.0) * (p.total_qty or 0.0)),
+                "exit_value": exit_value,
                 "pnl": pnl,
                 "pnl_pct": _pnl_pct(invested, pnl),
+                "fees": fees,
                 "close_reason": p.close_reason or "-",
                 "strategy_key": _strategy_key(p.campaign),
                 "dca_done": int(dca_done.get(p.id, 0)),
@@ -296,6 +302,8 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE positions ADD COLUMN tp_order_id INTEGER",
         "ALTER TABLE positions ADD COLUMN tp_order_price FLOAT",
         "ALTER TABLE positions ADD COLUMN tp_order_qty FLOAT",
+        "ALTER TABLE positions ADD COLUMN open_fee_usdt FLOAT NOT NULL DEFAULT 0",
+        "ALTER TABLE positions ADD COLUMN close_fee_usdt FLOAT NOT NULL DEFAULT 0",
     ]
     with engine.begin() as conn:
         for stmt in stmts:
@@ -1506,7 +1514,7 @@ async def recalculate_live_campaign_dca_now(campaign_id: int) -> RedirectRespons
 
 @app.post("/live/positions/{position_id}/sell")
 async def manual_sell_live_position(position_id: int) -> RedirectResponse:
-    from app.services.binance_live import cancel_order, place_market_sell_qty
+    from app.services.binance_live import cancel_order, get_order_fee_usdt, place_market_sell_qty
 
     db = SessionLocal()
     try:
@@ -1527,11 +1535,19 @@ async def manual_sell_live_position(position_id: int) -> RedirectResponse:
         sell = place_market_sell_qty(pos.symbol, pos.total_qty)
         proceeds = float(sell["quote_qty"])
         close_price = float(sell["avg_price"] or 0.0)
-        pnl = proceeds - float(pos.total_invested_usdt)
+        sell_order_id = int(float(sell.get("order_id", 0.0) or 0.0))
+        sell_fee_usdt = 0.0
+        if sell_order_id > 0:
+            try:
+                sell_fee_usdt = float(get_order_fee_usdt(pos.symbol, sell_order_id))
+            except Exception:
+                sell_fee_usdt = 0.0
+        pnl = (proceeds - sell_fee_usdt) - float(pos.total_invested_usdt)
         pos.status = "closed"
         pos.closed_at = datetime.utcnow()
         pos.close_price = close_price
         pos.realized_pnl_usdt = pnl
+        pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + sell_fee_usdt
         pos.close_reason = "MANUAL_SELL"
         pos.tp_order_id = None
         pos.tp_order_price = None
