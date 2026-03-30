@@ -328,10 +328,7 @@ def run_live_cycle(db: Session) -> None:
         .filter(Position.status == "open", Campaign.mode == "live")
         .all()
     )
-    if not open_positions:
-        return
-
-    prices = get_prices(sorted({p.symbol for p in open_positions}))
+    prices = get_prices(sorted({p.symbol for p in open_positions})) if open_positions else {}
     now = datetime.utcnow()
     ai_filter_cache: dict[tuple[str, float], tuple[bool, bool, str]] = {}
     btc_state = btc_market_state()
@@ -654,13 +651,7 @@ def run_live_cycle(db: Session) -> None:
                 max_candidates=max(18, target_count * 2),
             )
         ranked_symbols = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
-        picks = []
-        for symbol in ranked_symbols:
-            if symbol in open_symbols:
-                continue
-            picks.append(symbol)
-            if len(picks) >= missing:
-                break
+        picks = [symbol for symbol in ranked_symbols if symbol not in open_symbols]
 
         if not picks:
             add_live_log(
@@ -675,9 +666,12 @@ def run_live_cycle(db: Session) -> None:
             changed = True
             continue
 
+        opened_in_loop = 0
         for symbol in picks:
             if symbol in open_symbols:
                 continue
+            if opened_in_loop >= missing:
+                break
             if get_usdt_free() < campaign.entry_amount_usdt:
                 break
             try:
@@ -694,6 +688,7 @@ def run_live_cycle(db: Session) -> None:
                 )
                 if ok:
                     open_symbols.add(symbol)
+                    opened_in_loop += 1
                     changed = True
             except Exception as e:
                 add_live_log(db, "LIVE_LOOP_OPEN_FAIL", symbol, f"Campaign={campaign.name} | error={e}")
