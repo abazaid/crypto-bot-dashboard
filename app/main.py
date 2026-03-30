@@ -260,12 +260,14 @@ def _acc_plan_view_row(plan: AccumulationPlan) -> dict:
     avg = float(plan.avg_entry_price or 0.0)
     market_value = last_price * qty if last_price > 0 and qty > 0 else 0.0
     unrealized = (last_price - avg) * qty if last_price > 0 and qty > 0 and avg > 0 else 0.0
+    unrealized_pct = ((unrealized / (avg * qty)) * 100.0) if (avg > 0 and qty > 0) else 0.0
     next_dca_trigger = (avg * (1.0 - (float(plan.dca_drop_pct or 0.0) / 100.0))) if avg > 0 else 0.0
     next_sell_trigger = (avg * (1.0 + (float(plan.partial_tp_pct or 0.0) / 100.0))) if avg > 0 else 0.0
     return {
         "plan": plan,
         "market_value": market_value,
         "unrealized_pnl": unrealized,
+        "unrealized_pnl_pct": unrealized_pct,
         "coin_gain": float(plan.coin_qty or 0.0) - float(plan.initial_coin_qty or 0.0),
         "next_dca_trigger": next_dca_trigger,
         "next_sell_trigger": next_sell_trigger,

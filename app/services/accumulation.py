@@ -312,12 +312,16 @@ def run_accumulation_cycle(db: Session, mode: str) -> None:
     symbols = sorted({p.symbol for p in plans if p.symbol})
     prices = get_prices(symbols) if symbols else {}
     changed = False
+    price_touched = False
     for plan in plans:
         px = float(prices.get(plan.symbol, 0.0))
         if px <= 0:
             continue
+        prev_price = float(plan.last_price or 0.0)
         changed = _run_plan_cycle(db, plan, px) or changed
-    if changed:
+        if abs(prev_price - float(plan.last_price or 0.0)) > 1e-12:
+            price_touched = True
+    if changed or price_touched:
         db.commit()
 
 

@@ -41,6 +41,9 @@
       <article class="card stat">
         <h3>Realized PnL</h3>
         <p class="{{ 'pnl-pos' if (row.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.plan.realized_pnl_usdt or 0) }} USDT</p>
+        <small class="{{ 'pnl-pos' if (row.unrealized_pnl or 0) >= 0 else 'pnl-neg' }}">
+          Floating: {{ "%+.2f"|format(row.unrealized_pnl or 0) }} USDT ({{ "%+.2f"|format(row.unrealized_pnl_pct or 0) }}%)
+        </small>
       </article>
     </section>
 
