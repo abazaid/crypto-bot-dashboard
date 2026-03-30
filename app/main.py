@@ -13,7 +13,16 @@ from sqlalchemy import or_
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
-from app.models.paper_v2 import ActivityLog, AppSetting, Campaign, DcaRule, Position, PositionDcaState
+from app.models.paper_v2 import (
+    AccumulationPlan,
+    AccumulationTrade,
+    ActivityLog,
+    AppSetting,
+    Campaign,
+    DcaRule,
+    Position,
+    PositionDcaState,
+)
 from app.services.binance_public import get_prices, search_symbols
 from app.services.paper_trading import (
     build_smart_dca_plan,
@@ -33,6 +42,12 @@ from app.services.live_trading import (
 )
 from app.services.smart_runtime import refresh_smart_medium, refresh_smart_slow
 from app.services.backtesting import run_smart_backtest
+from app.services.accumulation import (
+    create_plan as create_accumulation_plan,
+    manual_partial_sell as accumulation_manual_partial_sell,
+    run_accumulation_cycle,
+    toggle_plan_status as accumulation_toggle_plan_status,
+)
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -43,6 +58,8 @@ cycle_lock = threading.Lock()
 live_cycle_lock = threading.Lock()
 medium_lock = threading.Lock()
 slow_lock = threading.Lock()
+paper_acc_lock = threading.Lock()
+live_acc_lock = threading.Lock()
 
 
 def _context(active: str, **kwargs) -> dict:
@@ -237,6 +254,81 @@ def _dashboard_logs(db, mode: str, limit: int = 80) -> list[ActivityLog]:
     return q.order_by(desc(ActivityLog.id)).limit(limit).all()
 
 
+def _acc_plan_view_row(plan: AccumulationPlan) -> dict:
+    last_price = float(plan.last_price or 0.0)
+    qty = float(plan.coin_qty or 0.0)
+    avg = float(plan.avg_entry_price or 0.0)
+    market_value = last_price * qty if last_price > 0 and qty > 0 else 0.0
+    unrealized = (last_price - avg) * qty if last_price > 0 and qty > 0 and avg > 0 else 0.0
+    return {
+        "plan": plan,
+        "market_value": market_value,
+        "unrealized_pnl": unrealized,
+        "coin_gain": float(plan.coin_qty or 0.0) - float(plan.initial_coin_qty or 0.0),
+    }
+
+
+def _acc_history_context(db, mode: str, date_filter: str, symbol_filter: str, reason_filter: str) -> dict:
+    plans = db.query(AccumulationPlan).filter(AccumulationPlan.mode == mode).all()
+    plan_by_id = {int(p.id): p for p in plans}
+    q = db.query(AccumulationTrade).join(AccumulationPlan, AccumulationPlan.id == AccumulationTrade.plan_id).filter(
+        AccumulationPlan.mode == mode
+    )
+    rows_all = q.order_by(desc(AccumulationTrade.created_at), desc(AccumulationTrade.id)).all()
+    now_dt = datetime.utcnow()
+
+    def _match_date(t: AccumulationTrade) -> bool:
+        if date_filter == "all":
+            return True
+        hours_map = {"24h": 24, "3d": 72, "7d": 168, "14d": 336, "30d": 720, "60d": 1440}
+        h = hours_map.get(date_filter)
+        if h is None:
+            return True
+        return t.created_at >= (now_dt - timedelta(hours=h))
+
+    symbols = sorted({str(plan_by_id.get(int(t.plan_id)).symbol).upper() for t in rows_all if plan_by_id.get(int(t.plan_id))})
+    reasons = sorted({str(t.reason or "-") for t in rows_all})
+
+    rows = [t for t in rows_all if _match_date(t)]
+    if symbol_filter and symbol_filter != "all":
+        rows = [t for t in rows if str(plan_by_id.get(int(t.plan_id)).symbol).upper() == symbol_filter]
+    if reason_filter and reason_filter != "all":
+        rows = [t for t in rows if str(t.reason or "-") == reason_filter]
+
+    rendered_rows = []
+    net = 0.0
+    for t in rows:
+        plan = plan_by_id.get(int(t.plan_id))
+        if not plan:
+            continue
+        pnl = float(t.pnl_usdt or 0.0)
+        net += pnl
+        rendered_rows.append(
+            {
+                "id": t.id,
+                "time": t.created_at,
+                "plan_name": plan.name,
+                "symbol": str(plan.symbol).upper(),
+                "side": t.side,
+                "price": float(t.price or 0.0),
+                "qty": float(t.qty or 0.0),
+                "quote": float(t.quote_usdt or 0.0),
+                "fee": float(t.fee_usdt or 0.0),
+                "pnl": pnl,
+                "reason": str(t.reason or "-"),
+            }
+        )
+    return {
+        "rows": rendered_rows,
+        "summary": {"count": len(rendered_rows), "net_pnl": net},
+        "date_filter": date_filter,
+        "symbol_filter": symbol_filter or "all",
+        "reason_filter": reason_filter or "all",
+        "symbols": symbols,
+        "reasons": reasons,
+    }
+
+
 def _sync_open_positions_dca_states(db, campaign_id: int) -> None:
     open_positions = db.query(Position).filter(Position.campaign_id == campaign_id, Position.status == "open").all()
     rules = db.query(DcaRule).filter(DcaRule.campaign_id == campaign_id).order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc()).all()
@@ -368,6 +460,28 @@ def _scheduled_slow_recalc() -> None:
         slow_lock.release()
 
 
+def _scheduled_paper_acc_cycle() -> None:
+    if not paper_acc_lock.acquire(blocking=False):
+        return
+    db = SessionLocal()
+    try:
+        run_accumulation_cycle(db, "paper")
+    finally:
+        db.close()
+        paper_acc_lock.release()
+
+
+def _scheduled_live_acc_cycle() -> None:
+    if not live_acc_lock.acquire(blocking=False):
+        return
+    db = SessionLocal()
+    try:
+        run_accumulation_cycle(db, "live")
+    finally:
+        db.close()
+        live_acc_lock.release()
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -404,6 +518,20 @@ def on_startup() -> None:
         "interval",
         seconds=max(settings.slow_recalc_seconds, 900),
         id="smart_slow_recalc",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _scheduled_paper_acc_cycle,
+        "interval",
+        seconds=max(settings.fast_loop_seconds, 3),
+        id="paper_acc_cycle",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _scheduled_live_acc_cycle,
+        "interval",
+        seconds=max(settings.fast_loop_seconds, 3),
+        id="live_acc_cycle",
         replace_existing=True,
     )
     scheduler.start()
@@ -478,6 +606,130 @@ async def paper_smart_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("paper_smart_create.html", _context("paper_smart_create", request=request))
 
 
+@app.get("/paper/accumulation", response_class=HTMLResponse)
+async def paper_accumulation_page(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        plans = (
+            db.query(AccumulationPlan)
+            .filter(AccumulationPlan.mode == "paper")
+            .order_by(desc(AccumulationPlan.created_at))
+            .all()
+        )
+        rows = [_acc_plan_view_row(p) for p in plans]
+        logs = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.event_type.like("ACC_%"))
+            .order_by(desc(ActivityLog.id))
+            .limit(80)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "accumulation_home.html",
+            _context("paper_accumulation", request=request, mode="paper", rows=rows, logs=logs),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/paper/accumulation/create")
+async def paper_accumulation_create(
+    name: str = Form(...),
+    symbol: str = Form(...),
+    total_capital_usdt: str = Form(...),
+    initial_entry_usdt: str = Form(...),
+    dca_drop_pct: str = Form("2.5"),
+    dca_allocation_pct: str = Form("120"),
+    partial_tp_pct: str = Form("1.5"),
+    partial_sell_pct: str = Form("20"),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = create_accumulation_plan(
+            db,
+            mode="paper",
+            name=name,
+            symbol=symbol,
+            total_capital_usdt=float(_safe_float(total_capital_usdt, 0.0) or 0.0),
+            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 0.0) or 0.0),
+            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
+            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
+            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
+            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+        )
+        db.commit()
+        return RedirectResponse(f"/paper/accumulation/{plan.id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/paper/accumulation/{plan_id}", response_class=HTMLResponse)
+async def paper_accumulation_details(request: Request, plan_id: int) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
+        if not plan:
+            return RedirectResponse("/paper/accumulation", status_code=303)
+        row = _acc_plan_view_row(plan)
+        trades = (
+            db.query(AccumulationTrade)
+            .filter(AccumulationTrade.plan_id == plan.id)
+            .order_by(desc(AccumulationTrade.id))
+            .limit(200)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "accumulation_plan.html",
+            _context("paper_accumulation_plan", request=request, mode="paper", row=row, trades=trades),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/paper/accumulation/{plan_id}/toggle")
+async def paper_accumulation_toggle(plan_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
+        if not plan:
+            return RedirectResponse("/paper/accumulation", status_code=303)
+        accumulation_toggle_plan_status(db, plan)
+        db.commit()
+        return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/paper/accumulation/{plan_id}/manual-sell")
+async def paper_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
+        if not plan:
+            return RedirectResponse("/paper/accumulation", status_code=303)
+        pct = float(_safe_float(sell_pct, 20.0) or 20.0)
+        accumulation_manual_partial_sell(db, plan, pct)
+        db.commit()
+        return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/paper/accumulation/history", response_class=HTMLResponse)
+async def paper_accumulation_history(
+    request: Request,
+    date_range: str = "all",
+    symbol: str = "all",
+    reason: str = "all",
+) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        ctx = _acc_history_context(db, "paper", str(date_range).strip().lower(), str(symbol).strip().upper(), str(reason).strip())
+        return templates.TemplateResponse("accumulation_history.html", _context("paper_accumulation_history", request=request, mode="paper", **ctx))
+    finally:
+        db.close()
+
+
 @app.get("/paper/backtest", response_class=HTMLResponse)
 async def paper_backtest_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("smart_backtest.html", _context("smart_backtest", request=request, mode="paper"))
@@ -527,6 +779,130 @@ async def live_create_campaign_page(request: Request) -> HTMLResponse:
 @app.get("/live/smart-create", response_class=HTMLResponse)
 async def live_smart_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("live_smart_create.html", _context("live_smart_create", request=request))
+
+
+@app.get("/live/accumulation", response_class=HTMLResponse)
+async def live_accumulation_page(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        plans = (
+            db.query(AccumulationPlan)
+            .filter(AccumulationPlan.mode == "live")
+            .order_by(desc(AccumulationPlan.created_at))
+            .all()
+        )
+        rows = [_acc_plan_view_row(p) for p in plans]
+        logs = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.event_type.like("LIVE_ACC_%"))
+            .order_by(desc(ActivityLog.id))
+            .limit(80)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "accumulation_home.html",
+            _context("live_accumulation", request=request, mode="live", rows=rows, logs=logs),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/live/accumulation/create")
+async def live_accumulation_create(
+    name: str = Form(...),
+    symbol: str = Form(...),
+    total_capital_usdt: str = Form(...),
+    initial_entry_usdt: str = Form(...),
+    dca_drop_pct: str = Form("2.5"),
+    dca_allocation_pct: str = Form("120"),
+    partial_tp_pct: str = Form("1.5"),
+    partial_sell_pct: str = Form("20"),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = create_accumulation_plan(
+            db,
+            mode="live",
+            name=name,
+            symbol=symbol,
+            total_capital_usdt=float(_safe_float(total_capital_usdt, 0.0) or 0.0),
+            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 0.0) or 0.0),
+            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
+            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
+            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
+            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+        )
+        db.commit()
+        return RedirectResponse(f"/live/accumulation/{plan.id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/live/accumulation/{plan_id}", response_class=HTMLResponse)
+async def live_accumulation_details(request: Request, plan_id: int) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "live").first()
+        if not plan:
+            return RedirectResponse("/live/accumulation", status_code=303)
+        row = _acc_plan_view_row(plan)
+        trades = (
+            db.query(AccumulationTrade)
+            .filter(AccumulationTrade.plan_id == plan.id)
+            .order_by(desc(AccumulationTrade.id))
+            .limit(200)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "accumulation_plan.html",
+            _context("live_accumulation_plan", request=request, mode="live", row=row, trades=trades),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/live/accumulation/{plan_id}/toggle")
+async def live_accumulation_toggle(plan_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "live").first()
+        if not plan:
+            return RedirectResponse("/live/accumulation", status_code=303)
+        accumulation_toggle_plan_status(db, plan)
+        db.commit()
+        return RedirectResponse(f"/live/accumulation/{plan_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/accumulation/{plan_id}/manual-sell")
+async def live_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "live").first()
+        if not plan:
+            return RedirectResponse("/live/accumulation", status_code=303)
+        pct = float(_safe_float(sell_pct, 20.0) or 20.0)
+        accumulation_manual_partial_sell(db, plan, pct)
+        db.commit()
+        return RedirectResponse(f"/live/accumulation/{plan_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/live/accumulation/history", response_class=HTMLResponse)
+async def live_accumulation_history(
+    request: Request,
+    date_range: str = "all",
+    symbol: str = "all",
+    reason: str = "all",
+) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        ctx = _acc_history_context(db, "live", str(date_range).strip().lower(), str(symbol).strip().upper(), str(reason).strip())
+        return templates.TemplateResponse("accumulation_history.html", _context("live_accumulation_history", request=request, mode="live", **ctx))
+    finally:
+        db.close()
 
 
 @app.get("/live/backtest", response_class=HTMLResponse)

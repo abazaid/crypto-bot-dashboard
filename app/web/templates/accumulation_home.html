@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/create' if mode == 'live' else '/paper/create' }}">Create Campaign</a>
+    <a class="side-link active" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>{{ "Live" if mode == "live" else "Paper" }} Accumulation Bot</h1>
+      <p>Buy dips, partial-sell above average, and recycle capital to accumulate more coins.</p>
+    </section>
+
+    <section class="card">
+      <h2>New Accumulation Plan</h2>
+      <form method="post" action="{{ '/live/accumulation/create' if mode == 'live' else '/paper/accumulation/create' }}" class="form-grid">
+        <label>Plan Name<input name="name" placeholder="Example: ADA Accumulator" required></label>
+        <label>Symbol<input name="symbol" placeholder="ADAUSDT" required></label>
+        <label>Total Capital (USDT)<input name="total_capital_usdt" type="number" step="0.01" value="100" required></label>
+        <label>Initial Entry (USDT)<input name="initial_entry_usdt" type="number" step="0.01" value="15" required></label>
+        <label>DCA Drop %<input name="dca_drop_pct" type="number" step="0.1" value="2.5" required></label>
+        <label>DCA Allocation % of Entry<input name="dca_allocation_pct" type="number" step="1" value="120" required></label>
+        <label>Partial TP % (above avg)<input name="partial_tp_pct" type="number" step="0.1" value="1.5" required></label>
+        <label>Partial Sell % of Qty<input name="partial_sell_pct" type="number" step="1" value="20" required></label>
+        <div class="form-actions"><button class="btn" type="submit">Start Accumulation Plan</button></div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Plans</h2>
+      {% if rows %}
+      <div class="table-scroll">
+      <table class="campaigns-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Symbol</th>
+            <th>Status</th>
+            <th>Coin Qty</th>
+            <th>Avg Entry</th>
+            <th>Reserved Cash</th>
+            <th>Used Capital</th>
+            <th>Realized</th>
+            <th>Unrealized</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>{{ r.plan.name }}</td>
+            <td>{{ r.plan.symbol }}</td>
+            <td>{{ r.plan.status }}</td>
+            <td>{{ "%.8f"|format(r.plan.coin_qty or 0) }}</td>
+            <td>{{ "%.6f"|format(r.plan.avg_entry_price or 0) }}</td>
+            <td>{{ "%.2f"|format(r.plan.reserved_cash_usdt or 0) }}</td>
+            <td>{{ "%.2f"|format(r.plan.used_capital_usdt or 0) }}</td>
+            <td class="{{ 'pnl-pos' if (r.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.plan.realized_pnl_usdt or 0) }}</td>
+            <td class="{{ 'pnl-pos' if (r.unrealized_pnl or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.unrealized_pnl or 0) }}</td>
+            <td><a href="{{ ('/live/accumulation/' if mode == 'live' else '/paper/accumulation/') ~ r.plan.id }}">Open</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p>No accumulation plans yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Accumulation Log</h2>
+      <div class="log-list">
+        {% for log in logs %}
+        <div class="log-item">
+          <span>{{ log.created_at.strftime("%H:%M:%S") }}</span>
+          <strong>{{ log.event_type }}</strong>
+          <span>{{ log.symbol }}</span>
+          <p>{{ log.message }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}

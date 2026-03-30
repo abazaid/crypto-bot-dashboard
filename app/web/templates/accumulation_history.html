@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link active" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>{{ "Live" if mode == "live" else "Paper" }} Accumulation History</h1>
+      <p>Ledger of accumulation buys/sells with filters.</p>
+    </section>
+
+    <section class="cards three">
+      <article class="card stat">
+        <h3>Trades</h3>
+        <p>{{ summary.count }}</p>
+      </article>
+      <article class="card stat">
+        <h3>Net PnL</h3>
+        <p class="{{ 'pnl-pos' if summary.net_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(summary.net_pnl) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Filters</h3>
+        <p>Date={{ date_filter }} | Symbol={{ symbol_filter }} | Reason={{ reason_filter }}</p>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Filters</h2>
+      <form method="get" class="form-grid" style="grid-template-columns: 240px 240px 320px 160px;">
+        <label>Date
+          <select name="date_range">
+            {% for k, lbl in [('all','Disable Filter'),('24h','Last 24 hours'),('3d','Last 3 days'),('7d','Last 7 days'),('14d','Last 14 days'),('30d','Last 30 days'),('60d','Last 60 days')] %}
+            <option value="{{ k }}" {% if date_filter == k %}selected{% endif %}>{{ lbl }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Symbol
+          <select name="symbol">
+            <option value="all" {% if symbol_filter == 'all' %}selected{% endif %}>All symbols</option>
+            {% for s in symbols %}
+            <option value="{{ s }}" {% if symbol_filter == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Reason
+          <select name="reason">
+            <option value="all" {% if reason_filter == 'all' %}selected{% endif %}>All reasons</option>
+            {% for r in reasons %}
+            <option value="{{ r }}" {% if reason_filter == r %}selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="form-actions"><button class="btn" type="submit">Apply</button></div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Trades</h2>
+      {% if rows %}
+      <div class="table-scroll">
+      <table class="campaigns-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Time</th>
+            <th>Plan</th>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Price</th>
+            <th>Qty</th>
+            <th>Quote</th>
+            <th>Fee</th>
+            <th>PnL</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>#{{ r.id }}</td>
+            <td>{{ r.time.strftime("%Y-%m-%d %H:%M") }}</td>
+            <td>{{ r.plan_name }}</td>
+            <td>{{ r.symbol }}</td>
+            <td>{{ r.side }}</td>
+            <td>{{ "%.6f"|format(r.price) }}</td>
+            <td>{{ "%.8f"|format(r.qty) }}</td>
+            <td>{{ "%.2f"|format(r.quote) }}</td>
+            <td>{{ "%.4f"|format(r.fee) }}</td>
+            <td class="{{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.pnl) }}</td>
+            <td>{{ r.reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p>No trades.</p>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endblock %}
+

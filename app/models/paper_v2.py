@@ -149,3 +149,51 @@ class MarketSnapshot(Base):
     price: Mapped[float] = mapped_column(Float, nullable=False)
     ema200: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class AccumulationPlan(Base):
+    __tablename__ = "accumulation_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), default="paper", nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, index=True)
+    total_capital_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    initial_entry_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    dca_drop_pct: Mapped[float] = mapped_column(Float, nullable=False, default=2.5)
+    dca_allocation_pct: Mapped[float] = mapped_column(Float, nullable=False, default=120.0)
+    partial_tp_pct: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
+    partial_sell_pct: Mapped[float] = mapped_column(Float, nullable=False, default=20.0)
+    min_order_usdt: Mapped[float] = mapped_column(Float, nullable=False, default=5.0)
+
+    coin_qty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_entry_price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reserved_cash_usdt: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    used_capital_usdt: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    realized_pnl_usdt: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    realized_fees_usdt: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    initial_coin_qty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    total_bought_qty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    total_sold_qty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    buy_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sell_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_action_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class AccumulationTrade(Base):
+    __tablename__ = "accumulation_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("accumulation_plans.id"), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)  # BUY / SELL
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    qty: Mapped[float] = mapped_column(Float, nullable=False)
+    quote_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    fee_usdt: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)

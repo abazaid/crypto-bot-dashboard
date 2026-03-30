@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
+    <a class="side-link active" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>{{ row.plan.name }}</h1>
+      <p>{{ row.plan.symbol }} accumulation details.</p>
+    </section>
+
+    <section class="cards three">
+      <article class="card stat">
+        <h3>Coin Qty</h3>
+        <p>{{ "%.8f"|format(row.plan.coin_qty or 0) }}</p>
+      </article>
+      <article class="card stat">
+        <h3>Avg Entry</h3>
+        <p>{{ "%.6f"|format(row.plan.avg_entry_price or 0) }}</p>
+      </article>
+      <article class="card stat">
+        <h3>Last Price</h3>
+        <p>{{ "%.6f"|format(row.plan.last_price or 0) }}</p>
+      </article>
+    </section>
+
+    <section class="cards three">
+      <article class="card stat">
+        <h3>Reserved Cash</h3>
+        <p>{{ "%.2f"|format(row.plan.reserved_cash_usdt or 0) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Used Capital</h3>
+        <p>{{ "%.2f"|format(row.plan.used_capital_usdt or 0) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Realized PnL</h3>
+        <p class="{{ 'pnl-pos' if (row.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.plan.realized_pnl_usdt or 0) }} USDT</p>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Plan Config</h2>
+      <form method="post" action="{{ ('/live/accumulation/' if mode == 'live' else '/paper/accumulation/') ~ row.plan.id ~ '/toggle' }}" style="margin-bottom:10px;">
+        <button class="btn" type="submit">{{ "Pause" if row.plan.status == "active" else "Resume" }}</button>
+      </form>
+      <form method="post" action="{{ ('/live/accumulation/' if mode == 'live' else '/paper/accumulation/') ~ row.plan.id ~ '/manual-sell' }}" class="form-grid" style="grid-template-columns: 260px 180px;">
+        <label>Manual Partial Sell %<input name="sell_pct" type="number" step="0.1" value="{{ '20' }}"></label>
+        <div class="form-actions"><button class="btn" type="submit">Manual Partial Sell</button></div>
+      </form>
+      <p>Capital: {{ "%.2f"|format(row.plan.total_capital_usdt or 0) }} USDT | Initial Entry: {{ "%.2f"|format(row.plan.initial_entry_usdt or 0) }} USDT</p>
+      <p>DCA: drop {{ "%.2f"|format(row.plan.dca_drop_pct or 0) }}% | allocation {{ "%.2f"|format(row.plan.dca_allocation_pct or 0) }}%</p>
+      <p>Partial Sell: trigger {{ "%.2f"|format(row.plan.partial_tp_pct or 0) }}% above avg | sell {{ "%.2f"|format(row.plan.partial_sell_pct or 0) }}% of qty</p>
+      <p>Buys/Sells: {{ row.plan.buy_count or 0 }} / {{ row.plan.sell_count or 0 }} | Fees: {{ "%.4f"|format(row.plan.realized_fees_usdt or 0) }} USDT</p>
+    </section>
+
+    <section class="card">
+      <h2>Trade Ledger</h2>
+      {% if trades %}
+      <div class="table-scroll">
+      <table class="campaigns-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Time</th>
+            <th>Side</th>
+            <th>Price</th>
+            <th>Qty</th>
+            <th>Quote</th>
+            <th>Fee</th>
+            <th>PnL</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in trades %}
+          <tr>
+            <td>#{{ t.id }}</td>
+            <td>{{ t.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+            <td>{{ t.side }}</td>
+            <td>{{ "%.6f"|format(t.price or 0) }}</td>
+            <td>{{ "%.8f"|format(t.qty or 0) }}</td>
+            <td>{{ "%.2f"|format(t.quote_usdt or 0) }}</td>
+            <td>{{ "%.4f"|format(t.fee_usdt or 0) }}</td>
+            <td class="{{ 'pnl-pos' if (t.pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(t.pnl_usdt or 0) if t.pnl_usdt is not none else "-" }}</td>
+            <td>{{ t.reason or "-" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p>No trades yet.</p>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endblock %}
