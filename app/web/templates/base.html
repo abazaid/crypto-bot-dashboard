@@ -85,6 +85,9 @@
       if (typeof window.initPaperCreatePage === "function") {
         window.initPaperCreatePage();
       }
+      if (typeof window.initAllCoinsSort === "function") {
+        window.initAllCoinsSort();
+      }
 
       countdown = REFRESH_SECONDS;
       renderCountdown();

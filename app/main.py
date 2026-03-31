@@ -1128,6 +1128,7 @@ async def live_all_coins_page(
                 all_coins_error=error,
                 forecast_symbol=symbol_query,
                 forecast_card=forecast_card,
+                forecast_build_per_request=max(1, int(settings.forecast_build_per_request)),
             ),
         )
     finally:
@@ -1188,6 +1189,50 @@ async def live_all_coins_set_tp(symbol: str, tp_price: str = Form(...)) -> Redir
         return RedirectResponse("/live/all-coins", status_code=303)
     except Exception as e:
         add_live_log(db, "LIVE_ALLCOIN_TP_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/all-coins/{symbol}/cancel-sell-orders")
+async def live_all_coins_cancel_symbol_sell_orders(symbol: str) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        if not sym.endswith("USDT") or len(sym) < 7:
+            add_live_log(db, "LIVE_ALLCOIN_CANCEL_SELL_FAIL", sym or "-", "invalid_symbol")
+            db.commit()
+            return RedirectResponse("/live/all-coins", status_code=303)
+
+        canceled = 0
+        failed = 0
+        open_orders = get_open_orders(sym)
+        for o in open_orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+                continue
+            oid = int(o.get("orderId", 0) or 0)
+            if oid <= 0:
+                continue
+            try:
+                cancel_order(sym, oid)
+                canceled += 1
+            except Exception:
+                failed += 1
+
+        add_live_log(
+            db,
+            "LIVE_ALLCOIN_CANCEL_SELL",
+            sym,
+            f"Canceled SELL LIMIT orders for symbol={sym} | canceled={canceled} | failed={failed}",
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins", status_code=303)
+    except Exception as e:
+        add_live_log(db, "LIVE_ALLCOIN_CANCEL_SELL_FAIL", str(symbol or "-").upper(), f"error={e}")
         db.commit()
         return RedirectResponse("/live/all-coins", status_code=303)
     finally:
