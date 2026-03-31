@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>Live Menu</h3>
+    <a class="side-link" href="/live">Campaigns Home</a>
+    <a class="side-link" href="/live/create">Create Campaign</a>
+    <a class="side-link" href="/live/smart-create">Smart DCA</a>
+    <a class="side-link active" href="/live/all-coins">All Coins</a>
+    <a class="side-link" href="/live/accumulation">Accumulation Bot</a>
+    <a class="side-link" href="/live/backtest">Smart Backtest</a>
+    <a class="side-link" href="/live/history">Live History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>All Coins (Live Account)</h1>
+      <p>All spot coins in Binance with average cost, current price, PnL, and manual close.</p>
+      {% if all_coins_error %}
+      <p class="pnl-neg">Binance API error: {{ all_coins_error }}</p>
+      {% endif %}
+    </section>
+
+    <section class="cards four">
+      <article class="card stat">
+        <h3>Coins</h3>
+        <p>{{ data.summary.coins_count }}</p>
+      </article>
+      <article class="card stat">
+        <h3>Invested</h3>
+        <p>{{ "%.2f"|format(data.summary.invested_total) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Market Value</h3>
+        <p>{{ "%.2f"|format(data.summary.market_total) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Total PnL</h3>
+        <p class="{{ 'pnl-pos' if data.summary.pnl_total >= 0 else 'pnl-neg' }}">
+          {{ "%+.2f"|format(data.summary.pnl_total) }} USDT ({{ "%+.2f"|format(data.summary.pnl_pct) }}%)
+        </p>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Account Coins</h2>
+      {% if data.rows %}
+      <div class="table-scroll">
+        <table class="campaigns-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Qty (Total)</th>
+              <th>Qty (Free)</th>
+              <th>Avg Entry</th>
+              <th>Current Price</th>
+              <th>Invested</th>
+              <th>Market Value</th>
+              <th>PnL</th>
+              <th>Status</th>
+              <th>Close</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in data.rows %}
+            <tr>
+              <td>{{ r.symbol }}</td>
+              <td>{{ "%.8f"|format(r.qty_total) }}</td>
+              <td>{{ "%.8f"|format(r.qty_free) }}</td>
+              <td>{{ "%.8f"|format(r.avg_entry) }}</td>
+              <td>{{ "%.8f"|format(r.price) }}</td>
+              <td>{{ "%.2f"|format(r.invested) }}</td>
+              <td>{{ "%.2f"|format(r.market_value) }}</td>
+              <td class="{{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">
+                {{ "%+.2f"|format(r.pnl) }} ({{ "%+.2f"|format(r.pnl_pct) }}%)
+              </td>
+              <td>
+                <span class="badge">
+                  {{ r.status }}
+                </span>
+              </td>
+              <td>
+                <form method="post" action="/live/all-coins/{{ r.symbol }}/close" onsubmit="return confirm('Close {{ r.symbol }} with market sell now?');">
+                  <button type="submit" class="sell-btn">Close</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p>No coin balances found.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>All Coins Activity</h2>
+      <div class="log-list">
+        {% for log in logs %}
+        <div class="log-item">
+          <span>{{ log.created_at.strftime("%H:%M:%S") }}</span>
+          <strong>{{ log.event_type }}</strong>
+          <span>{{ log.symbol }}</span>
+          <p>{{ log.message }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}

@@ -8,6 +8,7 @@ from app.models.paper_v2 import ActivityLog, Campaign, DcaRule, Position, Positi
 from app.services.binance_live import (
     cancel_order,
     get_balances,
+    normalize_qty_for_sell,
     get_order_fee_usdt,
     get_order,
     get_usdt_free,
@@ -382,11 +383,87 @@ def run_live_cycle(db: Session) -> None:
                         changed = True
                         continue
 
-                    # Partial TP fill: realize proportional pnl, keep position open.
-                    cost_closed = min(float(pos.total_invested_usdt), float(pos.average_price) * exec_qty)
+                    # Partial TP fill: try to force-close remaining qty immediately via market sell.
+                    total_invested_before = float(pos.total_invested_usdt)
+                    remaining_before = max(0.0, float(pos.total_qty) - exec_qty)
+                    if remaining_before > 0:
+                        try:
+                            flush = place_market_sell_qty(pos.symbol, remaining_before)
+                            flush_qty = float(flush.get("executed_qty", 0.0))
+                            flush_quote = float(flush.get("quote_qty", 0.0))
+                            flush_order_id = int(float(flush.get("order_id", 0.0) or 0.0))
+                            flush_fee_usdt = 0.0
+                            if flush_order_id > 0:
+                                try:
+                                    flush_fee_usdt = float(get_order_fee_usdt(pos.symbol, flush_order_id))
+                                except Exception:
+                                    flush_fee_usdt = 0.0
+                            if flush_qty > 0 and flush_quote > 0:
+                                total_qty_closed = exec_qty + flush_qty
+                                total_proceeds = proceeds + flush_quote
+                                total_fees = sell_fee_usdt + flush_fee_usdt
+                                close_price = total_proceeds / max(total_qty_closed, 1e-12)
+                                pnl = (total_proceeds - total_fees) - total_invested_before
+                                pos.status = "closed"
+                                pos.closed_at = now
+                                pos.close_price = close_price
+                                pos.realized_pnl_usdt = pnl
+                                pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + total_fees
+                                pos.close_reason = "TP"
+                                pos.total_qty = 0.0
+                                pos.total_invested_usdt = 0.0
+                                _clear_tp_order_fields(pos)
+                                add_live_log(
+                                    db,
+                                    "LIVE_TP_PARTIAL_FLUSH",
+                                    pos.symbol,
+                                    (
+                                        f"Campaign={campaign.name} | Partial TP flushed | TPQty={exec_qty:.8f} "
+                                        f"| FlushQty={flush_qty:.8f} | Proceeds={total_proceeds:.2f} | PnL={pnl:+.2f}"
+                                    ),
+                                )
+                                changed = True
+                                continue
+                        except Exception as e:
+                            add_live_log(db, "LIVE_TP_FLUSH_FAIL", pos.symbol, f"Campaign={campaign.name} | error={e}")
+
+                    # If flush failed, keep remaining open and re-arm TP.
+                    remaining_after = max(0.0, float(pos.total_qty) - exec_qty)
+                    tradable_remaining, min_qty, _ = normalize_qty_for_sell(
+                        pos.symbol,
+                        remaining_after,
+                        cap_to_free_balance=True,
+                    )
+                    if remaining_after > 0 and tradable_remaining <= 0:
+                        proceeds_effective = proceeds + (remaining_after * price)
+                        effective_qty = exec_qty + remaining_after
+                        close_price_effective = proceeds_effective / max(effective_qty, 1e-12)
+                        pnl_effective = (proceeds_effective - sell_fee_usdt) - total_invested_before
+                        pos.status = "closed"
+                        pos.closed_at = now
+                        pos.close_price = close_price_effective
+                        pos.realized_pnl_usdt = pnl_effective
+                        pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + sell_fee_usdt
+                        pos.close_reason = "TP_DUST"
+                        pos.total_qty = 0.0
+                        pos.total_invested_usdt = 0.0
+                        _clear_tp_order_fields(pos)
+                        add_live_log(
+                            db,
+                            "LIVE_TP_DUST_CLOSE",
+                            pos.symbol,
+                            (
+                                f"Campaign={campaign.name} | Remaining below min lot ({remaining_after:.8f} < {min_qty:.8f}) "
+                                f"| closed as dust residue | EffectiveClose={close_price_effective:.6f} | PnL={pnl_effective:+.2f}"
+                            ),
+                        )
+                        changed = True
+                        continue
+
+                    cost_closed = min(total_invested_before, float(pos.average_price) * exec_qty)
                     realized_piece = (proceeds - sell_fee_usdt) - cost_closed
                     pos.total_qty = max(0.0, float(pos.total_qty) - exec_qty)
-                    pos.total_invested_usdt = max(0.0, float(pos.total_invested_usdt) - cost_closed)
+                    pos.total_invested_usdt = max(0.0, total_invested_before - cost_closed)
                     pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + sell_fee_usdt
                     pos.average_price = (
                         (pos.total_invested_usdt / pos.total_qty) if pos.total_qty > 0 else float(pos.average_price)
@@ -459,6 +536,34 @@ def run_live_cycle(db: Session) -> None:
 
         # Keep TP order always armed (even when campaign is paused).
         if campaign.tp_pct is not None and not pos.tp_order_id:
+            tradable_qty, min_qty, _ = normalize_qty_for_sell(
+                pos.symbol,
+                float(pos.total_qty),
+                cap_to_free_balance=True,
+            )
+            if float(pos.total_qty) > 0 and tradable_qty <= 0:
+                dust_qty = float(pos.total_qty)
+                proceeds_effective = dust_qty * price
+                pnl_effective = proceeds_effective - float(pos.total_invested_usdt)
+                pos.status = "closed"
+                pos.closed_at = now
+                pos.close_price = price
+                pos.realized_pnl_usdt = pnl_effective
+                pos.close_reason = "DUST"
+                pos.total_qty = 0.0
+                pos.total_invested_usdt = 0.0
+                _clear_tp_order_fields(pos)
+                add_live_log(
+                    db,
+                    "LIVE_DUST_CLOSE",
+                    pos.symbol,
+                    (
+                        f"Campaign={campaign.name} | Qty below min lot ({dust_qty:.8f} < {min_qty:.8f}) "
+                        f"| closed in bot state to prevent TP rearm loop | PnL={pnl_effective:+.2f}"
+                    ),
+                )
+                changed = True
+                continue
             try:
                 _arm_or_rearm_tp_order(db, pos, campaign, force_rearm=False)
                 changed = True

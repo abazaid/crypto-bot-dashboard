@@ -24,6 +24,12 @@ from app.models.paper_v2 import (
     PositionDcaState,
 )
 from app.services.binance_public import get_prices, search_symbols
+from app.services.binance_live import (
+    cancel_open_orders,
+    get_order_fee_usdt,
+    list_spot_coin_positions,
+    place_market_sell_qty,
+)
 from app.services.paper_trading import (
     add_log,
     build_smart_dca_plan,
@@ -39,6 +45,7 @@ from app.services.paper_trading import (
 )
 from app.services.live_trading import (
     create_live_campaign_positions,
+    add_live_log,
     live_wallet_snapshot,
     recalculate_live_campaign_dca,
     run_live_cycle,
@@ -982,6 +989,118 @@ async def live_trading_history(request: Request) -> HTMLResponse:
             "live_history.html",
             _context("live_history", request=request, **ctx),
         )
+    finally:
+        db.close()
+
+
+@app.get("/live/all-coins", response_class=HTMLResponse)
+async def live_all_coins_page(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        error = None
+        data = {"rows": [], "summary": {"coins_count": 0, "invested_total": 0.0, "market_total": 0.0, "pnl_total": 0.0, "pnl_pct": 0.0}}
+        try:
+            data = list_spot_coin_positions()
+        except Exception as e:
+            error = str(e)
+        logs = (
+            db.query(ActivityLog)
+            .filter(
+                or_(
+                    ActivityLog.event_type.like("LIVE_ALL_%"),
+                    ActivityLog.event_type.like("LIVE_ALLCOIN_%"),
+                )
+            )
+            .order_by(desc(ActivityLog.id))
+            .limit(60)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "live_all_coins.html",
+            _context(
+                "live_all_coins",
+                request=request,
+                data=data,
+                logs=logs,
+                all_coins_error=error,
+            ),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/live/all-coins/{symbol}/close")
+async def live_all_coins_close(symbol: str) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        if not sym.endswith("USDT") or len(sym) < 7:
+            add_live_log(db, "LIVE_ALLCOIN_CLOSE_FAIL", sym or "-", "invalid_symbol")
+            db.commit()
+            return RedirectResponse("/live/all-coins", status_code=303)
+
+        try:
+            cancel_open_orders(sym)
+        except Exception:
+            pass
+
+        sell = place_market_sell_qty(sym, 1e18)
+        exec_qty = float(sell.get("executed_qty", 0.0) or 0.0)
+        proceeds = float(sell.get("quote_qty", 0.0) or 0.0)
+        avg_price = float(sell.get("avg_price", 0.0) or 0.0)
+        order_id = int(float(sell.get("order_id", 0.0) or 0.0))
+        fee_usdt = 0.0
+        if order_id > 0:
+            try:
+                fee_usdt = float(get_order_fee_usdt(sym, order_id))
+            except Exception:
+                fee_usdt = 0.0
+
+        open_positions = (
+            db.query(Position)
+            .join(Campaign, Campaign.id == Position.campaign_id)
+            .filter(
+                Campaign.mode == "live",
+                Position.symbol == sym,
+                Position.status == "open",
+            )
+            .all()
+        )
+        now = datetime.utcnow()
+        total_invested = sum(float(p.total_invested_usdt or 0.0) for p in open_positions)
+        for p in open_positions:
+            invested = float(p.total_invested_usdt or 0.0)
+            share = (invested / total_invested) if total_invested > 0 else (1.0 / max(len(open_positions), 1))
+            alloc_proceeds = proceeds * share
+            alloc_fee = fee_usdt * share
+            pnl = (alloc_proceeds - alloc_fee) - invested
+            p.status = "closed"
+            p.closed_at = now
+            p.close_price = avg_price if avg_price > 0 else float(p.average_price or p.initial_price or 0.0)
+            p.realized_pnl_usdt = pnl
+            p.close_fee_usdt = float(p.close_fee_usdt or 0.0) + alloc_fee
+            p.close_reason = "MANUAL_ALL_COINS"
+            p.tp_order_id = None
+            p.tp_order_price = None
+            p.tp_order_qty = None
+            p.total_qty = 0.0
+            p.total_invested_usdt = 0.0
+
+        add_live_log(
+            db,
+            "LIVE_ALLCOIN_CLOSE",
+            sym,
+            (
+                f"Manual close from All Coins | ExecQty={exec_qty:.8f} | Proceeds={proceeds:.2f} "
+                f"| Fee={fee_usdt:.4f} | ClosedBotPositions={len(open_positions)}"
+            ),
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins", status_code=303)
+    except Exception as e:
+        add_live_log(db, "LIVE_ALLCOIN_CLOSE_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins", status_code=303)
     finally:
         db.close()
 

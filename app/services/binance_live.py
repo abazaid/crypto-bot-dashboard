@@ -2,13 +2,14 @@ import hashlib
 import hmac
 import math
 import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 
 import requests
 
 from app.core.config import settings
-from app.services.binance_public import get_book_tickers, get_exchange_info
+from app.services.binance_public import get_book_tickers, get_exchange_info, get_prices
 
 BASE_URL = "https://api.binance.com"
 TIMEOUT = 15
@@ -162,6 +163,26 @@ def _quote_asset_from_symbol(symbol: str) -> str:
     return "USDT"
 
 
+def get_symbol_lot_filters(symbol: str) -> dict[str, float]:
+    _load_symbol_filters()
+    return _SYMBOL_FILTER_CACHE.get(symbol.upper(), {}).copy()
+
+
+def normalize_qty_for_sell(symbol: str, quantity: float, cap_to_free_balance: bool = True) -> tuple[float, float, float]:
+    filters = get_symbol_lot_filters(symbol)
+    step = float(filters.get("step_size", 0.0))
+    min_qty = float(filters.get("min_qty", 0.0))
+    qty = float(quantity)
+    if cap_to_free_balance:
+        base_asset = _base_asset_from_symbol(symbol)
+        free_base = get_asset_free(base_asset)
+        qty = min(qty, free_base)
+        if qty <= 0 and free_base > 0:
+            qty = free_base
+    qty = _round_step_down(qty, step)
+    return qty, min_qty, step
+
+
 def _asset_to_usdt(asset: str, amount: float, symbol: str, trade_price: float) -> float:
     a = str(asset or "").upper()
     if amount <= 0:
@@ -290,14 +311,7 @@ def place_limit_buy_quote(
 def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
     if quantity <= 0:
         raise RuntimeError("quantity must be > 0")
-    _load_symbol_filters()
-    filters = _SYMBOL_FILTER_CACHE.get(symbol.upper(), {})
-    step = float(filters.get("step_size", 0.0))
-    min_qty = float(filters.get("min_qty", 0.0))
-    base_asset = _base_asset_from_symbol(symbol)
-    free_base = get_asset_free(base_asset)
-    qty = min(float(quantity), free_base * 0.999)
-    qty = _round_step_down(qty, step)
+    qty, min_qty, step = normalize_qty_for_sell(symbol, quantity, cap_to_free_balance=True)
     if qty <= 0 or qty < min_qty:
         raise RuntimeError(f"quantity below min lot size for {symbol}: {qty}")
     qty_str = _fmt_with_step(qty, step)
@@ -321,14 +335,9 @@ def place_limit_sell_qty(symbol: str, quantity: float, price: float) -> dict[str
         raise RuntimeError("price must be > 0")
     _load_symbol_filters()
     filters = _SYMBOL_FILTER_CACHE.get(symbol.upper(), {})
-    step = float(filters.get("step_size", 0.0))
-    min_qty = float(filters.get("min_qty", 0.0))
+    qty, min_qty, step = normalize_qty_for_sell(symbol, quantity, cap_to_free_balance=True)
     min_notional = float(filters.get("min_notional", 0.0))
     tick = float(filters.get("tick_size", 0.0))
-    base_asset = _base_asset_from_symbol(symbol)
-    free_base = get_asset_free(base_asset)
-    qty = min(float(quantity), free_base * 0.999)
-    qty = _round_step_down(qty, step)
     px = _round_step_down(float(price), tick)
     if qty <= 0 or qty < min_qty:
         raise RuntimeError(f"quantity below min lot size for {symbol}: {qty}")
@@ -378,3 +387,160 @@ def get_order(symbol: str, order_id: int) -> dict:
             "orderId": int(order_id),
         },
     )
+
+
+def get_my_trades(symbol: str, limit: int = 1000) -> list[dict]:
+    return _signed_request(
+        "GET",
+        "/api/v3/myTrades",
+        {
+            "symbol": symbol.upper(),
+            "limit": max(1, min(int(limit), 1000)),
+        },
+    )
+
+
+def cancel_open_orders(symbol: str) -> list[dict]:
+    out = _signed_request(
+        "DELETE",
+        "/api/v3/openOrders",
+        {
+            "symbol": symbol.upper(),
+        },
+    )
+    if isinstance(out, list):
+        return out
+    return []
+
+
+def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000) -> tuple[float, float, int]:
+    base = _base_asset_from_symbol(symbol)
+    quote = _quote_asset_from_symbol(symbol)
+    try:
+        trades = get_my_trades(symbol, limit=max_trades)
+    except Exception:
+        return 0.0, 0.0, 0
+    if not trades:
+        return 0.0, 0.0, 0
+
+    trades = sorted(
+        trades,
+        key=lambda t: (int(t.get("time", 0) or 0), int(t.get("id", 0) or 0)),
+    )
+    inv_qty = 0.0
+    inv_cost = 0.0
+    used = 0
+    for t in trades:
+        qty = float(t.get("qty", 0.0) or 0.0)
+        quote_qty = float(t.get("quoteQty", 0.0) or 0.0)
+        price = float(t.get("price", 0.0) or 0.0)
+        commission = float(t.get("commission", 0.0) or 0.0)
+        commission_asset = str(t.get("commissionAsset", "")).upper()
+        is_buyer = bool(t.get("isBuyer", False))
+
+        if qty <= 0:
+            continue
+        used += 1
+
+        # Convert fee to USDT and adjust base inventory when fee is charged in base.
+        fee_usdt = _asset_to_usdt(commission_asset, commission, symbol, price)
+        base_fee = commission if commission_asset == base else 0.0
+        quote_fee = commission if commission_asset == quote else 0.0
+
+        if is_buyer:
+            got_base = max(0.0, qty - base_fee)
+            buy_cost = quote_qty + quote_fee + fee_usdt
+            inv_qty += got_base
+            inv_cost += buy_cost
+            continue
+
+        sold_base = qty + base_fee
+        if inv_qty <= 0:
+            continue
+        avg_before = inv_cost / max(inv_qty, 1e-12)
+        reduce_qty = min(inv_qty, sold_base)
+        inv_qty -= reduce_qty
+        inv_cost = max(0.0, inv_cost - (avg_before * reduce_qty))
+
+    if inv_qty <= 0:
+        return 0.0, 0.0, used
+
+    avg_entry = inv_cost / max(inv_qty, 1e-12)
+    # Reconcile to current wallet qty (may differ slightly due to limited history/fees).
+    invested_now = avg_entry * max(qty_now, 0.0)
+    return max(avg_entry, 0.0), max(invested_now, 0.0), used
+
+
+def list_spot_coin_positions(
+    min_usdt_value: float = 0.05,
+    include_zero: bool = False,
+) -> dict[str, Any]:
+    balances = get_balances()
+    _load_symbol_filters()
+    symbol_rows: list[dict[str, Any]] = []
+    symbols: list[str] = []
+
+    for asset, b in balances.items():
+        free = float(b.get("free", 0.0))
+        locked = float(b.get("locked", 0.0))
+        total = free + locked
+        if asset in {"USDT", "FDUSD", "USDC", "BUSD", "TUSD"}:
+            continue
+        if not include_zero and total <= 0:
+            continue
+        sym = f"{asset}USDT"
+        if sym not in _SYMBOL_FILTER_CACHE:
+            continue
+        symbols.append(sym)
+        symbol_rows.append(
+            {
+                "asset": asset,
+                "symbol": sym,
+                "qty_total": total,
+                "qty_free": free,
+                "qty_locked": locked,
+            }
+        )
+
+    prices = get_prices(symbols) if symbols else {}
+    rows: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    for r in symbol_rows:
+        price = float(prices.get(r["symbol"], 0.0))
+        market_value = price * float(r["qty_total"])
+        if (not include_zero) and market_value < min_usdt_value:
+            continue
+        avg_entry, invested, trades_used = _cost_basis_from_trades(r["symbol"], float(r["qty_total"]))
+        if avg_entry <= 0 and price > 0:
+            avg_entry = price
+            invested = market_value
+        pnl = market_value - invested
+        pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
+        rows.append(
+            {
+                **r,
+                "price": price,
+                "avg_entry": avg_entry,
+                "invested": invested,
+                "market_value": market_value,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "status": "profit" if pnl > 0 else ("loss" if pnl < 0 else "flat"),
+                "trades_used": trades_used,
+                "as_of": now,
+            }
+        )
+
+    rows.sort(key=lambda x: float(x.get("market_value", 0.0)), reverse=True)
+    summary = {
+        "coins_count": len(rows),
+        "invested_total": sum(float(x.get("invested", 0.0)) for x in rows),
+        "market_total": sum(float(x.get("market_value", 0.0)) for x in rows),
+    }
+    summary["pnl_total"] = float(summary["market_total"] - summary["invested_total"])
+    summary["pnl_pct"] = (
+        float(summary["pnl_total"]) / float(summary["invested_total"]) * 100.0
+        if float(summary["invested_total"]) > 0
+        else 0.0
+    )
+    return {"rows": rows, "summary": summary}
