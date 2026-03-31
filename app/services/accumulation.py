@@ -16,6 +16,10 @@ from app.services.binance_live import (
 from app.services.binance_public import get_prices
 
 
+def _paper_fee_rate() -> float:
+    return max(0.0, float(getattr(settings, "paper_fee_pct", 0.1)) / 100.0)
+
+
 def _log(db: Session, mode: str, event: str, symbol: str, message: str) -> None:
     prefix = "LIVE_" if mode == "live" else ""
     db.add(ActivityLog(event_type=f"{prefix}{event}", symbol=symbol or "-", message=message))
@@ -59,7 +63,9 @@ def _paper_buy(db: Session, plan: AccumulationPlan, price: float, usdt: float, r
     usdt = float(usdt)
     if price <= 0 or usdt < float(plan.min_order_usdt or 5.0):
         return False
-    if float(plan.reserved_cash_usdt or 0.0) + 1e-9 < usdt:
+    fee_usdt = usdt * _paper_fee_rate()
+    total_spent = usdt + fee_usdt
+    if float(plan.reserved_cash_usdt or 0.0) + 1e-9 < total_spent:
         return False
     qty = usdt / float(price)
     if qty <= 0:
@@ -67,18 +73,25 @@ def _paper_buy(db: Session, plan: AccumulationPlan, price: float, usdt: float, r
     prev_qty = float(plan.coin_qty or 0.0)
     prev_cost = float(plan.avg_entry_price or 0.0) * prev_qty
     new_qty = prev_qty + qty
-    new_cost = prev_cost + usdt
+    new_cost = prev_cost + total_spent
     plan.coin_qty = new_qty
     plan.avg_entry_price = (new_cost / new_qty) if new_qty > 0 else 0.0
-    plan.reserved_cash_usdt = float(plan.reserved_cash_usdt or 0.0) - usdt
+    plan.reserved_cash_usdt = float(plan.reserved_cash_usdt or 0.0) - total_spent
+    plan.realized_fees_usdt = float(plan.realized_fees_usdt or 0.0) + fee_usdt
     plan.total_bought_qty = float(plan.total_bought_qty or 0.0) + qty
     if float(plan.initial_coin_qty or 0.0) <= 0:
         plan.initial_coin_qty = qty
     plan.buy_count = int(plan.buy_count or 0) + 1
     plan.last_action_at = datetime.utcnow()
     _recalc_used_capital(plan)
-    _record_trade(db, plan, "BUY", price, qty, usdt, 0.0, reason)
-    _log(db, plan.mode, "ACC_BUY", plan.symbol, f"Plan={plan.name} | reason={reason} | price={price:.6f} | usdt={usdt:.2f} | qty={qty:.8f}")
+    _record_trade(db, plan, "BUY", price, qty, usdt, fee_usdt, reason)
+    _log(
+        db,
+        plan.mode,
+        "ACC_BUY",
+        plan.symbol,
+        f"Plan={plan.name} | reason={reason} | price={price:.6f} | usdt={usdt:.2f} | fee={fee_usdt:.4f} | qty={qty:.8f}",
+    )
     return True
 
 
@@ -89,11 +102,14 @@ def _paper_sell(db: Session, plan: AccumulationPlan, price: float, qty: float, r
     gross = qty * float(price)
     avg = float(plan.avg_entry_price or 0.0)
     cost = qty * avg
-    pnl = gross - cost
+    fee_usdt = gross * _paper_fee_rate()
+    net_quote = gross - fee_usdt
+    pnl = net_quote - cost
     remaining = float(plan.coin_qty or 0.0) - qty
     plan.coin_qty = max(0.0, remaining)
-    plan.reserved_cash_usdt = float(plan.reserved_cash_usdt or 0.0) + gross
+    plan.reserved_cash_usdt = float(plan.reserved_cash_usdt or 0.0) + net_quote
     plan.realized_pnl_usdt = float(plan.realized_pnl_usdt or 0.0) + pnl
+    plan.realized_fees_usdt = float(plan.realized_fees_usdt or 0.0) + fee_usdt
     plan.total_sold_qty = float(plan.total_sold_qty or 0.0) + qty
     plan.sell_count = int(plan.sell_count or 0) + 1
     plan.last_action_at = datetime.utcnow()
@@ -101,8 +117,14 @@ def _paper_sell(db: Session, plan: AccumulationPlan, price: float, qty: float, r
         plan.coin_qty = 0.0
         plan.avg_entry_price = 0.0
     _recalc_used_capital(plan)
-    _record_trade(db, plan, "SELL", price, qty, gross, 0.0, reason, pnl_usdt=pnl)
-    _log(db, plan.mode, "ACC_SELL", plan.symbol, f"Plan={plan.name} | reason={reason} | price={price:.6f} | qty={qty:.8f} | pnl={pnl:+.2f}")
+    _record_trade(db, plan, "SELL", price, qty, gross, fee_usdt, reason, pnl_usdt=pnl)
+    _log(
+        db,
+        plan.mode,
+        "ACC_SELL",
+        plan.symbol,
+        f"Plan={plan.name} | reason={reason} | price={price:.6f} | qty={qty:.8f} | fee={fee_usdt:.4f} | pnl={pnl:+.2f}",
+    )
     return True
 
 

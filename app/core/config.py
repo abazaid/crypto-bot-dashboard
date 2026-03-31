@@ -27,6 +27,7 @@ class Settings:
     forecast_interval = os.getenv("FORECAST_INTERVAL", "4h")
     forecast_horizon_days = int(os.getenv("FORECAST_HORIZON_DAYS", "7"))
     forecast_build_per_request = int(os.getenv("FORECAST_BUILD_PER_REQUEST", "6"))
+    paper_fee_pct = float(os.getenv("PAPER_FEE_PCT", "0.1"))
 
 
 settings = Settings()

@@ -308,10 +308,12 @@ def _acc_plan_view_row(plan: AccumulationPlan) -> dict:
 
 def _acc_attach_efficiency(row: dict, trades: list[AccumulationTrade]) -> dict:
     turnover_usdt = 0.0
+    ledger_fees_usdt = 0.0
     for t in trades:
         side = str(t.side or "").upper()
         if side in {"BUY", "SELL"}:
             turnover_usdt += max(0.0, float(t.quote_usdt or 0.0))
+        ledger_fees_usdt += max(0.0, float(t.fee_usdt or 0.0))
 
     qty_change = float(row.get("qty_change") or 0.0)
     efficiency_qty_per_100 = ((qty_change / turnover_usdt) * 100.0) if turnover_usdt > 1e-12 else 0.0
@@ -322,6 +324,9 @@ def _acc_attach_efficiency(row: dict, trades: list[AccumulationTrade]) -> dict:
     row["acc_turnover_usdt"] = turnover_usdt
     row["acc_efficiency_qty_per_100"] = efficiency_qty_per_100
     row["acc_cycle_count"] = cycle_count
+    row["acc_ledger_fees_usdt"] = ledger_fees_usdt
+    fee_rate = max(0.0, float(getattr(settings, "paper_fee_pct", 0.1)) / 100.0)
+    row["acc_estimated_fees_usdt"] = (turnover_usdt * fee_rate) if str(row["plan"].mode) == "paper" else ledger_fees_usdt
     return row
 
 
