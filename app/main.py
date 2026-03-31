@@ -1059,7 +1059,7 @@ async def live_all_coins_page(
             f_map = get_forecasts_for_symbols(
                 db,
                 symbols,
-                build_limit=max(1, int(settings.forecast_build_per_request)),
+                build_limit=max(max(1, int(settings.forecast_build_per_request)), len(symbols)),
             )
             tp_map: dict[str, dict] = {}
             try:
@@ -1095,7 +1095,30 @@ async def live_all_coins_page(
                 r["tp_price"] = float(tp.get("price", 0.0)) if tp else None
                 r["tp_qty"] = float(tp.get("qty", 0.0)) if tp else None
                 r["tp_count"] = int(tp.get("count", 0)) if tp else 0
-                r["forecast"] = f_map.get(sym)
+                fc = f_map.get(sym)
+                if not fc:
+                    try:
+                        fc = get_or_build_forecast(
+                            db,
+                            sym,
+                            force_refresh=False,
+                            interval=settings.forecast_interval,
+                            horizon_days=settings.forecast_horizon_days,
+                        )
+                    except Exception as e:
+                        fc = {
+                            "symbol": sym,
+                            "expected_move_pct": 0.0,
+                            "confidence_pct": 40.0,
+                            "bias": "neutral",
+                            "volatility_level": "unknown",
+                            "direction": "flat",
+                            "arrow": "-",
+                            "tooltip": f"Forecast unavailable now for {sym}: {e}",
+                            "cached": False,
+                            "fallback": True,
+                        }
+                r["forecast"] = fc
 
             if symbol_query:
                 qsym = symbol_query if symbol_query.endswith("USDT") else f"{symbol_query}USDT"
