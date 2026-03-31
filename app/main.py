@@ -130,6 +130,11 @@ def _safe_float(value: str | None, default: float | None = None) -> float | None
         return default
 
 
+def _safe_float_or_default(value: str | None, default: float) -> float:
+    parsed = _safe_float(value, None)
+    return float(default if parsed is None else parsed)
+
+
 _DATE_FILTERS = [
     ("all", "Disable Filter", None),
     ("24h", "Last 24 hours", 24),
@@ -961,12 +966,12 @@ async def paper_accumulation_create(
             mode="paper",
             name=name,
             symbol=symbol,
-            total_capital_usdt=float(_safe_float(total_capital_usdt, 0.0) or 0.0),
-            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 0.0) or 0.0),
-            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
-            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
-            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
-            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+            total_capital_usdt=_safe_float_or_default(total_capital_usdt, 0.0),
+            initial_entry_usdt=_safe_float_or_default(initial_entry_usdt, 0.0),
+            dca_drop_pct=_safe_float_or_default(dca_drop_pct, 2.5),
+            dca_allocation_pct=_safe_float_or_default(dca_allocation_pct, 120.0),
+            partial_tp_pct=_safe_float_or_default(partial_tp_pct, 1.5),
+            partial_sell_pct=_safe_float_or_default(partial_sell_pct, 20.0),
         )
         db.commit()
         return RedirectResponse(f"/paper/accumulation/{plan.id}", status_code=303)
@@ -1023,7 +1028,7 @@ async def paper_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20"
         plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
         if not plan:
             return RedirectResponse("/paper/accumulation", status_code=303)
-        pct = float(_safe_float(sell_pct, 20.0) or 20.0)
+        pct = _safe_float_or_default(sell_pct, 20.0)
         accumulation_manual_partial_sell(db, plan, pct)
         db.commit()
         return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
@@ -1100,17 +1105,17 @@ async def paper_accumulation_calculator_run(
     if sym and float(ep or 0.0) > 0:
         result = _simulate_accumulation_scenario(
             symbol=sym,
-            total_capital_usdt=float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
-            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+            total_capital_usdt=_safe_float_or_default(total_capital_usdt, 1000.0),
+            initial_entry_usdt=_safe_float_or_default(initial_entry_usdt, 100.0),
             entry_price=float(ep),
-            low_price=float(_safe_float(low_price, 1700.0) or 1700.0),
-            high_price=float(_safe_float(high_price, 3000.0) or 3000.0),
-            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
-            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
-            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
-            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
-            min_order_usdt=float(_safe_float(min_order_usdt, 5.0) or 5.0),
-            fee_pct=float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+            low_price=_safe_float_or_default(low_price, 1700.0),
+            high_price=_safe_float_or_default(high_price, 3000.0),
+            dca_drop_pct=_safe_float_or_default(dca_drop_pct, 2.5),
+            dca_allocation_pct=_safe_float_or_default(dca_allocation_pct, 120.0),
+            partial_tp_pct=_safe_float_or_default(partial_tp_pct, 1.5),
+            partial_sell_pct=_safe_float_or_default(partial_sell_pct, 20.0),
+            min_order_usdt=_safe_float_or_default(min_order_usdt, 5.0),
+            fee_pct=_safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
         )
     return templates.TemplateResponse(
         "accumulation_calculator.html",
@@ -1121,17 +1126,17 @@ async def paper_accumulation_calculator_run(
             result=result,
             form_data={
                 "symbol": sym,
-                "total_capital_usdt": float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
-                "initial_entry_usdt": float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+                "total_capital_usdt": _safe_float_or_default(total_capital_usdt, 1000.0),
+                "initial_entry_usdt": _safe_float_or_default(initial_entry_usdt, 100.0),
                 "entry_price": float(ep or 0.0),
-                "low_price": float(_safe_float(low_price, 1700.0) or 1700.0),
-                "high_price": float(_safe_float(high_price, 3000.0) or 3000.0),
-                "dca_drop_pct": float(_safe_float(dca_drop_pct, 2.5) or 2.5),
-                "dca_allocation_pct": float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
-                "partial_tp_pct": float(_safe_float(partial_tp_pct, 1.5) or 1.5),
-                "partial_sell_pct": float(_safe_float(partial_sell_pct, 20.0) or 20.0),
-                "min_order_usdt": float(_safe_float(min_order_usdt, 5.0) or 5.0),
-                "fee_pct": float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+                "low_price": _safe_float_or_default(low_price, 1700.0),
+                "high_price": _safe_float_or_default(high_price, 3000.0),
+                "dca_drop_pct": _safe_float_or_default(dca_drop_pct, 2.5),
+                "dca_allocation_pct": _safe_float_or_default(dca_allocation_pct, 120.0),
+                "partial_tp_pct": _safe_float_or_default(partial_tp_pct, 1.5),
+                "partial_sell_pct": _safe_float_or_default(partial_sell_pct, 20.0),
+                "min_order_usdt": _safe_float_or_default(min_order_usdt, 5.0),
+                "fee_pct": _safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
             },
         ),
     )
@@ -1248,12 +1253,12 @@ async def live_accumulation_create(
             mode="live",
             name=name,
             symbol=symbol,
-            total_capital_usdt=float(_safe_float(total_capital_usdt, 0.0) or 0.0),
-            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 0.0) or 0.0),
-            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
-            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
-            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
-            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+            total_capital_usdt=_safe_float_or_default(total_capital_usdt, 0.0),
+            initial_entry_usdt=_safe_float_or_default(initial_entry_usdt, 0.0),
+            dca_drop_pct=_safe_float_or_default(dca_drop_pct, 2.5),
+            dca_allocation_pct=_safe_float_or_default(dca_allocation_pct, 120.0),
+            partial_tp_pct=_safe_float_or_default(partial_tp_pct, 1.5),
+            partial_sell_pct=_safe_float_or_default(partial_sell_pct, 20.0),
         )
         db.commit()
         return RedirectResponse(f"/live/accumulation/{plan.id}", status_code=303)
@@ -1310,7 +1315,7 @@ async def live_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20")
         plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "live").first()
         if not plan:
             return RedirectResponse("/live/accumulation", status_code=303)
-        pct = float(_safe_float(sell_pct, 20.0) or 20.0)
+        pct = _safe_float_or_default(sell_pct, 20.0)
         accumulation_manual_partial_sell(db, plan, pct)
         db.commit()
         return RedirectResponse(f"/live/accumulation/{plan_id}", status_code=303)
@@ -1387,17 +1392,17 @@ async def live_accumulation_calculator_run(
     if sym and float(ep or 0.0) > 0:
         result = _simulate_accumulation_scenario(
             symbol=sym,
-            total_capital_usdt=float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
-            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+            total_capital_usdt=_safe_float_or_default(total_capital_usdt, 1000.0),
+            initial_entry_usdt=_safe_float_or_default(initial_entry_usdt, 100.0),
             entry_price=float(ep),
-            low_price=float(_safe_float(low_price, 1700.0) or 1700.0),
-            high_price=float(_safe_float(high_price, 3000.0) or 3000.0),
-            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
-            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
-            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
-            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
-            min_order_usdt=float(_safe_float(min_order_usdt, 5.0) or 5.0),
-            fee_pct=float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+            low_price=_safe_float_or_default(low_price, 1700.0),
+            high_price=_safe_float_or_default(high_price, 3000.0),
+            dca_drop_pct=_safe_float_or_default(dca_drop_pct, 2.5),
+            dca_allocation_pct=_safe_float_or_default(dca_allocation_pct, 120.0),
+            partial_tp_pct=_safe_float_or_default(partial_tp_pct, 1.5),
+            partial_sell_pct=_safe_float_or_default(partial_sell_pct, 20.0),
+            min_order_usdt=_safe_float_or_default(min_order_usdt, 5.0),
+            fee_pct=_safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
         )
     return templates.TemplateResponse(
         "accumulation_calculator.html",
@@ -1408,17 +1413,17 @@ async def live_accumulation_calculator_run(
             result=result,
             form_data={
                 "symbol": sym,
-                "total_capital_usdt": float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
-                "initial_entry_usdt": float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+                "total_capital_usdt": _safe_float_or_default(total_capital_usdt, 1000.0),
+                "initial_entry_usdt": _safe_float_or_default(initial_entry_usdt, 100.0),
                 "entry_price": float(ep or 0.0),
-                "low_price": float(_safe_float(low_price, 1700.0) or 1700.0),
-                "high_price": float(_safe_float(high_price, 3000.0) or 3000.0),
-                "dca_drop_pct": float(_safe_float(dca_drop_pct, 2.5) or 2.5),
-                "dca_allocation_pct": float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
-                "partial_tp_pct": float(_safe_float(partial_tp_pct, 1.5) or 1.5),
-                "partial_sell_pct": float(_safe_float(partial_sell_pct, 20.0) or 20.0),
-                "min_order_usdt": float(_safe_float(min_order_usdt, 5.0) or 5.0),
-                "fee_pct": float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+                "low_price": _safe_float_or_default(low_price, 1700.0),
+                "high_price": _safe_float_or_default(high_price, 3000.0),
+                "dca_drop_pct": _safe_float_or_default(dca_drop_pct, 2.5),
+                "dca_allocation_pct": _safe_float_or_default(dca_allocation_pct, 120.0),
+                "partial_tp_pct": _safe_float_or_default(partial_tp_pct, 1.5),
+                "partial_sell_pct": _safe_float_or_default(partial_sell_pct, 20.0),
+                "min_order_usdt": _safe_float_or_default(min_order_usdt, 5.0),
+                "fee_pct": _safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
             },
         ),
     )
