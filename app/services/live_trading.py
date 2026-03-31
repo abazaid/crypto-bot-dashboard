@@ -756,7 +756,8 @@ def run_live_cycle(db: Session) -> None:
                 max_candidates=max(18, target_count * 2),
             )
         ranked_symbols = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
-        picks = [symbol for symbol in ranked_symbols if symbol not in open_symbols and symbol != "BTCUSDT"]
+        excluded = getattr(settings, "loop_excluded_symbols", set())
+        picks = [symbol for symbol in ranked_symbols if symbol not in open_symbols and symbol not in excluded]
 
         if not picks:
             add_live_log(

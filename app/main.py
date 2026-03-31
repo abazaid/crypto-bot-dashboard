@@ -550,21 +550,17 @@ def _simulate_accumulation_scenario(
     avg_after_down = avg
     spent_by_low = total_capital - reserved_after_down
 
-    # Up phase (repeated partial sells at high) only if TP enabled.
-    up_iter = 0
-    if tp_pct > 0 and partial_sell > 0:
-        while qty > 0 and up_iter < 300:
-            up_iter += 1
-            trigger = avg * (1.0 + tp_pct / 100.0)
-            if high < trigger:
-                break
+    # Up phase (single partial sell touch per scenario) only if TP enabled.
+    # We intentionally execute one partial sell to keep scenario sensitivity:
+    # changing Partial TP % / Partial Sell % must visibly change outputs.
+    if tp_pct > 0 and partial_sell > 0 and qty > 0:
+        trigger = avg * (1.0 + tp_pct / 100.0)
+        if high >= trigger:
             # Accumulation rule: sell only extra qty above initial baseline.
             extra_qty = max(0.0, qty - initial_qty)
             sq = extra_qty * (partial_sell / 100.0)
-            if sq <= 0:
-                break
-            if not sell(sq, high, "partial_take_profit_at_high"):
-                break
+            if sq > 0:
+                sell(sq, high, "partial_take_profit_at_high")
 
     market_value_now = qty * high
     equity_now = reserved + market_value_now

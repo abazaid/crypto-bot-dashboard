@@ -132,6 +132,10 @@ def _is_tradeable_usdt_symbol(symbol: str) -> bool:
     return True
 
 
+def is_loop_excluded_symbol(symbol: str) -> bool:
+    return str(symbol or "").upper().strip() in getattr(settings, "loop_excluded_symbols", set())
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -691,6 +695,8 @@ def suggest_top_symbols(limit: int = 5, use_v2: bool = False, max_candidates: in
     for row in raw:
         symbol = str(row.get("symbol", "")).upper()
         if not _is_tradeable_usdt_symbol(symbol):
+            continue
+        if is_loop_excluded_symbol(symbol):
             continue
         quote_volume = _safe_float(row.get("quoteVolume"), 0.0)
         if quote_volume < 10_000_000:
@@ -1647,7 +1653,7 @@ def run_cycle(db: Session) -> None:
         ranked_symbols = [str(item.get("symbol", "")).upper() for item in (scan.get("items") or []) if item.get("symbol")]
         picks = []
         for symbol in ranked_symbols:
-            if symbol == "BTCUSDT":
+            if is_loop_excluded_symbol(symbol):
                 continue
             if symbol in open_symbols:
                 continue

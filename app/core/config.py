@@ -28,6 +28,11 @@ class Settings:
     forecast_horizon_days = int(os.getenv("FORECAST_HORIZON_DAYS", "7"))
     forecast_build_per_request = int(os.getenv("FORECAST_BUILD_PER_REQUEST", "6"))
     paper_fee_pct = float(os.getenv("PAPER_FEE_PCT", "0.1"))
+    loop_excluded_symbols = {
+        s.strip().upper()
+        for s in os.getenv("LOOP_EXCLUDED_SYMBOLS", "BTCUSDT,PAXGUSDT").split(",")
+        if s.strip()
+    }
 
 
 settings = Settings()
