@@ -25,12 +25,15 @@ from app.models.paper_v2 import (
 )
 from app.services.binance_public import get_prices, search_symbols
 from app.services.paper_trading import (
+    add_log,
     build_smart_dca_plan,
     build_ai_dca_rules,
     create_campaign_positions,
     ensure_defaults,
+    get_setting,
     recalculate_campaign_dca,
     run_cycle,
+    set_setting,
     suggest_top_symbols,
     wallet_snapshot,
 )
@@ -609,6 +612,27 @@ async def paper_dashboard(request: Request) -> HTMLResponse:
 @app.get("/paper/campaigns")
 async def paper_campaigns_alias() -> RedirectResponse:
     return RedirectResponse("/paper", status_code=303)
+
+
+@app.post("/paper/cash/add")
+async def paper_add_cash(amount_usdt: str = Form(...), note: str = Form("")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        amount = float(_safe_float(amount_usdt, 0.0) or 0.0)
+        if amount <= 0:
+            return RedirectResponse("/paper", status_code=303)
+        current_cash = float(get_setting(db, "paper_cash", "0"))
+        new_cash = current_cash + amount
+        set_setting(db, "paper_cash", f"{new_cash:.8f}")
+        msg = (
+            f"Paper wallet top-up +{amount:.2f} USDT | cash {current_cash:.2f} -> {new_cash:.2f}"
+            + (f" | note={note.strip()}" if str(note).strip() else "")
+        )
+        add_log(db, "WALLET_TOPUP", "-", msg)
+        db.commit()
+        return RedirectResponse("/paper", status_code=303)
+    finally:
+        db.close()
 
 
 @app.get("/paper/create", response_class=HTMLResponse)

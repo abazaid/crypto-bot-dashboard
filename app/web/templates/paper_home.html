@@ -33,6 +33,19 @@
     </section>
 
     <section class="card">
+      <h2>Wallet Actions</h2>
+      <form method="post" action="/paper/cash/add" class="form-grid" style="grid-template-columns: 220px 1fr 180px;">
+        <label>Add Cash (USDT)
+          <input name="amount_usdt" type="number" step="0.01" min="0.01" placeholder="100" required>
+        </label>
+        <label>Note (Optional)
+          <input name="note" type="text" placeholder="Reason for top-up">
+        </label>
+        <div class="form-actions"><button class="btn" type="submit">Add Cash</button></div>
+      </form>
+    </section>
+
+    <section class="card">
       <h2>Campaigns</h2>
       {% if campaigns or accumulation_rows %}
       <div class="table-scroll">
