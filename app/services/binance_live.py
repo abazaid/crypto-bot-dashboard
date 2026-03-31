@@ -415,6 +415,16 @@ def cancel_open_orders(symbol: str) -> list[dict]:
     return []
 
 
+def get_open_orders(symbol: str | None = None) -> list[dict]:
+    params: dict[str, Any] = {}
+    if symbol:
+        params["symbol"] = symbol.upper()
+    out = _signed_request("GET", "/api/v3/openOrders", params)
+    if isinstance(out, list):
+        return out
+    return []
+
+
 def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000) -> tuple[float, float, int]:
     cached = _COST_BASIS_CACHE.get(symbol.upper())
     if cached:

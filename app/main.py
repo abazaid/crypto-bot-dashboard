@@ -25,11 +25,14 @@ from app.models.paper_v2 import (
 )
 from app.services.binance_public import get_prices, search_symbols
 from app.services.binance_live import (
+    cancel_order,
     cancel_open_orders,
     get_balances,
+    get_open_orders,
     get_order_fee_usdt,
     list_spot_coin_positions,
     normalize_qty_for_sell,
+    place_limit_sell_qty,
     place_market_sell_qty,
 )
 from app.services.paper_trading import (
@@ -1003,6 +1006,39 @@ async def live_all_coins_page(request: Request) -> HTMLResponse:
         data = {"rows": [], "summary": {"coins_count": 0, "invested_total": 0.0, "market_total": 0.0, "pnl_total": 0.0, "pnl_pct": 0.0}}
         try:
             data = list_spot_coin_positions(cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)))
+            tp_map: dict[str, dict] = {}
+            try:
+                open_orders = get_open_orders()
+                for o in open_orders:
+                    side = str(o.get("side", "")).upper()
+                    otype = str(o.get("type", "")).upper()
+                    status = str(o.get("status", "")).upper()
+                    if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED"}:
+                        continue
+                    sym = str(o.get("symbol", "")).upper()
+                    price = float(o.get("price", 0.0) or 0.0)
+                    orig_qty = float(o.get("origQty", 0.0) or 0.0)
+                    exec_qty = float(o.get("executedQty", 0.0) or 0.0)
+                    rem_qty = max(0.0, orig_qty - exec_qty)
+                    if price <= 0 or rem_qty <= 0:
+                        continue
+                    cur = tp_map.get(sym)
+                    if not cur:
+                        tp_map[sym] = {"price": price, "qty": rem_qty, "count": 1}
+                    else:
+                        cur["count"] = int(cur.get("count", 1)) + 1
+                        # keep nearest (lower) TP by price if multiple
+                        if price < float(cur.get("price", price)):
+                            cur["price"] = price
+                            cur["qty"] = rem_qty
+            except Exception:
+                tp_map = {}
+
+            for r in data.get("rows", []):
+                tp = tp_map.get(str(r.get("symbol", "")).upper())
+                r["tp_price"] = float(tp.get("price", 0.0)) if tp else None
+                r["tp_qty"] = float(tp.get("qty", 0.0)) if tp else None
+                r["tp_count"] = int(tp.get("count", 0)) if tp else 0
         except Exception as e:
             error = str(e)
         logs = (
@@ -1027,6 +1063,66 @@ async def live_all_coins_page(request: Request) -> HTMLResponse:
                 all_coins_error=error,
             ),
         )
+    finally:
+        db.close()
+
+
+@app.post("/live/all-coins/{symbol}/tp")
+async def live_all_coins_set_tp(symbol: str, tp_price: str = Form(...)) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        target = float(_safe_float(tp_price, 0.0) or 0.0)
+        if not sym.endswith("USDT") or len(sym) < 7 or target <= 0:
+            add_live_log(db, "LIVE_ALLCOIN_TP_FAIL", sym or "-", "invalid_symbol_or_tp")
+            db.commit()
+            return RedirectResponse("/live/all-coins", status_code=303)
+
+        open_orders = get_open_orders(sym)
+        canceled = 0
+        for o in open_orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            if side == "SELL" and otype == "LIMIT" and status in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+                oid = int(o.get("orderId", 0) or 0)
+                if oid > 0:
+                    try:
+                        cancel_order(sym, oid)
+                        canceled += 1
+                    except Exception:
+                        continue
+
+        tradable_qty, min_qty, _ = normalize_qty_for_sell(sym, 1e18, cap_to_free_balance=True)
+        if tradable_qty <= 0 or tradable_qty < min_qty:
+            add_live_log(
+                db,
+                "LIVE_ALLCOIN_TP_SKIP",
+                sym,
+                (
+                    f"skip_set_tp | reason=below_min_lot | tradable={tradable_qty:.8f} | "
+                    f"min_qty={min_qty:.8f} | canceled_old={canceled}"
+                ),
+            )
+            db.commit()
+            return RedirectResponse("/live/all-coins", status_code=303)
+
+        order = place_limit_sell_qty(sym, tradable_qty, target)
+        add_live_log(
+            db,
+            "LIVE_ALLCOIN_TP_SET",
+            sym,
+            (
+                f"Set TP from All Coins | TP={target:.8f} | Qty={tradable_qty:.8f} | "
+                f"OrderId={int(order.get('order_id', 0) or 0)} | canceled_old={canceled}"
+            ),
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins", status_code=303)
+    except Exception as e:
+        add_live_log(db, "LIVE_ALLCOIN_TP_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins", status_code=303)
     finally:
         db.close()
 

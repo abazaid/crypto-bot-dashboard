@@ -236,6 +236,21 @@ label {
   gap: 8px;
 }
 
+.inline-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inline-form input {
+  width: 150px;
+  padding: 7px 8px;
+}
+
+.inline-form button {
+  padding: 7px 10px;
+}
+
 input, select, button {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -349,6 +364,33 @@ thead th {
   background: #f6f9ff;
   color: var(--muted);
   font-weight: 700;
+}
+
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 22px;
+}
+
+th.sortable::after {
+  content: "↕";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: #8a9ab0;
+}
+
+th.sortable.sort-asc::after {
+  content: "▲";
+  color: #596b85;
+}
+
+th.sortable.sort-desc::after {
+  content: "▼";
+  color: #596b85;
 }
 
 tbody tr:hover {

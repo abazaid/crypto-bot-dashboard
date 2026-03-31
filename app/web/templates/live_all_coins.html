@@ -49,32 +49,48 @@
         <table class="campaigns-table">
           <thead>
             <tr>
-              <th>Symbol</th>
-              <th>Qty (Total)</th>
-              <th>Qty (Free)</th>
-              <th>Avg Entry</th>
-              <th>Current Price</th>
-              <th>Invested</th>
-              <th>Market Value</th>
-              <th>PnL</th>
-              <th>Status</th>
+              <th class="sortable" data-sort-key="symbol" data-sort-type="text">Symbol</th>
+              <th class="sortable" data-sort-key="qty_total" data-sort-type="number">Qty (Total)</th>
+              <th class="sortable" data-sort-key="qty_free" data-sort-type="number">Qty (Free)</th>
+              <th class="sortable" data-sort-key="avg_entry" data-sort-type="number">Avg Entry</th>
+              <th class="sortable" data-sort-key="price" data-sort-type="number">Current Price</th>
+              <th class="sortable" data-sort-key="invested" data-sort-type="number">Invested</th>
+              <th class="sortable" data-sort-key="market_value" data-sort-type="number">Market Value</th>
+              <th class="sortable" data-sort-key="pnl" data-sort-type="number">PnL</th>
+              <th class="sortable" data-sort-key="tp_price" data-sort-type="number">TP (Binance)</th>
+              <th>Set TP</th>
+              <th class="sortable" data-sort-key="status" data-sort-type="text">Status</th>
               <th>Close</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody id="all-coins-tbody">
             {% for r in data.rows %}
             <tr>
-              <td>{{ r.symbol }}</td>
-              <td>{{ "%.8f"|format(r.qty_total) }}</td>
-              <td>{{ "%.8f"|format(r.qty_free) }}</td>
-              <td>{{ "%.8f"|format(r.avg_entry) }}</td>
-              <td>{{ "%.8f"|format(r.price) }}</td>
-              <td>{{ "%.2f"|format(r.invested) }}</td>
-              <td>{{ "%.2f"|format(r.market_value) }}</td>
-              <td class="{{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">
+              <td data-sort="symbol" data-value="{{ r.symbol }}">{{ r.symbol }}</td>
+              <td data-sort="qty_total" data-value="{{ r.qty_total }}">{{ "%.8f"|format(r.qty_total) }}</td>
+              <td data-sort="qty_free" data-value="{{ r.qty_free }}">{{ "%.8f"|format(r.qty_free) }}</td>
+              <td data-sort="avg_entry" data-value="{{ r.avg_entry }}">{{ "%.8f"|format(r.avg_entry) }}</td>
+              <td data-sort="price" data-value="{{ r.price }}">{{ "%.8f"|format(r.price) }}</td>
+              <td data-sort="invested" data-value="{{ r.invested }}">{{ "%.2f"|format(r.invested) }}</td>
+              <td data-sort="market_value" data-value="{{ r.market_value }}">{{ "%.2f"|format(r.market_value) }}</td>
+              <td data-sort="pnl" data-value="{{ r.pnl }}" class="{{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">
                 {{ "%+.2f"|format(r.pnl) }} ({{ "%+.2f"|format(r.pnl_pct) }}%)
               </td>
+              <td data-sort="tp_price" data-value="{{ r.tp_price if r.tp_price else -1 }}">
+                {% if r.tp_price %}
+                  <span class="pnl-pos">{{ "%.8f"|format(r.tp_price) }}</span>
+                  <div class="muted-line" style="margin-top:4px;">Qty {{ "%.8f"|format(r.tp_qty or 0) }}{% if r.tp_count and r.tp_count > 1 %} | {{ r.tp_count }} orders{% endif %}</div>
+                {% else %}
+                  -
+                {% endif %}
+              </td>
               <td>
+                <form method="post" action="/live/all-coins/{{ r.symbol }}/tp" class="inline-form" onsubmit="return confirm('Replace TP for {{ r.symbol }} with new target?');">
+                  <input type="number" step="0.00000001" min="0" name="tp_price" required value="{{ '%.8f'|format(r.tp_price) if r.tp_price else ('%.8f'|format(r.avg_entry * 1.01 if r.avg_entry else r.price * 1.01)) }}">
+                  <button type="submit">Set TP</button>
+                </form>
+              </td>
+              <td data-sort="status" data-value="{{ r.status }}">
                 <span class="badge">
                   {{ r.status }}
                 </span>
@@ -109,4 +125,63 @@
     </section>
   </div>
 </section>
+<script>
+  (function initAllCoinsSort() {
+    const tableBody = document.getElementById("all-coins-tbody");
+    if (!tableBody) return;
+    const headers = document.querySelectorAll("th.sortable");
+    if (!headers.length) return;
+
+    let activeKey = "";
+    let activeDir = "desc";
+
+    function parseValue(raw, type) {
+      if (type === "number") {
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : -Infinity;
+      }
+      return String(raw || "").toUpperCase();
+    }
+
+    function renderHeaderArrows() {
+      headers.forEach((h) => {
+        h.classList.remove("sort-asc", "sort-desc");
+        const key = h.getAttribute("data-sort-key");
+        if (key === activeKey) {
+          h.classList.add(activeDir === "asc" ? "sort-asc" : "sort-desc");
+        }
+      });
+    }
+
+    function sortBy(key, type, dir) {
+      const rows = Array.from(tableBody.querySelectorAll("tr"));
+      rows.sort((a, b) => {
+        const aCell = a.querySelector(`td[data-sort="${key}"]`);
+        const bCell = b.querySelector(`td[data-sort="${key}"]`);
+        const aVal = parseValue(aCell ? aCell.getAttribute("data-value") : "", type);
+        const bVal = parseValue(bCell ? bCell.getAttribute("data-value") : "", type);
+        if (aVal < bVal) return dir === "asc" ? -1 : 1;
+        if (aVal > bVal) return dir === "asc" ? 1 : -1;
+        return 0;
+      });
+      rows.forEach((r) => tableBody.appendChild(r));
+    }
+
+    headers.forEach((header) => {
+      header.addEventListener("click", () => {
+        const key = header.getAttribute("data-sort-key");
+        const type = header.getAttribute("data-sort-type") || "text";
+        if (!key) return;
+        if (activeKey === key) {
+          activeDir = activeDir === "asc" ? "desc" : "asc";
+        } else {
+          activeKey = key;
+          activeDir = "desc";
+        }
+        sortBy(key, type, activeDir);
+        renderHeaderArrows();
+      });
+    });
+  })();
+</script>
 {% endblock %}
