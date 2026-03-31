@@ -15,6 +15,8 @@ BASE_URL = "https://api.binance.com"
 TIMEOUT = 15
 _SYMBOL_FILTER_CACHE: dict[str, dict[str, float]] = {}
 _CACHE_EXPIRES_AT = 0.0
+_COST_BASIS_CACHE: dict[str, dict[str, Any]] = {}
+_ALL_COINS_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
 _KNOWN_QUOTES = [
     "USDT",
     "USDC",
@@ -414,6 +416,17 @@ def cancel_open_orders(symbol: str) -> list[dict]:
 
 
 def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000) -> tuple[float, float, int]:
+    cached = _COST_BASIS_CACHE.get(symbol.upper())
+    if cached:
+        cached_qty = float(cached.get("qty_now", -1.0))
+        expires_at = float(cached.get("expires_at", 0.0))
+        if abs(cached_qty - float(qty_now)) < 1e-12 and expires_at > time.time():
+            return (
+                float(cached.get("avg_entry", 0.0)),
+                float(cached.get("invested", 0.0)),
+                int(cached.get("used", 0)),
+            )
+
     base = _base_asset_from_symbol(symbol)
     quote = _quote_asset_from_symbol(symbol)
     try:
@@ -463,18 +476,42 @@ def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000)
         inv_cost = max(0.0, inv_cost - (avg_before * reduce_qty))
 
     if inv_qty <= 0:
+        _COST_BASIS_CACHE[symbol.upper()] = {
+            "qty_now": float(qty_now),
+            "avg_entry": 0.0,
+            "invested": 0.0,
+            "used": used,
+            "expires_at": time.time() + 180.0,
+        }
         return 0.0, 0.0, used
 
     avg_entry = inv_cost / max(inv_qty, 1e-12)
     # Reconcile to current wallet qty (may differ slightly due to limited history/fees).
     invested_now = avg_entry * max(qty_now, 0.0)
+    _COST_BASIS_CACHE[symbol.upper()] = {
+        "qty_now": float(qty_now),
+        "avg_entry": float(max(avg_entry, 0.0)),
+        "invested": float(max(invested_now, 0.0)),
+        "used": int(used),
+        "expires_at": time.time() + 180.0,
+    }
     return max(avg_entry, 0.0), max(invested_now, 0.0), used
 
 
 def list_spot_coin_positions(
     min_usdt_value: float = 0.05,
     include_zero: bool = False,
+    cache_ttl_seconds: int = 90,
 ) -> dict[str, Any]:
+    cache_key = f"{float(min_usdt_value):.8f}|{int(bool(include_zero))}"
+    if (
+        int(cache_ttl_seconds) > 0
+        and _ALL_COINS_CACHE.get("data") is not None
+        and _ALL_COINS_CACHE.get("key") == cache_key
+        and float(_ALL_COINS_CACHE.get("expires_at", 0.0)) > time.time()
+    ):
+        return _ALL_COINS_CACHE["data"]
+
     balances = get_balances()
     _load_symbol_filters()
     symbol_rows: list[dict[str, Any]] = []
@@ -543,4 +580,9 @@ def list_spot_coin_positions(
         if float(summary["invested_total"]) > 0
         else 0.0
     )
-    return {"rows": rows, "summary": summary}
+    out = {"rows": rows, "summary": summary}
+    if int(cache_ttl_seconds) > 0:
+        _ALL_COINS_CACHE["key"] = cache_key
+        _ALL_COINS_CACHE["data"] = out
+        _ALL_COINS_CACHE["expires_at"] = time.time() + float(cache_ttl_seconds)
+    return out

@@ -26,8 +26,10 @@ from app.models.paper_v2 import (
 from app.services.binance_public import get_prices, search_symbols
 from app.services.binance_live import (
     cancel_open_orders,
+    get_balances,
     get_order_fee_usdt,
     list_spot_coin_positions,
+    normalize_qty_for_sell,
     place_market_sell_qty,
 )
 from app.services.paper_trading import (
@@ -1000,7 +1002,7 @@ async def live_all_coins_page(request: Request) -> HTMLResponse:
         error = None
         data = {"rows": [], "summary": {"coins_count": 0, "invested_total": 0.0, "market_total": 0.0, "pnl_total": 0.0, "pnl_pct": 0.0}}
         try:
-            data = list_spot_coin_positions()
+            data = list_spot_coin_positions(cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)))
         except Exception as e:
             error = str(e)
         logs = (
@@ -1043,6 +1045,26 @@ async def live_all_coins_close(symbol: str) -> RedirectResponse:
             cancel_open_orders(sym)
         except Exception:
             pass
+
+        free_base = 0.0
+        locked_base = 0.0
+        try:
+            base_asset = sym.replace("USDT", "")
+            bal = get_balances().get(base_asset, {})
+            free_base = float(bal.get("free", 0.0))
+            locked_base = float(bal.get("locked", 0.0))
+        except Exception:
+            pass
+
+        tradable_qty, min_qty, _ = normalize_qty_for_sell(sym, 1e18, cap_to_free_balance=True)
+        if tradable_qty <= 0 or tradable_qty < min_qty:
+            reason = (
+                f"skip_manual_close | reason=below_min_lot | tradable={tradable_qty:.8f} | "
+                f"free={free_base:.8f} | locked={locked_base:.8f} | min_qty={min_qty:.8f}"
+            )
+            add_live_log(db, "LIVE_ALLCOIN_CLOSE_SKIP", sym, reason)
+            db.commit()
+            return RedirectResponse("/live/all-coins", status_code=303)
 
         sell = place_market_sell_qty(sym, 1e18)
         exec_qty = float(sell.get("executed_qty", 0.0) or 0.0)
