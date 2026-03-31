@@ -5,6 +5,7 @@
     <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
     <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
     <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link" href="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}">Accumulation Calculator</a>
     <a class="side-link active" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
   </aside>
 
@@ -105,4 +106,3 @@
   </div>
 </section>
 {% endblock %}
-

@@ -287,6 +287,10 @@ def _acc_plan_view_row(plan: AccumulationPlan) -> dict:
     equity_now = float(plan.reserved_cash_usdt or 0.0) + market_value
     equity_change = equity_now - start_capital
     equity_change_pct = ((equity_change / start_capital) * 100.0) if start_capital > 0 else 0.0
+    budget_remaining = float(plan.reserved_cash_usdt or 0.0)
+    budget_spent = max(0.0, start_capital - budget_remaining)
+    budget_spent_pct = ((budget_spent / start_capital) * 100.0) if start_capital > 0 else 0.0
+    budget_remaining_pct = ((budget_remaining / start_capital) * 100.0) if start_capital > 0 else 0.0
     return {
         "plan": plan,
         "market_value": market_value,
@@ -301,6 +305,10 @@ def _acc_plan_view_row(plan: AccumulationPlan) -> dict:
         "equity_now": equity_now,
         "equity_change": equity_change,
         "equity_change_pct": equity_change_pct,
+        "budget_spent": budget_spent,
+        "budget_spent_pct": budget_spent_pct,
+        "budget_remaining": budget_remaining,
+        "budget_remaining_pct": budget_remaining_pct,
         "next_dca_trigger": next_dca_trigger,
         "next_sell_trigger": next_sell_trigger,
     }
@@ -328,6 +336,20 @@ def _acc_attach_efficiency(row: dict, trades: list[AccumulationTrade]) -> dict:
     fee_rate = max(0.0, float(getattr(settings, "paper_fee_pct", 0.1)) / 100.0)
     row["acc_estimated_fees_usdt"] = (turnover_usdt * fee_rate) if str(row["plan"].mode) == "paper" else ledger_fees_usdt
     return row
+
+
+def _acc_meaningful_trades(trades: list[AccumulationTrade]) -> tuple[list[AccumulationTrade], int]:
+    kept: list[AccumulationTrade] = []
+    skipped = 0
+    for t in trades:
+        qty = float(t.qty or 0.0)
+        quote = float(t.quote_usdt or 0.0)
+        # Hide legacy dust/no-op rows from UI and test metrics.
+        if qty <= 1e-12 or quote <= 1e-9:
+            skipped += 1
+            continue
+        kept.append(t)
+    return kept, skipped
 
 
 def _acc_history_context(db, mode: str, date_filter: str, symbol_filter: str, reason_filter: str) -> dict:
@@ -388,6 +410,202 @@ def _acc_history_context(db, mode: str, date_filter: str, symbol_filter: str, re
         "reason_filter": reason_filter or "all",
         "symbols": symbols,
         "reasons": reasons,
+    }
+
+
+def _simulate_accumulation_scenario(
+    *,
+    symbol: str,
+    total_capital_usdt: float,
+    initial_entry_usdt: float,
+    entry_price: float,
+    low_price: float,
+    high_price: float,
+    dca_drop_pct: float,
+    dca_allocation_pct: float,
+    partial_tp_pct: float,
+    partial_sell_pct: float,
+    min_order_usdt: float,
+    fee_pct: float,
+) -> dict:
+    total_capital = max(1.0, float(total_capital_usdt))
+    initial_entry = max(1.0, float(initial_entry_usdt))
+    entry = max(1e-12, float(entry_price))
+    low = max(1e-12, float(low_price))
+    high = max(1e-12, float(high_price))
+    dca_drop = max(0.01, float(dca_drop_pct))
+    dca_alloc = max(0.0, float(dca_allocation_pct))
+    tp_pct = max(0.01, float(partial_tp_pct))
+    partial_sell = max(0.01, min(95.0, float(partial_sell_pct)))
+    min_order = max(1.0, float(min_order_usdt))
+    fee_rate = max(0.0, float(fee_pct) / 100.0)
+
+    reserved = total_capital
+    qty = 0.0
+    avg = 0.0
+    realized = 0.0
+    fees = 0.0
+    initial_qty = 0.0
+    buys = 0
+    sells = 0
+    dca_buys = 0
+    events: list[dict] = []
+
+    def buy(usdt: float, px: float, reason: str) -> bool:
+        nonlocal reserved, qty, avg, fees, buys, initial_qty
+        spend = max(0.0, float(usdt))
+        if spend < min_order:
+            return False
+        fee = spend * fee_rate
+        total_spent = spend + fee
+        if reserved + 1e-12 < total_spent:
+            return False
+        got_qty = spend / px
+        prev_cost = avg * qty
+        qty_new = qty + got_qty
+        avg_new = ((prev_cost + total_spent) / qty_new) if qty_new > 0 else 0.0
+        qty = qty_new
+        avg = avg_new
+        reserved -= total_spent
+        fees += fee
+        buys += 1
+        if initial_qty <= 0:
+            initial_qty = got_qty
+        events.append(
+            {
+                "phase": "down" if px <= entry else "entry",
+                "side": "BUY",
+                "price": px,
+                "qty": got_qty,
+                "quote": spend,
+                "fee": fee,
+                "avg_after": avg,
+                "reserved_after": reserved,
+                "reason": reason,
+            }
+        )
+        return True
+
+    def sell(sell_qty: float, px: float, reason: str) -> bool:
+        nonlocal reserved, qty, avg, realized, fees, sells
+        sq = min(max(0.0, float(sell_qty)), qty)
+        if sq <= 0:
+            return False
+        gross = sq * px
+        if gross + 1e-12 < min_order:
+            return False
+        fee = gross * fee_rate
+        net = gross - fee
+        cost = sq * avg
+        pnl = net - cost
+        qty = max(0.0, qty - sq)
+        reserved += net
+        realized += pnl
+        fees += fee
+        sells += 1
+        if qty <= 1e-12:
+            qty = 0.0
+            avg = 0.0
+        events.append(
+            {
+                "phase": "up",
+                "side": "SELL",
+                "price": px,
+                "qty": sq,
+                "quote": gross,
+                "fee": fee,
+                "pnl": pnl,
+                "avg_after": avg,
+                "reserved_after": reserved,
+                "reason": reason,
+            }
+        )
+        return True
+
+    # Initial entry
+    buy(min(initial_entry, reserved), entry, "initial_entry")
+
+    # Down phase (repeated DCA at low until no longer valid or no budget)
+    down_iter = 0
+    while qty > 0 and down_iter < 300:
+        down_iter += 1
+        trigger = avg * (1.0 - dca_drop / 100.0)
+        if low > trigger:
+            break
+        dca_usdt = min(initial_entry * (dca_alloc / 100.0), reserved)
+        if dca_usdt < min_order:
+            break
+        if not buy(dca_usdt, low, "dca_at_low"):
+            break
+        dca_buys += 1
+
+    reserved_after_down = reserved
+    qty_after_down = qty
+    avg_after_down = avg
+    spent_by_low = total_capital - reserved_after_down
+
+    # Up phase (repeated partial sells at high) only if TP enabled.
+    up_iter = 0
+    if tp_pct > 0 and partial_sell > 0:
+        while qty > 0 and up_iter < 300:
+            up_iter += 1
+            trigger = avg * (1.0 + tp_pct / 100.0)
+            if high < trigger:
+                break
+            # Accumulation rule: sell only extra qty above initial baseline.
+            extra_qty = max(0.0, qty - initial_qty)
+            sq = extra_qty * (partial_sell / 100.0)
+            if sq <= 0:
+                break
+            if not sell(sq, high, "partial_take_profit_at_high"):
+                break
+
+    market_value_now = qty * high
+    equity_now = reserved + market_value_now
+    total_pnl = equity_now - total_capital
+    total_pnl_pct = (total_pnl / total_capital * 100.0) if total_capital > 0 else 0.0
+    qty_change = qty - initial_qty
+    qty_change_pct = (qty_change / initial_qty * 100.0) if initial_qty > 0 else 0.0
+
+    return {
+        "input": {
+            "symbol": symbol.upper(),
+            "total_capital_usdt": total_capital,
+            "initial_entry_usdt": initial_entry,
+            "entry_price": entry,
+            "low_price": low,
+            "high_price": high,
+            "dca_drop_pct": dca_drop,
+            "dca_allocation_pct": dca_alloc,
+            "partial_tp_pct": tp_pct,
+            "partial_sell_pct": partial_sell,
+            "min_order_usdt": min_order,
+            "fee_pct": fee_pct,
+        },
+        "down_phase": {
+            "spent_by_low": spent_by_low,
+            "remaining_after_down": reserved_after_down,
+            "qty_after_down": qty_after_down,
+            "avg_after_down": avg_after_down,
+            "dca_buys": dca_buys,
+        },
+        "final": {
+            "reserved_cash": reserved,
+            "coin_qty": qty,
+            "avg_entry": avg,
+            "market_value": market_value_now,
+            "equity_now": equity_now,
+            "realized_pnl": realized,
+            "total_pnl": total_pnl,
+            "total_pnl_pct": total_pnl_pct,
+            "initial_qty": initial_qty,
+            "qty_change": qty_change,
+            "qty_change_pct": qty_change_pct,
+            "fees_total": fees,
+            "buys": buys,
+            "sells": sells,
+        },
+        "events": events[-120:],
     }
 
 
@@ -770,10 +988,14 @@ async def paper_accumulation_details(request: Request, plan_id: int) -> HTMLResp
             .limit(200)
             .all()
         )
-        row = _acc_attach_efficiency(row, trades)
+        display_trades, skipped_trades = _acc_meaningful_trades(trades)
+        row = _acc_attach_efficiency(row, display_trades)
+        row["display_buy_count"] = sum(1 for t in display_trades if str(t.side or "").upper() == "BUY")
+        row["display_sell_count"] = sum(1 for t in display_trades if str(t.side or "").upper() == "SELL")
+        row["hidden_dust_count"] = skipped_trades
         return templates.TemplateResponse(
             "accumulation_plan.html",
-            _context("paper_accumulation_plan", request=request, mode="paper", row=row, trades=trades),
+            _context("paper_accumulation_plan", request=request, mode="paper", row=row, trades=display_trades),
         )
     finally:
         db.close()
@@ -821,6 +1043,97 @@ async def paper_accumulation_history(
         return templates.TemplateResponse("accumulation_history.html", _context("paper_accumulation_history", request=request, mode="paper", **ctx))
     finally:
         db.close()
+
+
+@app.get("/paper/accumulation/calculator", response_class=HTMLResponse)
+async def paper_accumulation_calculator(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        "accumulation_calculator.html",
+        _context(
+            "paper_accumulation_calculator",
+            request=request,
+            mode="paper",
+            result=None,
+            form_data={
+                "symbol": "ETHUSDT",
+                "total_capital_usdt": 1000,
+                "initial_entry_usdt": 100,
+                "entry_price": "",
+                "low_price": 1700,
+                "high_price": 3000,
+                "dca_drop_pct": 2.5,
+                "dca_allocation_pct": 120,
+                "partial_tp_pct": 1.5,
+                "partial_sell_pct": 20,
+                "min_order_usdt": 5,
+                "fee_pct": float(getattr(settings, "paper_fee_pct", 0.1)),
+            },
+        ),
+    )
+
+
+@app.post("/paper/accumulation/calculator", response_class=HTMLResponse)
+async def paper_accumulation_calculator_run(
+    request: Request,
+    symbol: str = Form("ETHUSDT"),
+    total_capital_usdt: str = Form("1000"),
+    initial_entry_usdt: str = Form("100"),
+    entry_price: str = Form(""),
+    low_price: str = Form("1700"),
+    high_price: str = Form("3000"),
+    dca_drop_pct: str = Form("2.5"),
+    dca_allocation_pct: str = Form("120"),
+    partial_tp_pct: str = Form("1.5"),
+    partial_sell_pct: str = Form("20"),
+    min_order_usdt: str = Form("5"),
+    fee_pct: str = Form("0.1"),
+) -> HTMLResponse:
+    sym = str(symbol or "").strip().upper()
+    if sym and not sym.endswith("USDT"):
+        sym = f"{sym}USDT"
+    ep = _safe_float(entry_price, None)
+    if ep is None or ep <= 0:
+        px = get_prices([sym]) if sym else {}
+        ep = float(px.get(sym, 0.0)) if sym else 0.0
+    result = None
+    if sym and float(ep or 0.0) > 0:
+        result = _simulate_accumulation_scenario(
+            symbol=sym,
+            total_capital_usdt=float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
+            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+            entry_price=float(ep),
+            low_price=float(_safe_float(low_price, 1700.0) or 1700.0),
+            high_price=float(_safe_float(high_price, 3000.0) or 3000.0),
+            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
+            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
+            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
+            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+            min_order_usdt=float(_safe_float(min_order_usdt, 5.0) or 5.0),
+            fee_pct=float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+        )
+    return templates.TemplateResponse(
+        "accumulation_calculator.html",
+        _context(
+            "paper_accumulation_calculator",
+            request=request,
+            mode="paper",
+            result=result,
+            form_data={
+                "symbol": sym,
+                "total_capital_usdt": float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
+                "initial_entry_usdt": float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+                "entry_price": float(ep or 0.0),
+                "low_price": float(_safe_float(low_price, 1700.0) or 1700.0),
+                "high_price": float(_safe_float(high_price, 3000.0) or 3000.0),
+                "dca_drop_pct": float(_safe_float(dca_drop_pct, 2.5) or 2.5),
+                "dca_allocation_pct": float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
+                "partial_tp_pct": float(_safe_float(partial_tp_pct, 1.5) or 1.5),
+                "partial_sell_pct": float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+                "min_order_usdt": float(_safe_float(min_order_usdt, 5.0) or 5.0),
+                "fee_pct": float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+            },
+        ),
+    )
 
 
 @app.get("/paper/backtest", response_class=HTMLResponse)
@@ -962,10 +1275,14 @@ async def live_accumulation_details(request: Request, plan_id: int) -> HTMLRespo
             .limit(200)
             .all()
         )
-        row = _acc_attach_efficiency(row, trades)
+        display_trades, skipped_trades = _acc_meaningful_trades(trades)
+        row = _acc_attach_efficiency(row, display_trades)
+        row["display_buy_count"] = sum(1 for t in display_trades if str(t.side or "").upper() == "BUY")
+        row["display_sell_count"] = sum(1 for t in display_trades if str(t.side or "").upper() == "SELL")
+        row["hidden_dust_count"] = skipped_trades
         return templates.TemplateResponse(
             "accumulation_plan.html",
-            _context("live_accumulation_plan", request=request, mode="live", row=row, trades=trades),
+            _context("live_accumulation_plan", request=request, mode="live", row=row, trades=display_trades),
         )
     finally:
         db.close()
@@ -1013,6 +1330,97 @@ async def live_accumulation_history(
         return templates.TemplateResponse("accumulation_history.html", _context("live_accumulation_history", request=request, mode="live", **ctx))
     finally:
         db.close()
+
+
+@app.get("/live/accumulation/calculator", response_class=HTMLResponse)
+async def live_accumulation_calculator(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        "accumulation_calculator.html",
+        _context(
+            "live_accumulation_calculator",
+            request=request,
+            mode="live",
+            result=None,
+            form_data={
+                "symbol": "ETHUSDT",
+                "total_capital_usdt": 1000,
+                "initial_entry_usdt": 100,
+                "entry_price": "",
+                "low_price": 1700,
+                "high_price": 3000,
+                "dca_drop_pct": 2.5,
+                "dca_allocation_pct": 120,
+                "partial_tp_pct": 1.5,
+                "partial_sell_pct": 20,
+                "min_order_usdt": 5,
+                "fee_pct": float(getattr(settings, "paper_fee_pct", 0.1)),
+            },
+        ),
+    )
+
+
+@app.post("/live/accumulation/calculator", response_class=HTMLResponse)
+async def live_accumulation_calculator_run(
+    request: Request,
+    symbol: str = Form("ETHUSDT"),
+    total_capital_usdt: str = Form("1000"),
+    initial_entry_usdt: str = Form("100"),
+    entry_price: str = Form(""),
+    low_price: str = Form("1700"),
+    high_price: str = Form("3000"),
+    dca_drop_pct: str = Form("2.5"),
+    dca_allocation_pct: str = Form("120"),
+    partial_tp_pct: str = Form("1.5"),
+    partial_sell_pct: str = Form("20"),
+    min_order_usdt: str = Form("5"),
+    fee_pct: str = Form("0.1"),
+) -> HTMLResponse:
+    sym = str(symbol or "").strip().upper()
+    if sym and not sym.endswith("USDT"):
+        sym = f"{sym}USDT"
+    ep = _safe_float(entry_price, None)
+    if ep is None or ep <= 0:
+        px = get_prices([sym]) if sym else {}
+        ep = float(px.get(sym, 0.0)) if sym else 0.0
+    result = None
+    if sym and float(ep or 0.0) > 0:
+        result = _simulate_accumulation_scenario(
+            symbol=sym,
+            total_capital_usdt=float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
+            initial_entry_usdt=float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+            entry_price=float(ep),
+            low_price=float(_safe_float(low_price, 1700.0) or 1700.0),
+            high_price=float(_safe_float(high_price, 3000.0) or 3000.0),
+            dca_drop_pct=float(_safe_float(dca_drop_pct, 2.5) or 2.5),
+            dca_allocation_pct=float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
+            partial_tp_pct=float(_safe_float(partial_tp_pct, 1.5) or 1.5),
+            partial_sell_pct=float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+            min_order_usdt=float(_safe_float(min_order_usdt, 5.0) or 5.0),
+            fee_pct=float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+        )
+    return templates.TemplateResponse(
+        "accumulation_calculator.html",
+        _context(
+            "live_accumulation_calculator",
+            request=request,
+            mode="live",
+            result=result,
+            form_data={
+                "symbol": sym,
+                "total_capital_usdt": float(_safe_float(total_capital_usdt, 1000.0) or 1000.0),
+                "initial_entry_usdt": float(_safe_float(initial_entry_usdt, 100.0) or 100.0),
+                "entry_price": float(ep or 0.0),
+                "low_price": float(_safe_float(low_price, 1700.0) or 1700.0),
+                "high_price": float(_safe_float(high_price, 3000.0) or 3000.0),
+                "dca_drop_pct": float(_safe_float(dca_drop_pct, 2.5) or 2.5),
+                "dca_allocation_pct": float(_safe_float(dca_allocation_pct, 120.0) or 120.0),
+                "partial_tp_pct": float(_safe_float(partial_tp_pct, 1.5) or 1.5),
+                "partial_sell_pct": float(_safe_float(partial_sell_pct, 20.0) or 20.0),
+                "min_order_usdt": float(_safe_float(min_order_usdt, 5.0) or 5.0),
+                "fee_pct": float(_safe_float(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))) or float(getattr(settings, "paper_fee_pct", 0.1))),
+            },
+        ),
+    )
 
 
 @app.get("/live/backtest", response_class=HTMLResponse)

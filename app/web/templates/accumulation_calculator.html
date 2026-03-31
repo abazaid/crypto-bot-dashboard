@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link active" href="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}">Accumulation Calculator</a>
+    <a class="side-link" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>Accumulation Calculator</h1>
+      <p>Simulate your strategy for a down-to-low then up-to-high scenario.</p>
+    </section>
+
+    <section class="card">
+      <h2>Scenario Inputs</h2>
+      <form method="post" action="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}" class="form-grid">
+        <label>Symbol<input name="symbol" value="{{ form_data.symbol }}" required></label>
+        <label>Total Capital (USDT)<input name="total_capital_usdt" type="number" step="0.01" value="{{ form_data.total_capital_usdt }}" required></label>
+        <label>Initial Entry (USDT)<input name="initial_entry_usdt" type="number" step="0.01" value="{{ form_data.initial_entry_usdt }}" required></label>
+        <label>Entry Price (leave blank = current)<input name="entry_price" type="number" step="0.00000001" value="{{ form_data.entry_price }}"></label>
+        <label>Low Price Scenario<input name="low_price" type="number" step="0.00000001" value="{{ form_data.low_price }}" required></label>
+        <label>High Price Scenario<input name="high_price" type="number" step="0.00000001" value="{{ form_data.high_price }}" required></label>
+        <label>DCA Drop %<input name="dca_drop_pct" type="number" step="0.01" value="{{ form_data.dca_drop_pct }}" required></label>
+        <label>DCA Allocation % of Entry<input name="dca_allocation_pct" type="number" step="0.01" value="{{ form_data.dca_allocation_pct }}" required></label>
+        <label>Partial TP %<input name="partial_tp_pct" type="number" step="0.01" value="{{ form_data.partial_tp_pct }}" required></label>
+        <label>Partial Sell %<input name="partial_sell_pct" type="number" step="0.01" value="{{ form_data.partial_sell_pct }}" required></label>
+        <label>Min Order (USDT)<input name="min_order_usdt" type="number" step="0.01" value="{{ form_data.min_order_usdt }}" required></label>
+        <label>Fee % per side<input name="fee_pct" type="number" step="0.001" value="{{ form_data.fee_pct }}" required></label>
+        <div class="form-actions"><button class="btn" type="submit">Calculate Scenario</button></div>
+      </form>
+    </section>
+
+    {% if result %}
+    <section class="cards four">
+      <article class="card stat">
+        <h3>Symbol / Entry</h3>
+        <p>{{ result.input.symbol }} @ {{ "%.6f"|format(result.input.entry_price) }}</p>
+      </article>
+      <article class="card stat">
+        <h3>Down Spend</h3>
+        <p>{{ "%.2f"|format(result.down_phase.spent_by_low) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>After Low Qty</h3>
+        <p>{{ "%.8f"|format(result.down_phase.qty_after_down) }}</p>
+      </article>
+      <article class="card stat">
+        <h3>DCA Buys</h3>
+        <p>{{ result.down_phase.dca_buys }}</p>
+      </article>
+    </section>
+
+    <section class="cards four">
+      <article class="card stat">
+        <h3>Final Capital</h3>
+        <p>{{ "%.2f"|format(result.final.equity_now) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Total PnL</h3>
+        <p class="{{ 'pnl-pos' if result.final.total_pnl >= 0 else 'pnl-neg' }}">
+          {{ "%+.2f"|format(result.final.total_pnl) }} USDT ({{ "%+.2f"|format(result.final.total_pnl_pct) }}%)
+        </p>
+      </article>
+      <article class="card stat">
+        <h3>Coin Qty (Final)</h3>
+        <p>{{ "%.8f"|format(result.final.coin_qty) }}</p>
+      </article>
+      <article class="card stat">
+        <h3>Qty Change</h3>
+        <p class="{{ 'pnl-pos' if result.final.qty_change >= 0 else 'pnl-neg' }}">
+          {{ "%+.8f"|format(result.final.qty_change) }} ({{ "%+.2f"|format(result.final.qty_change_pct) }}%)
+        </p>
+      </article>
+    </section>
+
+    <section class="cards four">
+      <article class="card stat">
+        <h3>Reserved Cash</h3>
+        <p>{{ "%.2f"|format(result.final.reserved_cash) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Market Value @ High</h3>
+        <p>{{ "%.2f"|format(result.final.market_value) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Realized PnL</h3>
+        <p class="{{ 'pnl-pos' if result.final.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(result.final.realized_pnl) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Total Fees</h3>
+        <p>{{ "%.4f"|format(result.final.fees_total) }} USDT</p>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Simulation Ledger</h2>
+      <div class="table-scroll">
+        <table class="campaigns-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Phase</th>
+              <th>Side</th>
+              <th>Price</th>
+              <th>Qty</th>
+              <th>Quote</th>
+              <th>Fee</th>
+              <th>PnL</th>
+              <th>Avg After</th>
+              <th>Reserved After</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in result.events %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td>{{ e.phase }}</td>
+              <td>{{ e.side }}</td>
+              <td>{{ "%.6f"|format(e.price or 0) }}</td>
+              <td>{{ "%.8f"|format(e.qty or 0) }}</td>
+              <td>{{ "%.2f"|format(e.quote or 0) }}</td>
+              <td>{{ "%.4f"|format(e.fee or 0) }}</td>
+              <td class="{{ 'pnl-pos' if (e.pnl or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(e.pnl or 0) if e.pnl is defined else "-" }}</td>
+              <td>{{ "%.6f"|format(e.avg_after or 0) }}</td>
+              <td>{{ "%.2f"|format(e.reserved_after or 0) }}</td>
+              <td>{{ e.reason }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
+

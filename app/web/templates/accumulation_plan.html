@@ -5,6 +5,7 @@
     <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
     <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
     <a class="side-link active" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link" href="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}">Accumulation Calculator</a>
     <a class="side-link" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
   </aside>
 
@@ -72,6 +73,23 @@
 
     <section class="cards three">
       <article class="card stat">
+        <h3>Budget Spent</h3>
+        <p>{{ "%.2f"|format(row.budget_spent or 0) }} USDT</p>
+        <small>{{ "%.2f"|format(row.budget_spent_pct or 0) }}% of start capital</small>
+      </article>
+      <article class="card stat">
+        <h3>Budget Remaining</h3>
+        <p>{{ "%.2f"|format(row.budget_remaining or 0) }} USDT</p>
+        <small>{{ "%.2f"|format(row.budget_remaining_pct or 0) }}% of start capital</small>
+      </article>
+      <article class="card stat">
+        <h3>Used In Position</h3>
+        <p>{{ "%.2f"|format(row.plan.used_capital_usdt or 0) }} USDT</p>
+      </article>
+    </section>
+
+    <section class="cards three">
+      <article class="card stat">
         <h3>Accumulation Efficiency</h3>
         <p class="{{ 'pnl-pos' if (row.acc_efficiency_qty_per_100 or 0) >= 0 else 'pnl-neg' }}">
           {{ "%+.8f"|format(row.acc_efficiency_qty_per_100 or 0) }} coin / 100 USDT
@@ -102,15 +120,25 @@
       </form>
       <p>Start Capital: {{ "%.2f"|format(row.plan.total_capital_usdt or 0) }} USDT | Reserved: {{ "%.2f"|format(row.plan.reserved_cash_usdt or 0) }} USDT | Used: {{ "%.2f"|format(row.plan.used_capital_usdt or 0) }} USDT</p>
       <p>DCA: drop {{ "%.2f"|format(row.plan.dca_drop_pct or 0) }}% | allocation {{ "%.2f"|format(row.plan.dca_allocation_pct or 0) }}%</p>
-      <p>Partial Sell: trigger {{ "%.2f"|format(row.plan.partial_tp_pct or 0) }}% above avg | sell {{ "%.2f"|format(row.plan.partial_sell_pct or 0) }}% of qty</p>
+      <p>
+        Partial Sell:
+        {% if (row.plan.partial_tp_pct or 0) > 0 %}
+          trigger {{ "%.2f"|format(row.plan.partial_tp_pct or 0) }}% above avg | sell {{ "%.2f"|format(row.plan.partial_sell_pct or 0) }}% of <strong>extra qty only</strong>
+        {% else %}
+          disabled (TP=0)
+        {% endif %}
+      </p>
       <p>Next DCA Trigger Price: <strong>{{ "%.6f"|format(row.next_dca_trigger or 0) }}</strong> | Next Partial Sell Trigger Price: <strong>{{ "%.6f"|format(row.next_sell_trigger or 0) }}</strong></p>
       <p>
-        Buys/Sells: {{ row.plan.buy_count or 0 }} / {{ row.plan.sell_count or 0 }}
+        Buys/Sells (meaningful): {{ row.display_buy_count if row.display_buy_count is defined else (row.plan.buy_count or 0) }} / {{ row.display_sell_count if row.display_sell_count is defined else (row.plan.sell_count or 0) }}
         | Fees (recorded): {{ "%.4f"|format(row.plan.realized_fees_usdt or 0) }} USDT
         {% if mode == 'paper' %}
         | Fees (estimated by turnover): {{ "%.4f"|format(row.acc_estimated_fees_usdt or 0) }} USDT
         {% endif %}
       </p>
+      {% if row.hidden_dust_count is defined and row.hidden_dust_count > 0 %}
+      <p class="muted-line">Hidden legacy dust rows from ledger view: {{ row.hidden_dust_count }}</p>
+      {% endif %}
     </section>
 
     <section class="card">

@@ -100,6 +100,18 @@ def _paper_sell(db: Session, plan: AccumulationPlan, price: float, qty: float, r
     if price <= 0 or qty <= 0:
         return False
     gross = qty * float(price)
+    if gross + 1e-12 < float(plan.min_order_usdt or 5.0):
+        _log(
+            db,
+            plan.mode,
+            "ACC_SELL_SKIP",
+            plan.symbol,
+            (
+                f"Plan={plan.name} | reason={reason} | skip=dust_below_min_order "
+                f"| gross={gross:.8f} | min_order={float(plan.min_order_usdt or 5.0):.2f}"
+            ),
+        )
+        return False
     avg = float(plan.avg_entry_price or 0.0)
     cost = qty * avg
     fee_usdt = gross * _paper_fee_rate()
@@ -273,8 +285,8 @@ def create_plan(
         initial_entry_usdt=min(initial_entry_usdt, total_capital_usdt),
         dca_drop_pct=max(0.2, float(dca_drop_pct)),
         dca_allocation_pct=max(1.0, float(dca_allocation_pct)),
-        partial_tp_pct=max(0.1, float(partial_tp_pct)),
-        partial_sell_pct=_clamp(float(partial_sell_pct), 1.0, 95.0),
+        partial_tp_pct=max(0.0, float(partial_tp_pct)),
+        partial_sell_pct=_clamp(float(partial_sell_pct), 0.0, 95.0),
         min_order_usdt=max(1.0, float(min_order_usdt)),
         reserved_cash_usdt=total_capital_usdt,
     )
@@ -303,14 +315,32 @@ def _run_plan_cycle(db: Session, plan: AccumulationPlan, price: float) -> bool:
         return changed
 
     # Sell partial on rebound.
-    sell_trigger = avg * (1.0 + (float(plan.partial_tp_pct) / 100.0))
-    if price >= sell_trigger:
-        sell_qty = float(plan.coin_qty) * (float(plan.partial_sell_pct) / 100.0)
-        if sell_qty > 0:
-            ok = _live_sell(db, plan, sell_qty, "partial_take_profit") if plan.mode == "live" else _paper_sell(db, plan, price, sell_qty, "partial_take_profit")
-            changed = changed or ok
-            if ok:
-                return True
+    tp_pct = float(plan.partial_tp_pct or 0.0)
+    sell_pct = float(plan.partial_sell_pct or 0.0)
+    # Accumulation mode: never sell base inventory. Sell only extra qty above initial qty.
+    if tp_pct > 0 and sell_pct > 0:
+        sell_trigger = avg * (1.0 + (tp_pct / 100.0))
+        if price >= sell_trigger:
+            base_qty = max(0.0, float(plan.initial_coin_qty or 0.0))
+            extra_qty = max(0.0, float(plan.coin_qty or 0.0) - base_qty)
+            sell_qty = extra_qty * (sell_pct / 100.0)
+            sell_quote = sell_qty * price
+            if sell_qty > 0 and sell_quote + 1e-12 >= float(plan.min_order_usdt or 5.0):
+                ok = _live_sell(db, plan, sell_qty, "partial_take_profit") if plan.mode == "live" else _paper_sell(db, plan, price, sell_qty, "partial_take_profit")
+                changed = changed or ok
+                if ok:
+                    return True
+            elif sell_qty > 0:
+                _log(
+                    db,
+                    plan.mode,
+                    "ACC_SELL_SKIP",
+                    plan.symbol,
+                    (
+                        f"Plan={plan.name} | reason=partial_take_profit | skip=dust_below_min_order "
+                        f"| quote={sell_quote:.8f} | min_order={float(plan.min_order_usdt or 5.0):.2f}"
+                    ),
+                )
 
     # Buy dip under average (DCA).
     buy_trigger = avg * (1.0 - (float(plan.dca_drop_pct) / 100.0))

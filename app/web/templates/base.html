@@ -14,18 +14,18 @@
         <a class="{% if active_page in ['paper_home', 'paper_create', 'paper_smart_create', 'paper_campaign', 'smart_backtest'] and mode != 'live' %}active{% endif %}" href="/paper">Paper Trading</a>
         <a class="{% if active_page == 'paper_create' %}active{% endif %}" href="/paper/create">Create Campaign</a>
         <a class="{% if active_page == 'paper_smart_create' %}active{% endif %}" href="/paper/smart-create">Smart DCA</a>
-        <a class="{% if active_page in ['paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history'] %}active{% endif %}" href="/paper/accumulation">Accumulation</a>
+        <a class="{% if active_page in ['paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'paper_accumulation_calculator'] %}active{% endif %}" href="/paper/accumulation">Accumulation</a>
         <a class="{% if active_page == 'smart_backtest' and mode != 'live' %}active{% endif %}" href="/paper/backtest">Smart Backtest</a>
         <a class="{% if active_page == 'history' %}active{% endif %}" href="/paper/history">Paper History</a>
         <a class="{% if active_page in ['live_home', 'live_create', 'live_smart_create', 'live_campaign', 'live_history', 'live_all_coins', 'smart_backtest'] and mode == 'live' %}active{% endif %}" href="/live">Live Mode</a>
         <a class="{% if active_page == 'live_create' %}active{% endif %}" href="/live/create">Live Create</a>
         <a class="{% if active_page == 'live_smart_create' %}active{% endif %}" href="/live/smart-create">Live Smart DCA</a>
         <a class="{% if active_page == 'live_all_coins' %}active{% endif %}" href="/live/all-coins">All Coins</a>
-        <a class="{% if active_page in ['live_accumulation', 'live_accumulation_plan', 'live_accumulation_history'] %}active{% endif %}" href="/live/accumulation">Live Accumulation</a>
+        <a class="{% if active_page in ['live_accumulation', 'live_accumulation_plan', 'live_accumulation_history', 'live_accumulation_calculator'] %}active{% endif %}" href="/live/accumulation">Live Accumulation</a>
         <a class="{% if active_page == 'smart_backtest' and mode == 'live' %}active{% endif %}" href="/live/backtest">Live Backtest</a>
         <a class="{% if active_page == 'live_history' %}active{% endif %}" href="/live/history">Live History</a>
       </nav>
-      {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_home', 'live_campaign', 'live_history', 'live_all_coins', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history'] %}
+      {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_home', 'live_campaign', 'live_history', 'live_all_coins', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'paper_accumulation_calculator', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history', 'live_accumulation_calculator'] %}
       <div class="refresh-tools">
         <button id="refresh-now-btn" type="button" class="mini-btn">Refresh Now</button>
         <span id="refresh-countdown" class="refresh-text">Auto refresh in 15s</span>
@@ -41,7 +41,7 @@
   <footer class="wrap footer">
     <small>Last update: {{ now }} | Engine checks prices every {{ cycle_seconds }}s</small>
   </footer>
-  {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_home', 'live_campaign', 'live_history', 'live_all_coins', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history'] %}
+  {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_home', 'live_campaign', 'live_history', 'live_all_coins', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'paper_accumulation_calculator', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history', 'live_accumulation_calculator'] %}
   <script>
     const REFRESH_SECONDS = 15;
     let countdown = REFRESH_SECONDS;
