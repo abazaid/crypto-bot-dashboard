@@ -49,6 +49,7 @@ from app.services.paper_trading import (
     wallet_snapshot,
 )
 from app.services.live_trading import (
+    _arm_or_rearm_tp_order,
     create_live_campaign_positions,
     add_live_log,
     live_wallet_snapshot,
@@ -435,8 +436,8 @@ def _simulate_accumulation_scenario(
     high = max(1e-12, float(high_price))
     dca_drop = max(0.01, float(dca_drop_pct))
     dca_alloc = max(0.0, float(dca_allocation_pct))
-    tp_pct = max(0.01, float(partial_tp_pct))
-    partial_sell = max(0.01, min(95.0, float(partial_sell_pct)))
+    tp_pct = max(0.0, float(partial_tp_pct))
+    partial_sell = max(0.0, min(95.0, float(partial_sell_pct)))
     min_order = max(1.0, float(min_order_usdt))
     fee_rate = max(0.0, float(fee_pct) / 100.0)
 
@@ -1774,24 +1775,65 @@ async def live_all_coins_close(symbol: str) -> RedirectResponse:
             .all()
         )
         now = datetime.utcnow()
-        total_invested = sum(float(p.total_invested_usdt or 0.0) for p in open_positions)
+        total_bot_qty = sum(float(p.total_qty or 0.0) for p in open_positions)
+        if total_bot_qty <= 0:
+            db.commit()
+            return RedirectResponse("/live/all-coins", status_code=303)
+
+        # Only attribute to bot positions the quantity that belongs to them.
+        alloc_exec_qty_total = min(exec_qty, total_bot_qty)
+        proceeds_for_bot = proceeds * (alloc_exec_qty_total / exec_qty) if exec_qty > 0 else 0.0
+        fee_for_bot = fee_usdt * (alloc_exec_qty_total / exec_qty) if exec_qty > 0 else 0.0
+
         for p in open_positions:
-            invested = float(p.total_invested_usdt or 0.0)
-            share = (invested / total_invested) if total_invested > 0 else (1.0 / max(len(open_positions), 1))
-            alloc_proceeds = proceeds * share
-            alloc_fee = fee_usdt * share
-            pnl = (alloc_proceeds - alloc_fee) - invested
-            p.status = "closed"
-            p.closed_at = now
-            p.close_price = avg_price if avg_price > 0 else float(p.average_price or p.initial_price or 0.0)
-            p.realized_pnl_usdt = pnl
+            qty_before = float(p.total_qty or 0.0)
+            if qty_before <= 0:
+                continue
+            qty_share = qty_before / total_bot_qty
+            sold_qty = min(qty_before, alloc_exec_qty_total * qty_share)
+            if sold_qty <= 0:
+                continue
+
+            invested_before = float(p.total_invested_usdt or 0.0)
+            avg_before = (invested_before / qty_before) if qty_before > 0 else float(p.average_price or 0.0)
+            cost_closed = min(invested_before, avg_before * sold_qty)
+
+            alloc_proceeds = proceeds_for_bot * qty_share
+            alloc_fee = fee_for_bot * qty_share
+            realized_piece = (alloc_proceeds - alloc_fee) - cost_closed
+
             p.close_fee_usdt = float(p.close_fee_usdt or 0.0) + alloc_fee
-            p.close_reason = "MANUAL_ALL_COINS"
             p.tp_order_id = None
             p.tp_order_price = None
             p.tp_order_qty = None
-            p.total_qty = 0.0
-            p.total_invested_usdt = 0.0
+
+            remaining_qty = max(0.0, qty_before - sold_qty)
+            if remaining_qty <= max(1e-12, qty_before * 0.001):
+                p.status = "closed"
+                p.closed_at = now
+                p.close_price = avg_price if avg_price > 0 else float(p.average_price or p.initial_price or 0.0)
+                p.realized_pnl_usdt = float(p.realized_pnl_usdt or 0.0) + realized_piece
+                p.close_reason = "MANUAL_ALL_COINS"
+                p.total_qty = 0.0
+                p.total_invested_usdt = 0.0
+            else:
+                p.total_qty = remaining_qty
+                p.total_invested_usdt = max(0.0, invested_before - cost_closed)
+                p.average_price = (p.total_invested_usdt / p.total_qty) if p.total_qty > 0 else float(p.average_price or 0.0)
+                add_live_log(
+                    db,
+                    "LIVE_ALLCOIN_PARTIAL",
+                    sym,
+                    (
+                        f"Campaign={p.campaign.name} | SoldQty={sold_qty:.8f}/{qty_before:.8f} "
+                        f"| RealizedPiece={realized_piece:+.2f} | RemainingQty={p.total_qty:.8f}"
+                    ),
+                )
+                try:
+                    if p.campaign.tp_pct is not None:
+                        _arm_or_rearm_tp_order(db, p, p.campaign, force_rearm=True)
+                except Exception as e:
+                    add_live_log(db, "LIVE_TP_REARM_FAIL", p.symbol, f"Campaign={p.campaign.name} | error={e}")
 
         add_live_log(
             db,
@@ -2797,8 +2839,13 @@ async def manual_sell_live_position(position_id: int) -> RedirectResponse:
                 cancel_order(pos.symbol, int(pos.tp_order_id))
             except Exception:
                 pass
-        sell = place_market_sell_qty(pos.symbol, pos.total_qty)
+        qty_before = float(pos.total_qty or 0.0)
+        if qty_before <= 0:
+            return RedirectResponse(f"/live/campaigns/{campaign_id}", status_code=303)
+
+        sell = place_market_sell_qty(pos.symbol, qty_before)
         proceeds = float(sell["quote_qty"])
+        exec_qty = float(sell.get("executed_qty", 0.0) or 0.0)
         close_price = float(sell["avg_price"] or 0.0)
         sell_order_id = int(float(sell.get("order_id", 0.0) or 0.0))
         sell_fee_usdt = 0.0
@@ -2807,24 +2854,59 @@ async def manual_sell_live_position(position_id: int) -> RedirectResponse:
                 sell_fee_usdt = float(get_order_fee_usdt(pos.symbol, sell_order_id))
             except Exception:
                 sell_fee_usdt = 0.0
-        pnl = (proceeds - sell_fee_usdt) - float(pos.total_invested_usdt)
-        pos.status = "closed"
-        pos.closed_at = datetime.utcnow()
-        pos.close_price = close_price
-        pos.realized_pnl_usdt = pnl
+        if exec_qty <= 0:
+            add_live_log(db, "LIVE_MANUAL_SELL_FAIL", pos.symbol, f"Campaign={pos.campaign.name} | reason=zero_exec_qty")
+            db.commit()
+            return RedirectResponse(f"/live/campaigns/{campaign_id}", status_code=303)
+
+        invested_before = float(pos.total_invested_usdt or 0.0)
+        avg_before = (invested_before / qty_before) if qty_before > 0 else float(pos.average_price or 0.0)
+        sold_qty = min(exec_qty, qty_before)
+        cost_closed = min(invested_before, avg_before * sold_qty)
+        realized_piece = (proceeds - sell_fee_usdt) - cost_closed
+
+        remaining_qty = max(0.0, qty_before - sold_qty)
+        if remaining_qty <= max(1e-12, qty_before * 0.001):
+            pos.status = "closed"
+            pos.closed_at = datetime.utcnow()
+            pos.close_price = close_price
+            pos.realized_pnl_usdt = float(pos.realized_pnl_usdt or 0.0) + realized_piece
+            pos.close_reason = "MANUAL_SELL"
+            pos.total_qty = 0.0
+            pos.total_invested_usdt = 0.0
+            pos.tp_order_id = None
+            pos.tp_order_price = None
+            pos.tp_order_qty = None
+            log_event = "LIVE_MANUAL_SELL"
+            log_msg = (
+                f"Campaign={pos.campaign.name} | Close={close_price:.6f} | Qty={sold_qty:.8f} "
+                f"| Proceeds={proceeds:.2f} | PnL={realized_piece:+.2f}"
+            )
+        else:
+            pos.total_qty = remaining_qty
+            pos.total_invested_usdt = max(0.0, invested_before - cost_closed)
+            pos.average_price = (pos.total_invested_usdt / pos.total_qty) if pos.total_qty > 0 else float(pos.average_price or 0.0)
+            pos.close_reason = "MANUAL_PARTIAL_SELL"
+            pos.tp_order_id = None
+            pos.tp_order_price = None
+            pos.tp_order_qty = None
+            log_event = "LIVE_MANUAL_SELL_PARTIAL"
+            log_msg = (
+                f"Campaign={pos.campaign.name} | SoldQty={sold_qty:.8f}/{qty_before:.8f} | Close={close_price:.6f} "
+                f"| Proceeds={proceeds:.2f} | RealizedPiece={realized_piece:+.2f} | RemainingQty={pos.total_qty:.8f}"
+            )
+            try:
+                if pos.campaign.tp_pct is not None:
+                    _arm_or_rearm_tp_order(db, pos, pos.campaign, force_rearm=True)
+            except Exception as e:
+                add_live_log(db, "LIVE_TP_REARM_FAIL", pos.symbol, f"Campaign={pos.campaign.name} | error={e}")
+
         pos.close_fee_usdt = float(pos.close_fee_usdt or 0.0) + sell_fee_usdt
-        pos.close_reason = "MANUAL_SELL"
-        pos.tp_order_id = None
-        pos.tp_order_price = None
-        pos.tp_order_qty = None
         db.add(
             ActivityLog(
-                event_type="LIVE_MANUAL_SELL",
+                event_type=log_event,
                 symbol=pos.symbol,
-                message=(
-                    f"Campaign={pos.campaign.name} | Close={close_price:.6f} | Qty={pos.total_qty:.8f} "
-                    f"| Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
-                ),
+                message=log_msg,
             )
         )
         db.commit()
