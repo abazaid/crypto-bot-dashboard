@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -197,3 +198,26 @@ class AccumulationTrade(Base):
     pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
     reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class AIForecastCache(Base):
+    __tablename__ = "ai_forecast_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False, unique=True, index=True)
+    interval: Mapped[str] = mapped_column(String(10), nullable=False, default="4h")
+    horizon_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    expected_move_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    confidence_pct: Mapped[float] = mapped_column(Float, nullable=False, default=50.0)
+    bias: Mapped[str] = mapped_column(String(20), nullable=False, default="neutral")
+    volatility_level: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    as_of_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def details(self) -> dict:
+        try:
+            return json.loads(self.details_json or "{}")
+        except Exception:
+            return {}

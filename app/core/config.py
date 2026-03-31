@@ -24,6 +24,9 @@ class Settings:
     binance_api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
     live_entry_limit_buffer_pct = float(os.getenv("LIVE_ENTRY_LIMIT_BUFFER_PCT", "0.03"))
     live_entry_limit_fallback_market = os.getenv("LIVE_ENTRY_LIMIT_FALLBACK_MARKET", "true").lower() == "true"
+    forecast_interval = os.getenv("FORECAST_INTERVAL", "4h")
+    forecast_horizon_days = int(os.getenv("FORECAST_HORIZON_DAYS", "7"))
+    forecast_build_per_request = int(os.getenv("FORECAST_BUILD_PER_REQUEST", "6"))
 
 
 settings = Settings()

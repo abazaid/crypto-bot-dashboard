@@ -251,6 +251,40 @@ label {
   padding: 7px 10px;
 }
 
+.forecast-badge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 84px;
+  padding: 6px 9px;
+  border-radius: 12px;
+  border: 1px solid #f0c4c4;
+  background: #fff3f3;
+  color: #d95a5a;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.forecast-badge small {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+
+.forecast-badge.bull {
+  border-color: #bfe7cd;
+  background: #ecfbf2;
+  color: #0c9d4f;
+}
+
+.forecast-badge.neutral {
+  border-color: #d7dfeb;
+  background: #f6f8fc;
+  color: #5f6f82;
+}
+
 input, select, button {
   border: 1px solid var(--line);
   border-radius: 10px;

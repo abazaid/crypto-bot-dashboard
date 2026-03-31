@@ -43,7 +43,50 @@
     </section>
 
     <section class="card">
+      <h2>Forecast Search</h2>
+      <form method="get" action="/live/all-coins" class="inline-form" style="margin-bottom: 10px;">
+        <input type="text" name="symbol" value="{{ forecast_symbol }}" placeholder="BTC or BTCUSDT" required>
+        <button type="submit">Analyze</button>
+        {% if forecast_symbol %}
+        <button type="submit" name="refresh_forecast" value="1">Refresh Analysis</button>
+        {% endif %}
+      </form>
+      {% if forecast_card %}
+        {% if forecast_card.error %}
+          <p class="pnl-neg">{{ forecast_card.error }}</p>
+        {% else %}
+          <div class="cards four" style="margin-top:8px;">
+            <article class="card stat">
+              <h3>Symbol</h3>
+              <p>{{ forecast_card.symbol }}</p>
+            </article>
+            <article class="card stat">
+              <h3>Forecast</h3>
+              <p class="{{ 'pnl-pos' if forecast_card.expected_move_pct >= 0 else 'pnl-neg' }}">
+                {{ forecast_card.arrow }} {{ "%+.2f"|format(forecast_card.expected_move_pct) }}%
+              </p>
+            </article>
+            <article class="card stat">
+              <h3>Confidence</h3>
+              <p>{{ "%.0f"|format(forecast_card.confidence_pct) }}%</p>
+            </article>
+            <article class="card stat">
+              <h3>Bias</h3>
+              <p>{{ forecast_card.bias|capitalize }}</p>
+            </article>
+          </div>
+          <p class="muted-line">{{ forecast_card.tooltip }}</p>
+        {% endif %}
+      {% else %}
+        <p class="muted-line">Type any symbol and analyze it using technical forecast model (EMA/RSI/ATR/Volume).</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
       <h2>Account Coins</h2>
+      <form method="post" action="/live/all-coins/cancel-all-sell-orders" style="margin-bottom: 12px;" onsubmit="return confirm('Cancel ALL open SELL LIMIT orders now?');">
+        <button type="submit" class="sell-btn">Cancel All Sell Orders</button>
+      </form>
       {% if data.rows %}
       <div class="table-scroll">
         <table class="campaigns-table">
@@ -57,6 +100,7 @@
               <th class="sortable" data-sort-key="invested" data-sort-type="number">Invested</th>
               <th class="sortable" data-sort-key="market_value" data-sort-type="number">Market Value</th>
               <th class="sortable" data-sort-key="pnl" data-sort-type="number">PnL</th>
+              <th class="sortable" data-sort-key="forecast_move" data-sort-type="number">Forecast</th>
               <th class="sortable" data-sort-key="tp_price" data-sort-type="number">TP (Binance)</th>
               <th>Set TP</th>
               <th class="sortable" data-sort-key="status" data-sort-type="text">Status</th>
@@ -75,6 +119,17 @@
               <td data-sort="market_value" data-value="{{ r.market_value }}">{{ "%.2f"|format(r.market_value) }}</td>
               <td data-sort="pnl" data-value="{{ r.pnl }}" class="{{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">
                 {{ "%+.2f"|format(r.pnl) }} ({{ "%+.2f"|format(r.pnl_pct) }}%)
+              </td>
+              <td data-sort="forecast_move" data-value="{{ r.forecast.expected_move_pct if r.forecast else -9999 }}">
+                {% if r.forecast %}
+                  <div class="forecast-badge {{ 'bull' if r.forecast.expected_move_pct > 0 else ('bear' if r.forecast.expected_move_pct < 0 else 'neutral') }}"
+                       title="{{ r.forecast.tooltip }}">
+                    <div>{{ r.forecast.arrow }} {{ "%+.1f"|format(r.forecast.expected_move_pct) }}%</div>
+                    <small>{{ "%.0f"|format(r.forecast.confidence_pct) }}% conf</small>
+                  </div>
+                {% else %}
+                  -
+                {% endif %}
               </td>
               <td data-sort="tp_price" data-value="{{ r.tp_price if r.tp_price else -1 }}">
                 {% if r.tp_price %}

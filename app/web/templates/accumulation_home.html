@@ -40,10 +40,13 @@
             <th>Name</th>
             <th>Symbol</th>
             <th>Status</th>
+            <th>Initial Qty</th>
             <th>Coin Qty</th>
+            <th>Qty Change</th>
             <th>Avg Entry</th>
             <th>Reserved Cash</th>
             <th>Used Capital</th>
+            <th>Total Capital Now</th>
             <th>Realized</th>
             <th>Unrealized</th>
             <th>Details</th>
@@ -55,10 +58,17 @@
             <td>{{ r.plan.name }}</td>
             <td>{{ r.plan.symbol }}</td>
             <td>{{ r.plan.status }}</td>
-            <td>{{ "%.8f"|format(r.plan.coin_qty or 0) }}</td>
+            <td>{{ "%.8f"|format(r.initial_qty or 0) }}</td>
+            <td>{{ "%.8f"|format(r.current_qty or 0) }}</td>
+            <td class="{{ 'pnl-pos' if (r.qty_change or 0) >= 0 else 'pnl-neg' }}">
+              {{ "%+.8f"|format(r.qty_change or 0) }}
+            </td>
             <td>{{ "%.6f"|format(r.plan.avg_entry_price or 0) }}</td>
             <td>{{ "%.2f"|format(r.plan.reserved_cash_usdt or 0) }}</td>
             <td>{{ "%.2f"|format(r.plan.used_capital_usdt or 0) }}</td>
+            <td class="{{ 'pnl-pos' if (r.equity_change or 0) >= 0 else 'pnl-neg' }}">
+              {{ "%.2f"|format(r.equity_now or 0) }}
+            </td>
             <td class="{{ 'pnl-pos' if (r.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.plan.realized_pnl_usdt or 0) }}</td>
             <td class="{{ 'pnl-pos' if (r.unrealized_pnl or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.unrealized_pnl or 0) }}</td>
             <td><a href="{{ ('/live/accumulation/' if mode == 'live' else '/paper/accumulation/') ~ r.plan.id }}">Open</a></td>

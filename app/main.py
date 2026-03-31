@@ -63,6 +63,7 @@ from app.services.accumulation import (
     run_accumulation_cycle,
     toggle_plan_status as accumulation_toggle_plan_status,
 )
+from app.services.forecasting import get_forecasts_for_symbols, get_or_build_forecast
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -273,20 +274,55 @@ def _acc_plan_view_row(plan: AccumulationPlan) -> dict:
     last_price = float(plan.last_price or 0.0)
     qty = float(plan.coin_qty or 0.0)
     avg = float(plan.avg_entry_price or 0.0)
+    initial_qty = float(plan.initial_coin_qty or 0.0)
+    initial_entry_usdt = float(plan.initial_entry_usdt or 0.0)
+    start_capital = float(plan.total_capital_usdt or 0.0)
     market_value = last_price * qty if last_price > 0 and qty > 0 else 0.0
     unrealized = (last_price - avg) * qty if last_price > 0 and qty > 0 and avg > 0 else 0.0
     unrealized_pct = ((unrealized / (avg * qty)) * 100.0) if (avg > 0 and qty > 0) else 0.0
     next_dca_trigger = (avg * (1.0 - (float(plan.dca_drop_pct or 0.0) / 100.0))) if avg > 0 else 0.0
     next_sell_trigger = (avg * (1.0 + (float(plan.partial_tp_pct or 0.0) / 100.0))) if avg > 0 else 0.0
+    qty_change = qty - initial_qty
+    qty_change_pct = ((qty_change / initial_qty) * 100.0) if initial_qty > 0 else 0.0
+    equity_now = float(plan.reserved_cash_usdt or 0.0) + market_value
+    equity_change = equity_now - start_capital
+    equity_change_pct = ((equity_change / start_capital) * 100.0) if start_capital > 0 else 0.0
     return {
         "plan": plan,
         "market_value": market_value,
         "unrealized_pnl": unrealized,
         "unrealized_pnl_pct": unrealized_pct,
-        "coin_gain": float(plan.coin_qty or 0.0) - float(plan.initial_coin_qty or 0.0),
+        "coin_gain": qty_change,
+        "initial_qty": initial_qty,
+        "current_qty": qty,
+        "qty_change": qty_change,
+        "qty_change_pct": qty_change_pct,
+        "initial_entry_usdt": initial_entry_usdt,
+        "equity_now": equity_now,
+        "equity_change": equity_change,
+        "equity_change_pct": equity_change_pct,
         "next_dca_trigger": next_dca_trigger,
         "next_sell_trigger": next_sell_trigger,
     }
+
+
+def _acc_attach_efficiency(row: dict, trades: list[AccumulationTrade]) -> dict:
+    turnover_usdt = 0.0
+    for t in trades:
+        side = str(t.side or "").upper()
+        if side in {"BUY", "SELL"}:
+            turnover_usdt += max(0.0, float(t.quote_usdt or 0.0))
+
+    qty_change = float(row.get("qty_change") or 0.0)
+    efficiency_qty_per_100 = ((qty_change / turnover_usdt) * 100.0) if turnover_usdt > 1e-12 else 0.0
+    buy_count = int(row["plan"].buy_count or 0)
+    sell_count = int(row["plan"].sell_count or 0)
+    cycle_count = min(buy_count, sell_count)
+
+    row["acc_turnover_usdt"] = turnover_usdt
+    row["acc_efficiency_qty_per_100"] = efficiency_qty_per_100
+    row["acc_cycle_count"] = cycle_count
+    return row
 
 
 def _acc_history_context(db, mode: str, date_filter: str, symbol_filter: str, reason_filter: str) -> dict:
@@ -714,7 +750,7 @@ async def paper_accumulation_create(
         db.close()
 
 
-@app.get("/paper/accumulation/{plan_id}", response_class=HTMLResponse)
+@app.get("/paper/accumulation/{plan_id:int}", response_class=HTMLResponse)
 async def paper_accumulation_details(request: Request, plan_id: int) -> HTMLResponse:
     db = SessionLocal()
     try:
@@ -729,6 +765,7 @@ async def paper_accumulation_details(request: Request, plan_id: int) -> HTMLResp
             .limit(200)
             .all()
         )
+        row = _acc_attach_efficiency(row, trades)
         return templates.TemplateResponse(
             "accumulation_plan.html",
             _context("paper_accumulation_plan", request=request, mode="paper", row=row, trades=trades),
@@ -737,7 +774,7 @@ async def paper_accumulation_details(request: Request, plan_id: int) -> HTMLResp
         db.close()
 
 
-@app.post("/paper/accumulation/{plan_id}/toggle")
+@app.post("/paper/accumulation/{plan_id:int}/toggle")
 async def paper_accumulation_toggle(plan_id: int) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -751,7 +788,7 @@ async def paper_accumulation_toggle(plan_id: int) -> RedirectResponse:
         db.close()
 
 
-@app.post("/paper/accumulation/{plan_id}/manual-sell")
+@app.post("/paper/accumulation/{plan_id:int}/manual-sell")
 async def paper_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20")) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -905,7 +942,7 @@ async def live_accumulation_create(
         db.close()
 
 
-@app.get("/live/accumulation/{plan_id}", response_class=HTMLResponse)
+@app.get("/live/accumulation/{plan_id:int}", response_class=HTMLResponse)
 async def live_accumulation_details(request: Request, plan_id: int) -> HTMLResponse:
     db = SessionLocal()
     try:
@@ -920,6 +957,7 @@ async def live_accumulation_details(request: Request, plan_id: int) -> HTMLRespo
             .limit(200)
             .all()
         )
+        row = _acc_attach_efficiency(row, trades)
         return templates.TemplateResponse(
             "accumulation_plan.html",
             _context("live_accumulation_plan", request=request, mode="live", row=row, trades=trades),
@@ -928,7 +966,7 @@ async def live_accumulation_details(request: Request, plan_id: int) -> HTMLRespo
         db.close()
 
 
-@app.post("/live/accumulation/{plan_id}/toggle")
+@app.post("/live/accumulation/{plan_id:int}/toggle")
 async def live_accumulation_toggle(plan_id: int) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -942,7 +980,7 @@ async def live_accumulation_toggle(plan_id: int) -> RedirectResponse:
         db.close()
 
 
-@app.post("/live/accumulation/{plan_id}/manual-sell")
+@app.post("/live/accumulation/{plan_id:int}/manual-sell")
 async def live_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20")) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -999,13 +1037,25 @@ async def live_trading_history(request: Request) -> HTMLResponse:
 
 
 @app.get("/live/all-coins", response_class=HTMLResponse)
-async def live_all_coins_page(request: Request) -> HTMLResponse:
+async def live_all_coins_page(
+    request: Request,
+    symbol: str = "",
+    refresh_forecast: int = 0,
+) -> HTMLResponse:
     db = SessionLocal()
     try:
         error = None
+        symbol_query = str(symbol or "").upper().strip()
+        forecast_card = None
         data = {"rows": [], "summary": {"coins_count": 0, "invested_total": 0.0, "market_total": 0.0, "pnl_total": 0.0, "pnl_pct": 0.0}}
         try:
             data = list_spot_coin_positions(cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)))
+            symbols = [str(r.get("symbol", "")).upper() for r in data.get("rows", [])]
+            f_map = get_forecasts_for_symbols(
+                db,
+                symbols,
+                build_limit=max(1, int(settings.forecast_build_per_request)),
+            )
             tp_map: dict[str, dict] = {}
             try:
                 open_orders = get_open_orders()
@@ -1035,10 +1085,25 @@ async def live_all_coins_page(request: Request) -> HTMLResponse:
                 tp_map = {}
 
             for r in data.get("rows", []):
-                tp = tp_map.get(str(r.get("symbol", "")).upper())
+                sym = str(r.get("symbol", "")).upper()
+                tp = tp_map.get(sym)
                 r["tp_price"] = float(tp.get("price", 0.0)) if tp else None
                 r["tp_qty"] = float(tp.get("qty", 0.0)) if tp else None
                 r["tp_count"] = int(tp.get("count", 0)) if tp else 0
+                r["forecast"] = f_map.get(sym)
+
+            if symbol_query:
+                qsym = symbol_query if symbol_query.endswith("USDT") else f"{symbol_query}USDT"
+                try:
+                    forecast_card = get_or_build_forecast(
+                        db,
+                        qsym,
+                        force_refresh=bool(int(refresh_forecast)),
+                        interval=settings.forecast_interval,
+                        horizon_days=settings.forecast_horizon_days,
+                    )
+                except Exception as e:
+                    forecast_card = {"symbol": qsym, "error": str(e)}
         except Exception as e:
             error = str(e)
         logs = (
@@ -1061,6 +1126,8 @@ async def live_all_coins_page(request: Request) -> HTMLResponse:
                 data=data,
                 logs=logs,
                 all_coins_error=error,
+                forecast_symbol=symbol_query,
+                forecast_card=forecast_card,
             ),
         )
     finally:
@@ -1121,6 +1188,47 @@ async def live_all_coins_set_tp(symbol: str, tp_price: str = Form(...)) -> Redir
         return RedirectResponse("/live/all-coins", status_code=303)
     except Exception as e:
         add_live_log(db, "LIVE_ALLCOIN_TP_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/all-coins/cancel-all-sell-orders")
+async def live_all_coins_cancel_all_sell_orders() -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        canceled = 0
+        failed = 0
+        try:
+            orders = get_open_orders()
+        except Exception as e:
+            add_live_log(db, "LIVE_ALLCOIN_CANCEL_SELLS_FAIL", "-", f"error={e}")
+            db.commit()
+            return RedirectResponse("/live/all-coins", status_code=303)
+
+        for o in orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+                continue
+            sym = str(o.get("symbol", "")).upper()
+            oid = int(o.get("orderId", 0) or 0)
+            if oid <= 0 or not sym:
+                continue
+            try:
+                cancel_order(sym, oid)
+                canceled += 1
+            except Exception:
+                failed += 1
+
+        add_live_log(
+            db,
+            "LIVE_ALLCOIN_CANCEL_SELLS",
+            "-",
+            f"Canceled SELL LIMIT orders={canceled} | failed={failed}",
+        )
         db.commit()
         return RedirectResponse("/live/all-coins", status_code=303)
     finally:
