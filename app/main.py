@@ -1479,7 +1479,7 @@ async def live_all_coins_page(
             f_map = get_forecasts_for_symbols(
                 db,
                 symbols,
-                build_limit=max(max(1, int(settings.forecast_build_per_request)), len(symbols)),
+                build_limit=max(1, int(settings.forecast_build_per_request)),
             )
             tp_map: dict[str, dict] = {}
             try:

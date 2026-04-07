@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -237,11 +238,42 @@ def get_forecasts_for_symbols(db: Session, symbols: list[str], build_limit: int 
             continue
         pending.append(s)
 
-    for s in pending[: max(0, int(build_limit))]:
+    batch = pending[: max(0, int(build_limit))]
+    iv = str(getattr(settings, "forecast_interval", None) or "4h")
+    hd = int(getattr(settings, "forecast_horizon_days", None) or 7)
+    ttl_seconds = max(300, int(getattr(settings, "slow_recalc_seconds", 14400)))
+    now = datetime.utcnow()
+    expires_at = now + timedelta(seconds=ttl_seconds)
+
+    # Parallelize only the Binance API calls (_compute_forecast); DB writes stay sequential.
+    computed: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(len(batch), 6)) as ex:
+        fut_to_sym = {ex.submit(_compute_forecast, s, iv, hd, 300): s for s in batch}
+        for fut in as_completed(fut_to_sym):
+            s = fut_to_sym[fut]
+            try:
+                computed[s] = fut.result()
+            except Exception:
+                continue
+
+    for s, fc in computed.items():
         try:
-            fc = get_or_build_forecast(db, s, force_refresh=False)
-            if fc:
-                out[s] = fc
+            row = db.query(AIForecastCache).filter(AIForecastCache.symbol == s).first()
+            if not row:
+                row = AIForecastCache(symbol=s)
+                db.add(row)
+            row.interval = iv
+            row.horizon_days = hd
+            row.expected_move_pct = float(fc["expected_move_pct"])
+            row.confidence_pct = float(fc["confidence_pct"])
+            row.bias = str(fc["bias"])
+            row.volatility_level = str(fc["volatility_level"])
+            row.as_of_price = float(fc["price"])
+            row.details_json = json.dumps({"tooltip": fc["tooltip"], **(fc.get("details") or {})})
+            row.expires_at = expires_at
+            db.flush()
+            fc["cached"] = False
+            out[s] = fc
         except Exception:
             continue
     return out

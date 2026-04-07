@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -550,14 +551,34 @@ def list_spot_coin_positions(
         )
 
     prices = get_prices(symbols) if symbols else {}
-    rows: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc)
+
+    # Filter to rows with sufficient market value before making trade history API calls.
+    candidate_rows = []
     for r in symbol_rows:
         price = float(prices.get(r["symbol"], 0.0))
         market_value = price * float(r["qty_total"])
         if (not include_zero) and market_value < min_usdt_value:
             continue
-        avg_entry, invested, trades_used = _cost_basis_from_trades(r["symbol"], float(r["qty_total"]))
+        candidate_rows.append((r, price, market_value))
+
+    # Fetch cost basis for all candidates in parallel (each makes one Binance API call).
+    cost_basis: dict[str, tuple[float, float, int]] = {}
+    with ThreadPoolExecutor(max_workers=min(len(candidate_rows), 10)) as ex:
+        fut_to_sym = {
+            ex.submit(_cost_basis_from_trades, r["symbol"], float(r["qty_total"])): r["symbol"]
+            for r, _, _ in candidate_rows
+        }
+        for fut in as_completed(fut_to_sym):
+            sym = fut_to_sym[fut]
+            try:
+                cost_basis[sym] = fut.result()
+            except Exception:
+                cost_basis[sym] = (0.0, 0.0, 0)
+
+    rows: list[dict[str, Any]] = []
+    for r, price, market_value in candidate_rows:
+        avg_entry, invested, trades_used = cost_basis.get(r["symbol"], (0.0, 0.0, 0))
         if avg_entry <= 0 and price > 0:
             avg_entry = price
             invested = market_value
