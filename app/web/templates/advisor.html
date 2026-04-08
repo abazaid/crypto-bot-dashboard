@@ -137,6 +137,12 @@
     .status-sold_manual { color: var(--yellow); }
     .status-stopped  { color: var(--muted); }
 
+    /* ── Dashboard KPI ── */
+    .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .kpi-card .kpi-val { font-size: 24px; font-weight: 700; margin-bottom: 2px; }
+    .kpi-card .kpi-lbl { font-size: 11px; color: var(--muted); }
+    .kpi-card .kpi-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
     @media (max-width: 700px) {
       .camp-create { grid-template-columns: 1fr; }
       .run-row { flex-direction: column; }
@@ -155,9 +161,61 @@
 
 <!-- ── Tabs ──────────────────────────────────────────────────────────────── -->
 <div class="tabs">
-  <div class="tab active" data-tab="analysis">📊 Analysis</div>
+  <div class="tab active" data-tab="dashboard">🏠 Dashboard</div>
+  <div class="tab" data-tab="analysis">📊 Analysis</div>
   <div class="tab" data-tab="create-campaign">＋ Create Campaign</div>
   <div class="tab" data-tab="campaigns">🤖 Campaigns <span id="camp-count-badge" style="display:none" class="badge badge-blue">0</span></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- TAB 0: DASHBOARD                                                       -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div class="tab-content active" id="tab-dashboard">
+<div class="container">
+
+  <!-- Capital setting -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+    <span style="font-size:13px;color:var(--muted)">Starting Capital:</span>
+    <input id="capital-input" type="number" value="1000" min="1" step="100"
+      style="background:#1a1d27;border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;width:120px;font-size:14px"/>
+    <span style="font-size:12px;color:var(--muted)">USDT</span>
+  </div>
+
+  <!-- KPI cards -->
+  <div class="metrics-row" id="dash-kpis"></div>
+
+  <!-- Charts row -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">
+    <div class="section">
+      <div class="section-hdr">📈 Win / Loss Ratio</div>
+      <div style="padding:20px;display:flex;align-items:center;gap:24px">
+        <canvas id="winloss-chart" width="140" height="140"></canvas>
+        <div id="winloss-legend" style="font-size:13px;display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-hdr">💰 PnL Breakdown</div>
+      <div style="padding:20px;display:flex;flex-direction:column;gap:10px" id="pnl-breakdown"></div>
+    </div>
+  </div>
+
+  <!-- Trade log -->
+  <div class="section">
+    <div class="section-hdr">📋 Trade Log <span id="log-count" class="badge badge-blue">0</span></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Campaign</th><th>Status</th>
+          <th>Entry</th><th>Avg Price</th><th>Current</th>
+          <th>Invested</th><th>PnL</th><th>DCA</th>
+          <th>Opened</th><th>Closed</th>
+        </tr></thead>
+        <tbody id="trade-log-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
@@ -278,6 +336,157 @@
 </div>
 
 <script>
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+let _dashData = null;
+
+function getCapital() {
+  return parseFloat(document.getElementById('capital-input').value) || 1000;
+}
+
+document.getElementById('capital-input').addEventListener('input', () => {
+  if (_dashData) renderDashboard(_dashData);
+});
+
+async function loadDashboard() {
+  const d = await fetch('/api/smart-campaign/dashboard').then(r=>r.json()).catch(()=>null);
+  if (!d) return;
+  _dashData = d;
+  renderDashboard(d);
+}
+
+function renderDashboard(d) {
+  const capital = getCapital();
+  const equity  = capital + d.total_pnl;
+  const roi      = (d.total_pnl / capital * 100);
+
+  // ── KPI cards ──────────────────────────────────────────────────────────
+  const kpis = [
+    { val: `$${capital.toFixed(2)}`,                  lbl: 'Starting Capital',   cls: '',                          sub: '' },
+    { val: `$${equity.toFixed(2)}`,                   lbl: 'Current Equity',     cls: equity>=capital?'up':'dn',   sub: `${roi>=0?'+':''}${roi.toFixed(2)}% ROI` },
+    { val: `${d.total_pnl>=0?'+':''}$${fmt(d.total_pnl,2)}`, lbl: 'Total PnL', cls: d.total_pnl>=0?'up':'dn',   sub: `Realized $${fmt(d.realized_pnl,2)} · Open $${fmt(d.open_pnl,2)}` },
+    { val: `$${fmt(d.total_invested,2)}`,             lbl: 'Currently Invested', cls: '',                          sub: `${d.active_positions} active positions` },
+    { val: `${d.total_trades}`,                       lbl: 'Closed Trades',      cls: '',                          sub: `${d.winning_trades}W / ${d.losing_trades}L` },
+    { val: `${fmt(d.win_rate,1)}%`,                   lbl: 'Win Rate',           cls: d.win_rate>=50?'up':'dn',    sub: `Avg win $${fmt(d.avg_win_usdt,2)} · Avg loss $${fmt(d.avg_loss_usdt,2)}` },
+    { val: `${d.running_campaigns}`,                  lbl: 'Active Campaigns',   cls: '',                          sub: `${d.total_campaigns} total` },
+  ];
+
+  document.getElementById('dash-kpis').innerHTML = kpis.map(k =>
+    `<div class="kpi-card">
+      <div class="kpi-val ${k.cls}">${k.val}</div>
+      <div class="kpi-lbl">${k.lbl}</div>
+      ${k.sub ? `<div class="kpi-sub">${k.sub}</div>` : ''}
+    </div>`
+  ).join('');
+
+  // ── Win/Loss donut ──────────────────────────────────────────────────────
+  const canvas = document.getElementById('winloss-chart');
+  const ctx    = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height, r = 55, cx = w/2, cy = h/2;
+  ctx.clearRect(0, 0, w, h);
+
+  const total = d.winning_trades + d.losing_trades;
+  if (total === 0) {
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.strokeStyle = '#2a2d3a'; ctx.lineWidth = 18; ctx.stroke();
+  } else {
+    const winAngle  = (d.winning_trades / total) * Math.PI * 2;
+    const lossAngle = Math.PI * 2 - winAngle;
+    // Win arc
+    ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI/2, -Math.PI/2 + winAngle);
+    ctx.strokeStyle = '#00c896'; ctx.lineWidth = 18; ctx.lineCap = 'butt'; ctx.stroke();
+    // Loss arc
+    if (lossAngle > 0.01) {
+      ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI/2 + winAngle, -Math.PI/2 + Math.PI*2);
+      ctx.strokeStyle = '#e05252'; ctx.lineWidth = 18; ctx.stroke();
+    }
+  }
+  // Center text
+  ctx.fillStyle = '#e0e0e0'; ctx.font = 'bold 20px Segoe UI';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(total > 0 ? `${fmt(d.win_rate,0)}%` : '—', cx, cy);
+
+  document.getElementById('winloss-legend').innerHTML = `
+    <div><span style="color:var(--green)">●</span> Win: <strong>${d.winning_trades}</strong></div>
+    <div><span style="color:var(--red)">●</span> Loss: <strong>${d.losing_trades}</strong></div>
+    <div style="margin-top:4px;color:var(--muted)">Avg win: <strong class="up">+$${fmt(d.avg_win_usdt,2)}</strong></div>
+    <div style="color:var(--muted)">Avg loss: <strong class="dn">$${fmt(d.avg_loss_usdt,2)}</strong></div>`;
+
+  // ── PnL breakdown ───────────────────────────────────────────────────────
+  const maxBar = Math.max(Math.abs(d.realized_pnl), Math.abs(d.open_pnl), 1);
+  function pnlBar(val, max) {
+    const pct = Math.min(Math.abs(val)/max*100, 100).toFixed(0);
+    const col = val >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden;flex:1">
+      <div style="background:${col};width:${pct}%;height:8px;border-radius:4px"></div></div>`;
+  }
+  document.getElementById('pnl-breakdown').innerHTML = `
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+        <span style="color:var(--muted)">Realized PnL</span>
+        <span class="${d.realized_pnl>=0?'up':'dn'}">${d.realized_pnl>=0?'+':''}$${fmt(d.realized_pnl,2)}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">${pnlBar(d.realized_pnl,maxBar)}</div>
+    </div>
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+        <span style="color:var(--muted)">Open PnL</span>
+        <span class="${d.open_pnl>=0?'up':'dn'}">${d.open_pnl>=0?'+':''}$${fmt(d.open_pnl,2)}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">${pnlBar(d.open_pnl,maxBar)}</div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
+      <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:700">
+        <span>Total PnL</span>
+        <span class="${d.total_pnl>=0?'up':'dn'}">${d.total_pnl>=0?'+':''}$${fmt(d.total_pnl,2)}</span>
+      </div>
+      <div style="text-align:right;font-size:12px;color:var(--muted);margin-top:2px">
+        ${roi>=0?'+':''}${roi.toFixed(2)}% on $${capital.toFixed(0)} capital
+      </div>
+    </div>`;
+
+  // ── Trade log ───────────────────────────────────────────────────────────
+  document.getElementById('log-count').textContent = d.trade_log.length;
+  const reasonIcon = { tp: '✓ TP', sl: '✗ SL', manual: '⊘ Manual', null: '' };
+  const statusStyle = {
+    active:      'color:var(--green)',
+    sold_tp:     'color:var(--green)',
+    sold_sl:     'color:var(--red)',
+    sold_manual: 'color:var(--yellow)',
+  };
+
+  document.getElementById('trade-log-body').innerHTML = d.trade_log.map(t => {
+    const pnl_cls = (t.pnl_usdt||0) >= 0 ? 'up' : 'dn';
+    const pnl_str = t.status === 'active'
+      ? `<span class="${pnl_cls}">${(t.pnl_pct||0)>=0?'+':''}${fmt(t.pnl_pct,2)}%<br><small>${(t.pnl_usdt||0)>=0?'+':''}$${fmt(t.pnl_usdt,2)}</small></span>`
+      : `<span class="${pnl_cls}">${(t.pnl_usdt||0)>=0?'+':''}$${fmt(t.pnl_usdt,2)}</span>`;
+    const dca = [t.dca1?'<span class="dca-badge">DCA1</span>':'', t.dca2?'<span class="dca-badge">DCA2</span>':''].join('');
+    const status_html = t.status === 'active'
+      ? '<span style="color:var(--green)">● Active</span>'
+      : `<span style="${statusStyle[t.status]||''}">${reasonIcon[t.close_reason]||t.status}</span>`;
+
+    return `<tr>
+      <td class="sym">${t.symbol}</td>
+      <td style="color:var(--muted)">#${t.campaign_id}</td>
+      <td>${status_html}</td>
+      <td>$${t.entry_price ? t.entry_price.toPrecision(5) : '—'}</td>
+      <td>$${t.avg_price   ? t.avg_price.toPrecision(5)   : '—'}</td>
+      <td>${t.current_price ? '$'+t.current_price.toPrecision(5) : '—'}</td>
+      <td>$${fmt(t.invested,2)}</td>
+      <td>${pnl_str}</td>
+      <td>${dca||'—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${t.opened_at}</td>
+      <td style="font-size:11px;color:var(--muted)">${t.closed_at||'—'}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--muted)">No trades yet</td></tr>`;
+}
+
+// Auto-refresh dashboard every 30s if tab active
+setInterval(() => {
+  if (document.querySelector('[data-tab="dashboard"]').classList.contains('active')) {
+    loadDashboard();
+  }
+}, 30000);
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {

@@ -3471,6 +3471,70 @@ async def api_smart_sell(position_id: int) -> JSONResponse:
         db.close()
 
 
+@app.get("/api/smart-campaign/dashboard")
+async def api_smart_dashboard() -> JSONResponse:
+    """Aggregate stats across all smart campaigns for the dashboard."""
+    db = SessionLocal()
+    try:
+        from app.models.smart_campaign import SmartPosition as SP, SmartCampaign as SC
+        campaigns = db.query(SC).all()
+        positions = db.query(SP).all()
+
+        closed   = [p for p in positions if p.status != "active"]
+        active   = [p for p in positions if p.status == "active"]
+        won      = [p for p in closed if (p.close_pnl_usdt or 0) > 0]
+        lost     = [p for p in closed if (p.close_pnl_usdt or 0) <= 0]
+
+        total_invested  = sum(p.total_invested_usdt or 0 for p in active)
+        realized_pnl    = sum(p.close_pnl_usdt or 0 for p in closed)
+        open_pnl        = sum(p.pnl_usdt or 0 for p in active)
+        total_pnl       = realized_pnl + open_pnl
+
+        win_rate = (len(won) / len(closed) * 100) if closed else 0
+        avg_win  = (sum(p.close_pnl_usdt for p in won)  / len(won))  if won  else 0
+        avg_loss = (sum(p.close_pnl_usdt for p in lost) / len(lost)) if lost else 0
+
+        # Trade log — all positions sorted by latest first
+        log = []
+        for p in sorted(positions, key=lambda x: x.created_at or 0, reverse=True)[:50]:
+            log.append({
+                "id":            p.id,
+                "symbol":        p.symbol,
+                "status":        p.status,
+                "entry_price":   p.entry_price,
+                "avg_price":     p.avg_price,
+                "current_price": p.current_price,
+                "invested":      p.total_invested_usdt,
+                "pnl_pct":       p.pnl_pct,
+                "pnl_usdt":      p.pnl_usdt if p.status == "active" else p.close_pnl_usdt,
+                "close_reason":  p.close_reason,
+                "dca1":          p.dca1_triggered,
+                "dca2":          p.dca2_triggered,
+                "opened_at":     p.created_at.strftime("%Y-%m-%d %H:%M") if p.created_at else "",
+                "closed_at":     p.closed_at.strftime("%Y-%m-%d %H:%M") if p.closed_at else None,
+                "campaign_id":   p.campaign_id,
+            })
+
+        return JSONResponse({
+            "total_campaigns":  len(campaigns),
+            "running_campaigns": sum(1 for c in campaigns if c.status == "running"),
+            "active_positions": len(active),
+            "total_invested":   round(total_invested,  2),
+            "realized_pnl":     round(realized_pnl,    2),
+            "open_pnl":         round(open_pnl,        2),
+            "total_pnl":        round(total_pnl,       2),
+            "total_trades":     len(closed),
+            "winning_trades":   len(won),
+            "losing_trades":    len(lost),
+            "win_rate":         round(win_rate, 1),
+            "avg_win_usdt":     round(avg_win,  2),
+            "avg_loss_usdt":    round(avg_loss, 2),
+            "trade_log":        log,
+        })
+    finally:
+        db.close()
+
+
 @app.post("/advisor/refresh")
 async def advisor_refresh():
     """Trigger a quick ML-only refresh (no Hyperopt, ~1-2 min)."""
