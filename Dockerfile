@@ -18,9 +18,13 @@ COPY advisor /app/advisor
 RUN mkdir -p /data/advisor/data/cache \
              /data/advisor/ml_filter/models \
              /data/advisor/hyperopt/results \
-             /data/advisor/report/output
+             /data/advisor/report/output \
+             /data/db
 
 VOLUME ["/data"]
+
+# Store SQLite DB in /data/db so it survives redeployments
+ENV DATABASE_URL=sqlite:////data/db/paper_trading_v2.db
 
 EXPOSE 8000
 
