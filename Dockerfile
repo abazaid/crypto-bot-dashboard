@@ -14,6 +14,14 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app /app/app
 COPY advisor /app/advisor
 
+# Persistent data directory — mount this as a volume in Coolify
+RUN mkdir -p /data/advisor/data/cache \
+             /data/advisor/ml_filter/models \
+             /data/advisor/hyperopt/results \
+             /data/advisor/report/output
+
+VOLUME ["/data"]
+
 EXPOSE 8000
 
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
