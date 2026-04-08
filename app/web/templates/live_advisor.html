@@ -125,6 +125,41 @@
     .empty { text-align: center; padding: 48px; color: var(--muted); }
     .empty .icon { font-size: 40px; margin-bottom: 12px; }
     @media (max-width: 700px) { .camp-create { grid-template-columns: 1fr; } }
+
+    /* ── Analysis styles ── */
+    .run-panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px 24px; margin-bottom: 24px; }
+    .run-panel h2 { font-size: 15px; margin-bottom: 14px; color: var(--blue); }
+    .run-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+    .run-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    .run-row input { background: #0f1117; border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; width: 110px; font-size: 14px; }
+    .btn-run     { background: var(--green); color: #000; }
+    .btn-refresh { background: var(--blue);  color: #fff; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .refresh-status { font-size: 12px; margin-top: 6px; color: var(--muted); }
+    .refresh-status.running { color: var(--blue); }
+    .refresh-status.error   { color: var(--red); }
+    #progress-wrap { margin-top: 16px; display: none; }
+    .prog-bar-bg { background: var(--border); border-radius: 99px; height: 8px; overflow: hidden; }
+    .prog-bar    { background: var(--green); height: 8px; border-radius: 99px; transition: width .4s; width: 0%; }
+    .prog-text   { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    #error-box   { background: #2a1212; border: 1px solid var(--red); border-radius: 8px; padding: 12px; color: var(--red); margin-top: 12px; font-size: 13px; display: none; }
+    .metric-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+    .metric-card .val { font-size: 22px; font-weight: 700; color: var(--green); }
+    .metric-card .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .prob-wrap { display: flex; align-items: center; gap: 8px; }
+    .prob-mini { height: 6px; border-radius: 99px; background: var(--green); min-width: 4px; }
+    .fi-row { display: flex; align-items: center; gap: 10px; padding: 7px 20px; border-bottom: 1px solid #1a1d27; }
+    .fi-name { width: 140px; font-size: 12px; color: var(--muted); }
+    .fi-bar-bg { flex: 1; background: var(--border); border-radius: 99px; height: 6px; overflow: hidden; }
+    .fi-bar { background: var(--purple); height: 6px; border-radius: 99px; }
+    .fi-val { width: 50px; text-align: right; font-size: 12px; }
+    .rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; padding: 16px; }
+    .rec-card { background: #12151f; border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .rec-card .sym { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+    .rec-card .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); padding: 3px 0; border-bottom: 1px solid #1e2130; }
+    .rec-card .row:last-child { border: none; }
+    .rec-card .row span:last-child { color: var(--text); font-weight: 600; }
+    .badge-yellow { background: #332d0d; color: var(--yellow); }
   </style>
 </head>
 <body>
@@ -153,6 +188,7 @@
 <!-- Tabs -->
 <div class="tabs">
   <div class="tab active" data-tab="dashboard">🏠 Dashboard</div>
+  <div class="tab" data-tab="analysis">📊 Analysis</div>
   <div class="tab" data-tab="create-campaign">＋ Create Campaign</div>
   <div class="tab" data-tab="campaigns">⚡ Campaigns <span id="camp-count-badge" style="display:none" class="badge badge-live">0</span></div>
   <div class="tab" data-tab="activity">📋 Activity Log</div>
@@ -195,6 +231,45 @@
     </div>
   </div>
 
+</div>
+</div>
+
+<!-- ═══ TAB: ANALYSIS ═══ -->
+<div class="tab-content" id="tab-analysis">
+<div class="container">
+  <div class="run-panel">
+    <h2>⚙ Run Analysis</h2>
+    <form id="run-form">
+      <div class="run-row">
+        <label>Symbols (top N by volume)
+          <input type="number" name="symbols" value="50" min="10" max="150"/>
+        </label>
+        <label>Hyperopt trials per symbol
+          <input type="number" name="trials" value="300" min="30" max="500"/>
+        </label>
+        <button type="submit" class="btn btn-run" id="btn-run">▶ Run</button>
+        <button type="button" class="btn btn-refresh" id="btn-refresh">⚡ Quick Refresh</button>
+      </div>
+    </form>
+    <p class="hint">
+      50 symbols × 300 trials ≈ 45–60 min · Results auto-refresh every 5s while running<br>
+      ⚡ <strong>Quick Refresh</strong>: updates ML signals only (~1-2 min) · Auto-runs every hour
+    </p>
+    <div class="refresh-status" id="refresh-status"></div>
+    <div id="progress-wrap">
+      <div class="prog-bar-bg"><div class="prog-bar" id="prog-bar"></div></div>
+      <div class="prog-text" id="prog-text">Starting...</div>
+    </div>
+    <div id="error-box"></div>
+  </div>
+  <div id="results-area">
+    <div class="section">
+      <div class="empty">
+        <div class="icon">🤖</div>
+        <div>Loading results...</div>
+      </div>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -719,11 +794,181 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'dashboard')        loadDashboard();
+    if (tab.dataset.tab === 'analysis')         loadAnalysis();
     if (tab.dataset.tab === 'campaigns')        loadCampaigns();
     if (tab.dataset.tab === 'activity')         loadActivityLog();
     if (tab.dataset.tab === 'create-campaign')  { updateCapital(); checkDataFreshness(); }
   });
 });
+
+// ── Analysis helpers ──────────────────────────────────────────────────────────
+function pct_class(v)  { return v > 0 ? 'up' : (v < 0 ? 'dn' : ''); }
+function signal_badge(sig) {
+  const cls  = { BUY: 'badge-green', WATCH: 'badge-yellow', SKIP: 'badge-red' }[sig] || '';
+  const icon = { BUY: '🟢', WATCH: '🟡', SKIP: '🔴' }[sig] || '';
+  return `<span class="badge ${cls}">${icon} ${sig}</span>`;
+}
+
+function render(data) {
+  if (!data) return;
+  const ml    = data.top_ml        || [];
+  const ho    = data.top_hyperopt  || [];
+  const recs  = data.recommendations || [];
+  const model = data.ml_model      || {};
+  const fi    = model.feature_importance || {};
+  let html = '';
+
+  html += `<div class="metrics-row" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:24px">
+    <div class="metric-card"><div class="val">${fmt(model.auc,3)}</div><div class="lbl">AUC Score</div></div>
+    <div class="metric-card"><div class="val">${fmt(model.accuracy,3)}</div><div class="lbl">Accuracy</div></div>
+    <div class="metric-card"><div class="val">${fmt(model.f1,3)}</div><div class="lbl">F1 Score</div></div>
+    <div class="metric-card"><div class="val">${(model.train_rows||0).toLocaleString()}</div><div class="lbl">Train Rows</div></div>
+    <div class="metric-card"><div class="val">${fmt(model.pos_rate,1)}%</div><div class="lbl">Buy Opps</div></div>
+  </div>`;
+
+  if (Object.keys(fi).length) {
+    const max_fi = Math.max(...Object.values(fi));
+    html += `<div class="section"><div class="section-hdr">📊 Top Predictive Features</div>` +
+      Object.entries(fi).slice(0,10).map(([n,v]) =>
+        `<div class="fi-row"><div class="fi-name">${n}</div>
+         <div class="fi-bar-bg"><div class="fi-bar" style="width:${(v/max_fi*100).toFixed(0)}%"></div></div>
+         <div class="fi-val">${v.toFixed(0)}</div></div>`).join('') + `</div>`;
+  }
+
+  const buy_n = ml.filter(r=>r.signal==='BUY').length;
+  const watch_n = ml.filter(r=>r.signal==='WATCH').length;
+  html += `<div class="section"><div class="section-hdr">🤖 ML Signal Ranking
+    <span class="badge badge-green">🟢 ${buy_n} BUY</span>
+    <span class="badge badge-yellow">🟡 ${watch_n} WATCH</span></div>
+    <table><thead><tr><th>Symbol</th><th>Signal</th><th>Probability</th>
+    <th>RSI</th><th>Trend</th><th>24h%</th><th>Vol Ratio</th><th>Dist EMA200</th>
+    </tr></thead><tbody>` +
+    ml.map(r => {
+      const pw = (r.probability*100).toFixed(0);
+      return `<tr>
+        <td class="sym">${r.symbol}</td><td>${signal_badge(r.signal)}</td>
+        <td><div class="prob-wrap"><div class="prob-mini" style="width:${pw}px;max-width:80px"></div>
+        <span>${(r.probability*100).toFixed(1)}%</span></div></td>
+        <td>${fmt(r.rsi,1)}</td><td>${r.trend}</td>
+        <td class="${pct_class(r.pct_24h)}">${r.pct_24h>0?'+':''}${fmt(r.pct_24h,1)}%</td>
+        <td>${fmt(r.vol_ratio,2)}x</td><td>${fmt(r.dist_ema200,1)}%</td></tr>`;
+    }).join('') + `</tbody></table></div>`;
+
+  html += `<div class="section"><div class="section-hdr">⚡ Hyperopt Best Parameters</div>
+    <table><thead><tr><th>Symbol</th><th>Score</th><th>Entry</th>
+    <th>DCA Drops</th><th>TP / SL</th><th>Trades</th><th>Win Rate</th><th>Avg Profit</th>
+    </tr></thead><tbody>` +
+    ho.map(r => {
+      const p = r.best_params||{}; const m = r.metrics||{};
+      return `<tr><td class="sym">${r.symbol}</td><td>${fmt(r.score,3)}</td>
+        <td>RSI&lt;${fmt(p.entry_rsi,0)}</td>
+        <td>-${fmt(p.dca_drop_1,1)}% / -${fmt(p.dca_drop_2,1)}%</td>
+        <td><span class="up">+${fmt(p.tp_pct,1)}%</span> / <span class="dn">-${fmt(p.sl_pct,1)}%</span></td>
+        <td>${m.total_trades||0}</td><td>${fmt(m.win_rate,1)}%</td>
+        <td class="${pct_class(m.avg_profit_pct)}">${m.avg_profit_pct>0?'+':''}${fmt(m.avg_profit_pct,2)}%</td></tr>`;
+    }).join('') + `</tbody></table></div>`;
+
+  const rec_html = recs.length === 0
+    ? '<div class="empty"><div class="icon">💤</div>No symbols passed both filters.</div>'
+    : recs.map(r => {
+        const p = r.params||{};
+        return `<div class="rec-card">
+          <div class="sym">🎯 ${r.symbol}</div>
+          <div class="row"><span>ML Probability</span><span class="green">${(r.ml_prob*100).toFixed(1)}%</span></div>
+          <div class="row"><span>Win Rate</span><span>${fmt(r.win_rate,1)}%</span></div>
+          <div class="row"><span>Avg Profit</span><span class="${pct_class(r.avg_profit)}">${r.avg_profit>0?'+':''}${fmt(r.avg_profit,2)}%</span></div>
+          <div class="row"><span>DCA Drop 1</span><span>-${fmt(p.dca_drop_1,1)}% × ${fmt(p.dca_alloc_1,0)}%</span></div>
+          <div class="row"><span>DCA Drop 2</span><span>-${fmt(p.dca_drop_2,1)}% × ${fmt(p.dca_alloc_2,0)}%</span></div>
+          <div class="row"><span>Take Profit</span><span class="up">+${fmt(p.tp_pct,1)}%</span></div>
+          <div class="row"><span>Stop Loss</span><span class="dn">-${fmt(p.sl_pct,1)}%</span></div>
+        </div>`;
+      }).join('');
+
+  html += `<div class="section"><div class="section-hdr">🎯 Combined Recommendations
+    <span class="badge badge-blue">${recs.length} symbols</span></div>
+    <div class="rec-grid">${rec_html}</div></div>`;
+
+  document.getElementById('results-area').innerHTML = html;
+}
+
+let _poll = null;
+function startPolling() {
+  if (_poll) return;
+  _poll = setInterval(async () => {
+    const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
+    if (!s) return;
+    updateProgress(s); updateRefreshStatus(s);
+    if (s.status === 'done' && s.result) render(s.result);
+    if (s.status !== 'running' && s.refresh_status !== 'running') stopPolling();
+  }, 5000);
+}
+function stopPolling() { clearInterval(_poll); _poll = null; }
+
+function updateProgress(s) {
+  const wrap = document.getElementById('progress-wrap');
+  const bar  = document.getElementById('prog-bar');
+  const txt  = document.getElementById('prog-text');
+  const err  = document.getElementById('error-box');
+  const btn  = document.getElementById('btn-run');
+  if (!wrap) return;
+  if (s.status === 'running') {
+    wrap.style.display = 'block'; bar.style.background = 'var(--green)';
+    bar.style.width = (s.progress||0)+'%'; txt.textContent = s.step||'Running...';
+    btn.textContent = '⏳ Running...'; btn.disabled = true; err.style.display = 'none';
+  } else if (s.status === 'error') {
+    wrap.style.display = 'block'; bar.style.width = '0%'; bar.style.background = 'var(--red)';
+    txt.textContent = 'Failed'; err.textContent = '✗ '+(s.error||'Unknown'); err.style.display = 'block';
+    btn.textContent = '▶ Run'; btn.disabled = false;
+  } else if (s.status === 'done') {
+    wrap.style.display = 'block'; bar.style.width = '100%';
+    txt.textContent = '✓ Complete — '+(s.finished_at||'');
+    btn.textContent = '▶ Run Again'; btn.disabled = false;
+  } else {
+    if(btn) { btn.textContent = '▶ Run'; btn.disabled = false; }
+  }
+}
+
+function updateRefreshStatus(s) {
+  const el  = document.getElementById('refresh-status');
+  const btn = document.getElementById('btn-refresh');
+  if (!el) return;
+  const rs = s.refresh_status || 'idle';
+  if (rs === 'running') {
+    el.className = 'refresh-status running'; el.textContent = '⚡ Quick ML refresh in progress...';
+    if(btn) { btn.disabled = true; btn.textContent = '⏳ Refreshing...'; }
+  } else if (rs === 'error') {
+    el.className = 'refresh-status error'; el.textContent = '✗ Refresh failed: '+(s.refresh_error||'');
+    if(btn) { btn.disabled = false; btn.textContent = '⚡ Quick Refresh'; }
+  } else {
+    el.className = 'refresh-status';
+    el.textContent = s.last_refresh_at ? '⚡ Last ML refresh: '+s.last_refresh_at : '⚡ Auto-runs every hour';
+    if(btn) { btn.disabled = false; btn.textContent = '⚡ Quick Refresh'; }
+  }
+}
+
+document.getElementById('run-form')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const r = await fetch('/advisor/run', { method: 'POST', body: fd });
+  const j = await r.json();
+  if (!r.ok) { alert(j.msg || 'Already running'); return; }
+  startPolling(); updateProgress({ status: 'running', progress: 0, step: 'Starting...' });
+});
+
+document.getElementById('btn-refresh')?.addEventListener('click', async () => {
+  const r = await fetch('/advisor/refresh', { method: 'POST' });
+  const j = await r.json();
+  if (!r.ok) { alert(j.msg || 'Cannot refresh now'); return; }
+  updateRefreshStatus({ refresh_status: 'running' }); startPolling();
+});
+
+async function loadAnalysis() {
+  const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
+  if (!s) return;
+  updateProgress(s); updateRefreshStatus(s);
+  if (s.status === 'done' && s.result) render(s.result);
+  if (s.status === 'running' || s.refresh_status === 'running') startPolling();
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadDashboard();
