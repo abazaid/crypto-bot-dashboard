@@ -3491,12 +3491,13 @@ async def api_smart_dashboard() -> JSONResponse:
         total_pnl       = realized_pnl + open_pnl
 
         win_rate = (len(won) / len(closed) * 100) if closed else 0
-        avg_win  = (sum(p.close_pnl_usdt for p in won)  / len(won))  if won  else 0
-        avg_loss = (sum(p.close_pnl_usdt for p in lost) / len(lost)) if lost else 0
+        avg_win  = (sum(p.close_pnl_usdt or 0 for p in won)  / len(won))  if won  else 0
+        avg_loss = (sum(p.close_pnl_usdt or 0 for p in lost) / len(lost)) if lost else 0
 
         # Trade log — all positions sorted by latest first
+        from datetime import datetime as _dt
         log = []
-        for p in sorted(positions, key=lambda x: x.created_at or 0, reverse=True)[:50]:
+        for p in sorted(positions, key=lambda x: x.created_at or _dt.min, reverse=True)[:50]:
             log.append({
                 "id":            p.id,
                 "symbol":        p.symbol,

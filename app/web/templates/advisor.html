@@ -358,8 +358,10 @@ if (_capInput) _capInput.addEventListener('input', () => {
 });
 
 async function loadDashboard() {
-  const d = await fetch('/api/smart-campaign/dashboard').then(r=>r.json()).catch(()=>null);
-  if (!d) return;
+  const d = await fetch('/api/smart-campaign/dashboard')
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null);
+  if (!d || d.detail) return;
   _dashData = d;
   renderDashboard(d);
 }
