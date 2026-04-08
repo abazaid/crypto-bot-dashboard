@@ -808,7 +808,7 @@ def _scheduled_live_acc_cycle() -> None:
 
 
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     # Create smart campaign tables
     from app.models.smart_campaign import SmartCampaign as _SC, SmartPosition as _SP
@@ -820,6 +820,11 @@ def on_startup() -> None:
         ensure_defaults(db, settings.paper_start_balance)
     finally:
         db.close()
+
+    # Start real-time price WebSocket (Binance !miniTicker@arr)
+    import asyncio
+    from app.services.price_ws import run_price_stream
+    asyncio.create_task(run_price_stream())
 
     scheduler.add_job(
         _scheduled_cycle,
@@ -953,7 +958,7 @@ def on_startup() -> None:
         replace_existing=True,
     )
 
-    # ── Smart Campaign cycle (every 60s) ─────────────────────────────────
+    # ── Smart Campaign cycle (every 10s) ─────────────────────────────────
     def _scheduled_smart_campaign() -> None:
         db = SessionLocal()
         try:
@@ -966,7 +971,7 @@ def on_startup() -> None:
     scheduler.add_job(
         _scheduled_smart_campaign,
         "interval",
-        seconds=60,
+        seconds=10,
         id="smart_campaign_cycle",
         replace_existing=True,
     )

@@ -28,6 +28,17 @@ def get_klines(symbol: str, interval: str = "5m", limit: int = 250) -> List[list
 
 
 def get_prices(symbols: List[str]) -> Dict[str, float]:
+    # Use real-time WebSocket cache when available
+    try:
+        from app.services.price_ws import get_cached_prices, is_connected
+        if is_connected():
+            cached = get_cached_prices(symbols)
+            if len(cached) == len(symbols):
+                return cached
+    except Exception:
+        pass
+
+    # Fall back to REST API
     r = requests.get(f"{BASE_URL}/api/v3/ticker/price", timeout=TIMEOUT)
     r.raise_for_status()
     raw = r.json()
