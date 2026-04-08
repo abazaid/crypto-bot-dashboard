@@ -70,6 +70,7 @@ from app.services.accumulation import (
     toggle_plan_status as accumulation_toggle_plan_status,
 )
 from app.services.forecasting import get_forecasts_for_symbols, get_or_build_forecast
+from advisor import runner as advisor_runner
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -3225,3 +3226,34 @@ async def api_position_dca(position_id: int) -> JSONResponse:
         return JSONResponse({"items": items})
     finally:
         db.close()
+
+
+# ── Advisor routes ────────────────────────────────────────────────────────────
+
+@app.get("/advisor", response_class=HTMLResponse)
+async def advisor_page(request: Request):
+    """Advisor dashboard — ML predictions + Hyperopt results."""
+    state = advisor_runner.get_state()
+    return templates.TemplateResponse("advisor.html", {
+        "request": request,
+        "state":   state,
+    })
+
+
+@app.post("/advisor/run")
+async def advisor_run(
+    request: Request,
+    symbols: int = Form(50),
+    trials:  int = Form(100),
+):
+    """Trigger advisor run in background."""
+    started = advisor_runner.start(n_symbols=symbols, n_trials=trials)
+    if not started:
+        return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
+    return JSONResponse({"ok": True, "msg": f"Started: {symbols} symbols, {trials} trials"})
+
+
+@app.get("/advisor/status")
+async def advisor_status():
+    """Polling endpoint — returns current advisor state as JSON."""
+    return JSONResponse(advisor_runner.get_state())

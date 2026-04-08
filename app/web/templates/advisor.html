@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Advisor — ML + Hyperopt</title>
+  <style>
+    :root {
+      --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+      --text: #e0e0e0; --muted: #8a8fa8; --green: #00c896;
+      --yellow: #f5c542; --red: #e05252; --blue: #4a9eff;
+      --purple: #9b59b6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', monospace; font-size: 14px; }
+    .topbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+    .topbar a { color: var(--muted); text-decoration: none; font-size: 13px; }
+    .topbar a:hover { color: var(--text); }
+    h1 { font-size: 18px; font-weight: 600; }
+    .tag { font-size: 11px; background: var(--purple); color: #fff; padding: 2px 8px; border-radius: 4px; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+
+    /* ── Run panel ── */
+    .run-panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px 24px; margin-bottom: 24px; }
+    .run-panel h2 { font-size: 15px; margin-bottom: 14px; color: var(--blue); }
+    .run-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+    .run-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    .run-row input { background: #0f1117; border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; width: 110px; font-size: 14px; }
+    .btn { padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; transition: opacity .15s; }
+    .btn:hover { opacity: .85; }
+    .btn-run  { background: var(--green); color: #000; }
+    .btn-stop { background: var(--red); color: #fff; display:none; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+    /* ── Progress ── */
+    #progress-wrap { margin-top: 16px; display: none; }
+    .prog-bar-bg { background: var(--border); border-radius: 99px; height: 8px; overflow: hidden; }
+    .prog-bar    { background: var(--green); height: 8px; border-radius: 99px; transition: width .4s; width: 0%; }
+    .prog-text   { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .error-box   { background: #2a1212; border: 1px solid var(--red); border-radius: 8px; padding: 12px; color: var(--red); margin-top: 12px; font-size: 13px; display: none; }
+
+    /* ── Model quality ── */
+    .metrics-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .metric-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+    .metric-card .val { font-size: 22px; font-weight: 700; color: var(--green); }
+    .metric-card .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Section ── */
+    .section { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 24px; overflow: hidden; }
+    .section-hdr { padding: 14px 20px; border-bottom: 1px solid var(--border); font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; font-weight: 600; }
+    .badge-green  { background: #0d3327; color: var(--green); }
+    .badge-yellow { background: #332d0d; color: var(--yellow); }
+    .badge-red    { background: #2a1212; color: var(--red); }
+    .badge-blue   { background: #0d1f33; color: var(--blue); }
+
+    /* ── Table ── */
+    table { width: 100%; border-collapse: collapse; }
+    th { font-size: 11px; color: var(--muted); text-transform: uppercase; padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+    td { padding: 10px 16px; border-bottom: 1px solid #1e2130; font-size: 13px; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1e2130; }
+    .sym { font-weight: 700; font-family: monospace; }
+    .green { color: var(--green); } .yellow { color: var(--yellow); } .red { color: var(--red); }
+    .up { color: var(--green); } .dn { color: var(--red); }
+
+    /* ── Prob bar ── */
+    .prob-wrap { display: flex; align-items: center; gap: 8px; }
+    .prob-mini { height: 6px; border-radius: 99px; background: var(--green); min-width: 4px; }
+
+    /* ── Combined cards ── */
+    .rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; padding: 16px; }
+    .rec-card { background: #12151f; border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .rec-card .sym { font-size: 16px; margin-bottom: 8px; }
+    .rec-card .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); padding: 3px 0; border-bottom: 1px solid #1e2130; }
+    .rec-card .row:last-child { border: none; }
+    .rec-card .row span:last-child { color: var(--text); font-weight: 600; }
+
+    /* ── Feature importance ── */
+    .fi-row { display: flex; align-items: center; gap: 10px; padding: 7px 20px; border-bottom: 1px solid #1a1d27; }
+    .fi-name { width: 140px; font-size: 12px; color: var(--muted); }
+    .fi-bar-bg { flex: 1; background: var(--border); border-radius: 99px; height: 6px; overflow: hidden; }
+    .fi-bar { background: var(--purple); height: 6px; border-radius: 99px; }
+    .fi-val { width: 50px; text-align: right; font-size: 12px; color: var(--text); }
+
+    /* ── Empty state ── */
+    .empty { text-align: center; padding: 48px; color: var(--muted); }
+    .empty .icon { font-size: 40px; margin-bottom: 12px; }
+
+    @media (max-width: 600px) {
+      .run-row { flex-direction: column; }
+      .metrics-row { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="/">← Dashboard</a>
+  <h1>Advisor</h1>
+  <span class="tag">ML + Hyperopt</span>
+</div>
+
+<div class="container">
+
+  <!-- ── Run panel ─────────────────────────────────────────────────────── -->
+  <div class="run-panel">
+    <h2>⚙ Run Analysis</h2>
+    <form id="run-form">
+      <div class="run-row">
+        <label>
+          Symbols (top N by volume)
+          <input type="number" name="symbols" value="50" min="10" max="150"/>
+        </label>
+        <label>
+          Hyperopt trials per symbol
+          <input type="number" name="trials" value="100" min="30" max="500"/>
+        </label>
+        <button type="submit" class="btn btn-run" id="btn-run">▶ Run</button>
+      </div>
+    </form>
+    <p class="hint">
+      Tip: 50 symbols × 100 trials ≈ 10–20 min. 150 symbols × 300 trials ≈ 60–90 min.
+      Results auto-refresh every 5s while running.
+    </p>
+
+    <div id="progress-wrap">
+      <div class="prog-bar-bg"><div class="prog-bar" id="prog-bar"></div></div>
+      <div class="prog-text" id="prog-text">Starting...</div>
+    </div>
+    <div class="error-box" id="error-box"></div>
+  </div>
+
+  <!-- ── Results (populated by JS) ──────────────────────────────────────── -->
+  <div id="results-area">
+    {% if state.result %}
+      <!-- Pre-rendered server-side if results exist -->
+      <script>window._INITIAL_RESULT = {{ state.result | tojson }};</script>
+    {% else %}
+      <div class="section">
+        <div class="empty">
+          <div class="icon">🤖</div>
+          <div>No results yet — click <strong>Run</strong> to start the analysis.</div>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<script>
+// ── Render results ────────────────────────────────────────────────────────────
+function signal_badge(sig) {
+  const cls = { BUY: 'badge-green', WATCH: 'badge-yellow', SKIP: 'badge-red' }[sig] || '';
+  const icon = { BUY: '🟢', WATCH: '🟡', SKIP: '🔴' }[sig] || '';
+  return `<span class="badge ${cls}">${icon} ${sig}</span>`;
+}
+function fmt(v, dec=2) { return (typeof v === 'number') ? v.toFixed(dec) : (v || '-'); }
+function pct_class(v) { return v > 0 ? 'up' : (v < 0 ? 'dn' : ''); }
+
+function render(data) {
+  if (!data) return;
+  const ml     = data.top_ml     || [];
+  const ho     = data.top_hyperopt || [];
+  const recs   = data.recommendations || [];
+  const model  = data.ml_model   || {};
+  const fi     = model.feature_importance || {};
+
+  let html = '';
+
+  // ── Model metrics ──────────────────────────────────────────────────────
+  html += `<div class="metrics-row">
+    <div class="metric-card"><div class="val">${fmt(model.auc,3)}</div><div class="lbl">AUC Score</div></div>
+    <div class="metric-card"><div class="val">${fmt(model.accuracy,3)}</div><div class="lbl">Accuracy</div></div>
+    <div class="metric-card"><div class="val">${fmt(model.f1,3)}</div><div class="lbl">F1 Score</div></div>
+    <div class="metric-card"><div class="val">${(model.train_rows||0).toLocaleString()}</div><div class="lbl">Train Rows</div></div>
+    <div class="metric-card"><div class="val">${fmt(model.pos_rate,1)}%</div><div class="lbl">Buy Opps in History</div></div>
+  </div>`;
+
+  // ── Feature importance ─────────────────────────────────────────────────
+  if (Object.keys(fi).length) {
+    const max_fi = Math.max(...Object.values(fi));
+    const fi_rows = Object.entries(fi).slice(0,10).map(([name, val]) => {
+      const w = (val/max_fi*100).toFixed(0);
+      return `<div class="fi-row">
+        <div class="fi-name">${name}</div>
+        <div class="fi-bar-bg"><div class="fi-bar" style="width:${w}%"></div></div>
+        <div class="fi-val">${val.toFixed(0)}</div>
+      </div>`;
+    }).join('');
+    html += `<div class="section">
+      <div class="section-hdr">📊 Top Predictive Features</div>
+      ${fi_rows}
+    </div>`;
+  }
+
+  // ── ML rankings ───────────────────────────────────────────────────────
+  const buy_n   = ml.filter(r=>r.signal==='BUY').length;
+  const watch_n = ml.filter(r=>r.signal==='WATCH').length;
+  const ml_rows = ml.map(r => {
+    const prob_w = (r.probability*100).toFixed(0);
+    const pct24_cls = pct_class(r.pct_24h);
+    return `<tr>
+      <td class="sym">${r.symbol}</td>
+      <td>${signal_badge(r.signal)}</td>
+      <td><div class="prob-wrap">
+        <div class="prob-mini" style="width:${prob_w}px;max-width:80px"></div>
+        <span>${(r.probability*100).toFixed(1)}%</span>
+      </div></td>
+      <td>${fmt(r.rsi,1)}</td>
+      <td>${r.trend}</td>
+      <td class="${pct24_cls}">${r.pct_24h > 0 ? '+' : ''}${fmt(r.pct_24h,1)}%</td>
+      <td>${fmt(r.vol_ratio,2)}x</td>
+      <td>${fmt(r.dist_ema200,1)}%</td>
+    </tr>`;
+  }).join('');
+
+  html += `<div class="section">
+    <div class="section-hdr">
+      🤖 ML Signal Ranking
+      <span class="badge badge-green">🟢 ${buy_n} BUY</span>
+      <span class="badge badge-yellow">🟡 ${watch_n} WATCH</span>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Symbol</th><th>Signal</th><th>Probability</th>
+        <th>RSI</th><th>Trend</th><th>24h%</th><th>Vol Ratio</th><th>Dist EMA200</th>
+      </tr></thead>
+      <tbody>${ml_rows}</tbody>
+    </table>
+  </div>`;
+
+  // ── Hyperopt ──────────────────────────────────────────────────────────
+  const ho_rows = ho.map(r => {
+    const p = r.best_params || {};
+    const m = r.metrics     || {};
+    const ap_cls = pct_class(m.avg_profit_pct);
+    return `<tr>
+      <td class="sym">${r.symbol}</td>
+      <td>${fmt(r.score,3)}</td>
+      <td>RSI&lt;${fmt(p.entry_rsi,0)} | BB&lt;${fmt(p.entry_bb_pct,2)}</td>
+      <td>-${fmt(p.dca_drop_1,1)}% / -${fmt(p.dca_drop_2,1)}%</td>
+      <td>+${fmt(p.tp_pct,1)}% / -${fmt(p.sl_pct,1)}%</td>
+      <td>${m.total_trades||0}</td>
+      <td>${fmt(m.win_rate,1)}%</td>
+      <td class="${ap_cls}">${m.avg_profit_pct > 0 ? '+' : ''}${fmt(m.avg_profit_pct,2)}%</td>
+      <td>${fmt(m.sharpe_ratio,2)}</td>
+    </tr>`;
+  }).join('');
+
+  html += `<div class="section">
+    <div class="section-hdr">⚡ Hyperopt Best Parameters</div>
+    <table>
+      <thead><tr>
+        <th>Symbol</th><th>Score</th><th>Entry Condition</th>
+        <th>DCA Drops</th><th>TP / SL</th>
+        <th>Trades</th><th>Win Rate</th><th>Avg Profit</th><th>Sharpe</th>
+      </tr></thead>
+      <tbody>${ho_rows}</tbody>
+    </table>
+  </div>`;
+
+  // ── Combined recommendations ───────────────────────────────────────────
+  const rec_cards = recs.length === 0
+    ? '<div class="empty"><div class="icon">💤</div>No symbols passed both ML + Hyperopt filters right now.</div>'
+    : recs.map(r => {
+      const p = r.params || {};
+      return `<div class="rec-card">
+        <div class="sym">🎯 ${r.symbol}</div>
+        <div class="row"><span>ML Probability</span><span class="green">${(r.ml_prob*100).toFixed(1)}%</span></div>
+        <div class="row"><span>Hyperopt Score</span><span>${fmt(r.ho_score,3)}</span></div>
+        <div class="row"><span>Win Rate</span><span>${fmt(r.win_rate,1)}%</span></div>
+        <div class="row"><span>Avg Profit</span><span class="${pct_class(r.avg_profit)}">${r.avg_profit>0?'+':''}${fmt(r.avg_profit,2)}%</span></div>
+        <div class="row"><span>Entry RSI &lt;</span><span>${fmt(p.entry_rsi,0)}</span></div>
+        <div class="row"><span>DCA Drop 1</span><span>-${fmt(p.dca_drop_1,1)}% × ${fmt(p.dca_alloc_1,0)}%</span></div>
+        <div class="row"><span>DCA Drop 2</span><span>-${fmt(p.dca_drop_2,1)}% × ${fmt(p.dca_alloc_2,0)}%</span></div>
+        <div class="row"><span>Take Profit</span><span>+${fmt(p.tp_pct,1)}%</span></div>
+        <div class="row"><span>Stop Loss</span><span>-${fmt(p.sl_pct,1)}%</span></div>
+      </div>`;
+    }).join('');
+
+  html += `<div class="section">
+    <div class="section-hdr">🎯 Combined Recommendations <span class="badge badge-blue">${recs.length} symbols</span></div>
+    <div class="rec-grid">${rec_cards}</div>
+  </div>`;
+
+  document.getElementById('results-area').innerHTML = html;
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+let _poll = null;
+
+function startPolling() {
+  if (_poll) return;
+  _poll = setInterval(async () => {
+    const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
+    if (!s) return;
+    updateProgress(s);
+    if (s.status === 'done' && s.result) { render(s.result); stopPolling(); }
+    if (s.status === 'error') { stopPolling(); }
+  }, 5000);
+}
+
+function stopPolling() { clearInterval(_poll); _poll = null; }
+
+function updateProgress(s) {
+  const wrap = document.getElementById('progress-wrap');
+  const bar  = document.getElementById('prog-bar');
+  const txt  = document.getElementById('prog-text');
+  const err  = document.getElementById('error-box');
+  const btnRun = document.getElementById('btn-run');
+
+  if (s.status === 'running') {
+    wrap.style.display = 'block';
+    bar.style.width = (s.progress || 0) + '%';
+    txt.textContent = s.step || 'Running...';
+    btnRun.textContent = '⏳ Running...';
+    btnRun.disabled = true;
+    err.style.display = 'none';
+  } else if (s.status === 'error') {
+    wrap.style.display = 'block';
+    bar.style.width = '0%';
+    bar.style.background = 'var(--red)';
+    txt.textContent = 'Failed';
+    err.textContent = '✗ Error: ' + (s.error || 'Unknown');
+    err.style.display = 'block';
+    btnRun.textContent = '▶ Run';
+    btnRun.disabled = false;
+  } else if (s.status === 'done') {
+    wrap.style.display = 'block';
+    bar.style.width = '100%';
+    txt.textContent = '✓ Complete — ' + (s.finished_at || '');
+    btnRun.textContent = '▶ Run Again';
+    btnRun.disabled = false;
+  } else {
+    btnRun.textContent = '▶ Run';
+    btnRun.disabled = false;
+  }
+}
+
+// ── Form submit ───────────────────────────────────────────────────────────────
+document.getElementById('run-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const resp = await fetch('/advisor/run', { method: 'POST', body: fd });
+  const json = await resp.json();
+  if (!resp.ok) { alert(json.msg || 'Already running'); return; }
+  startPolling();
+  updateProgress({ status: 'running', progress: 0, step: 'Starting...' });
+});
+
+// ── On load ───────────────────────────────────────────────────────────────────
+(async () => {
+  // Check if initial result was injected server-side
+  if (window._INITIAL_RESULT) { render(window._INITIAL_RESULT); }
+
+  // Check current status
+  const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
+  if (s) {
+    updateProgress(s);
+    if (s.status === 'running') startPolling();
+    if (s.status === 'done' && s.result) render(s.result);
+  }
+})();
+</script>
+</body>
+</html>
