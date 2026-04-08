@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Live Trading — Smart Campaigns</title>
+  <style>
+    :root {
+      --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+      --text: #e0e0e0; --muted: #8a8fa8;
+      --green: #00c896; --yellow: #f5c542; --red: #e05252;
+      --blue: #4a9eff; --purple: #9b59b6;
+      --live: #ff6b35; --live-dark: #2a1a0a; --live-border: #4a2a10;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', monospace; font-size: 14px; }
+
+    .topbar { background: var(--card); border-bottom: 2px solid var(--live); padding: 0 24px; display: flex; align-items: center; gap: 16px; height: 48px; }
+    .topbar a { color: var(--muted); text-decoration: none; font-size: 13px; }
+    .topbar a:hover { color: var(--text); }
+    h1 { font-size: 17px; font-weight: 600; }
+    .tag-live { font-size: 11px; background: var(--live); color: #000; padding: 2px 10px; border-radius: 4px; font-weight: 700; letter-spacing: 0.5px; }
+    .balance-pill { margin-left: auto; background: #1a2a3a; border: 1px solid var(--live-border); border-radius: 6px; padding: 4px 14px; font-size: 13px; }
+    .balance-pill span { color: var(--live); font-weight: 700; }
+    .balance-pill .lbl { color: var(--muted); font-size: 11px; }
+
+    .tabs { display: flex; background: var(--card); border-bottom: 1px solid var(--border); padding: 0 24px; }
+    .tab { padding: 12px 20px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; transition: all .15s; user-select: none; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--live); border-bottom-color: var(--live); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+    .section { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 24px; overflow: hidden; }
+    .section-hdr { padding: 14px 20px; border-bottom: 1px solid var(--border); font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+
+    .metrics-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .kpi-card .kpi-val { font-size: 22px; font-weight: 700; margin-bottom: 2px; }
+    .kpi-card .kpi-lbl { font-size: 11px; color: var(--muted); }
+    .kpi-card .kpi-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    .up { color: var(--green); } .dn { color: var(--red); } .live-clr { color: var(--live); }
+
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; font-weight: 600; }
+    .badge-green  { background: #0d3327; color: var(--green); }
+    .badge-red    { background: #2a1212; color: var(--red); }
+    .badge-blue   { background: #0d1f33; color: var(--blue); }
+    .badge-live   { background: var(--live-dark); color: var(--live); }
+
+    table { width: 100%; border-collapse: collapse; }
+    th { font-size: 11px; color: var(--muted); text-transform: uppercase; padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+    td { padding: 10px 16px; border-bottom: 1px solid #1e2130; font-size: 13px; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1e2130; }
+    .sym { font-weight: 700; font-family: monospace; }
+
+    .btn { padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; transition: opacity .15s; }
+    .btn:hover:not(:disabled) { opacity: .85; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-live { background: var(--live); color: #000; }
+    .btn-sm { padding: 5px 14px; font-size: 12px; border-radius: 5px; border: none; cursor: pointer; font-weight: 600; transition: opacity .15s; }
+    .btn-sm:hover { opacity: .85; }
+    .btn-danger  { background: var(--red);   color: #fff; }
+    .btn-success { background: var(--green); color: #000; }
+
+    /* Camp form */
+    .camp-create { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px; }
+    .camp-form   { display: flex; flex-direction: column; gap: 14px; }
+    .camp-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    .camp-form input { background: #0f1117; border: 1px solid var(--border); color: var(--text); padding: 8px 10px; border-radius: 6px; font-size: 14px; }
+    .capital-box { background: #0f1117; border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .capital-box h4 { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+    .capital-row { display: flex; justify-content: space-between; font-size: 13px; padding: 5px 0; border-bottom: 1px solid #1e2130; }
+    .capital-row:last-child { border: none; font-weight: 700; font-size: 15px; margin-top: 4px; }
+    .balance-row { display: flex; justify-content: space-between; font-size: 13px; padding: 8px 0; border-bottom: 1px solid #1e2130; }
+    .balance-ok  { color: var(--green); }
+    .balance-low { color: var(--red); }
+    .warn-box { background: var(--live-dark); border: 1px solid var(--live); border-radius: 8px; padding: 12px 16px; color: var(--live); font-size: 13px; margin-bottom: 14px; display: none; }
+    .error-box { background: #2a1212; border: 1px solid var(--red); border-radius: 8px; padding: 12px 16px; color: var(--red); font-size: 13px; margin-bottom: 14px; display: none; }
+    .stale-warn { background: #2a200a; border: 1px solid var(--yellow); border-radius: 8px; padding: 12px 16px; color: var(--yellow); font-size: 13px; margin-bottom: 14px; display: none; }
+
+    /* Camps list */
+    .camp-list-section { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+    .camp-card { background: #12151f; border: 1px solid var(--live-border); border-radius: 8px; padding: 16px; }
+    .camp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .camp-header h3 { font-size: 14px; font-weight: 700; }
+    .camp-actions { display: flex; gap: 8px; }
+    .camp-stats { display: flex; gap: 20px; margin-bottom: 14px; flex-wrap: wrap; padding: 10px; background: #0f1117; border-radius: 6px; }
+    .camp-stat { font-size: 12px; color: var(--muted); }
+    .camp-stat span { color: var(--text); font-weight: 600; }
+    .pos-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .pos-table th { font-size: 11px; color: var(--muted); padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--border); background: #0f1117; }
+    .pos-table td { padding: 8px 10px; border-bottom: 1px solid #1a1d27; }
+    .pos-table tr:last-child td { border: none; }
+    .pos-table tr:hover td { background: #1a1d27; }
+    .dca-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #1a2a3a; color: var(--blue); margin-left: 3px; }
+    .dca-skip  { background: #2a1a0a; color: var(--live); }
+    .status-active   { color: var(--green); font-weight:600; }
+    .status-sold_tp  { color: var(--green); }
+    .status-sold_sl  { color: var(--red); }
+    .status-sold_manual { color: var(--yellow); }
+
+    /* Activity log */
+    .log-table td { font-size: 12px; padding: 7px 12px; vertical-align: top; }
+    .log-table th { font-size: 11px; padding: 7px 12px; }
+    .event-OPEN        { color: var(--green); font-weight: 700; }
+    .event-DCA1,.event-DCA2 { color: var(--blue); font-weight: 700; }
+    .event-CLOSE_TP    { color: var(--green); }
+    .event-CLOSE_SL    { color: var(--red); }
+    .event-CLOSE_MANUAL { color: var(--yellow); }
+    .event-SKIP_BALANCE,.event-SKIP_SIGNAL,.event-DCA_SKIPPED { color: var(--muted); }
+    .event-ERROR       { color: var(--red); font-weight: 700; }
+    .log-msg { max-width: 520px; word-break: break-word; line-height: 1.4; }
+
+    /* Confirm modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 999; display: none; align-items: center; justify-content: center; }
+    .modal-overlay.show { display: flex; }
+    .modal { background: #1a1d27; border: 2px solid var(--live); border-radius: 12px; padding: 28px 32px; max-width: 420px; width: 90%; }
+    .modal h2 { font-size: 18px; color: var(--live); margin-bottom: 12px; }
+    .modal p { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 20px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+    .empty { text-align: center; padding: 48px; color: var(--muted); }
+    .empty .icon { font-size: 40px; margin-bottom: 12px; }
+    @media (max-width: 700px) { .camp-create { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+<!-- Topbar -->
+<div class="topbar">
+  <a href="/">← Dashboard</a>
+  <a href="/advisor" style="margin-left:4px">Paper Mode</a>
+  <h1>Live Trading</h1>
+  <span class="tag-live">⚡ LIVE</span>
+  <div class="balance-pill">
+    <div class="lbl">USDT Balance</div>
+    <span id="live-balance">{{ usdt_balance }}</span> USDT
+  </div>
+  <button class="btn-sm btn-success" style="margin-left:4px" onclick="refreshBalance()">↻</button>
+</div>
+
+{% if not configured %}
+<div class="container" style="padding-top:48px;text-align:center">
+  <div style="font-size:48px;margin-bottom:16px">🔑</div>
+  <h2 style="color:var(--live);margin-bottom:8px">Binance API Keys Not Configured</h2>
+  <p style="color:var(--muted)">Add BINANCE_API_KEY and BINANCE_API_SECRET to your environment variables in Coolify.</p>
+</div>
+{% else %}
+
+<!-- Tabs -->
+<div class="tabs">
+  <div class="tab active" data-tab="dashboard">🏠 Dashboard</div>
+  <div class="tab" data-tab="create-campaign">＋ Create Campaign</div>
+  <div class="tab" data-tab="campaigns">⚡ Campaigns <span id="camp-count-badge" style="display:none" class="badge badge-live">0</span></div>
+  <div class="tab" data-tab="activity">📋 Activity Log</div>
+</div>
+
+<!-- ═══ TAB: DASHBOARD ═══ -->
+<div class="tab-content active" id="tab-dashboard">
+<div class="container">
+
+  <div class="metrics-row" id="dash-kpis">
+    <div class="kpi-card"><div class="kpi-val" style="color:var(--muted)">—</div><div class="kpi-lbl">Loading...</div></div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">
+    <div class="section">
+      <div class="section-hdr">📈 Win / Loss</div>
+      <div style="padding:20px;display:flex;align-items:center;gap:24px">
+        <canvas id="winloss-chart" width="140" height="140"></canvas>
+        <div id="winloss-legend" style="font-size:13px;display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-hdr">💰 PnL Breakdown</div>
+      <div style="padding:20px;display:flex;flex-direction:column;gap:10px" id="pnl-breakdown"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-hdr">📋 Trade Log <span id="log-count" class="badge badge-blue">0</span></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Campaign</th><th>Status</th>
+          <th>Entry</th><th>Avg</th><th>Current</th>
+          <th>Invested</th><th>PnL</th><th>DCA</th>
+          <th>Order ID</th><th>Opened</th><th>Closed</th>
+        </tr></thead>
+        <tbody id="trade-log-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ═══ TAB: CREATE CAMPAIGN ═══ -->
+<div class="tab-content" id="tab-create-campaign">
+<div class="container">
+  <div class="section">
+    <div class="section-hdr" style="color:var(--live)">⚡ Create Live Campaign</div>
+    <div class="camp-create">
+
+      <div class="camp-form">
+        <div class="stale-warn" id="stale-warn">
+          ⚠ Advisor data is older than 24 hours. Run a fresh Analysis first.
+        </div>
+        <div class="warn-box" id="balance-warn"></div>
+        <div class="error-box" id="create-error"></div>
+
+        <label>Max Open Positions (symbols)
+          <input type="number" id="camp-max" value="3" min="1" max="10"/>
+        </label>
+        <label>Entry Amount per Symbol (USDT)
+          <input type="number" id="camp-entry" value="50" min="10" step="10"/>
+        </label>
+
+        <!-- Balance check display -->
+        <div class="capital-box" style="border-color:var(--live-border)">
+          <h4>💳 Available Balance</h4>
+          <div class="balance-row">
+            <span style="color:var(--muted)">USDT Free</span>
+            <span id="bal-free" class="live-clr">—</span>
+          </div>
+          <div class="balance-row">
+            <span style="color:var(--muted)">Min needed (1 position)</span>
+            <span id="bal-min">—</span>
+          </div>
+          <div class="balance-row">
+            <span style="color:var(--muted)">Worst-case reserve (all slots)</span>
+            <span id="bal-worst">—</span>
+          </div>
+        </div>
+
+        <button class="btn btn-live" id="btn-create-camp">⚡ Create Live Campaign</button>
+
+        <p style="font-size:12px;color:var(--muted);line-height:1.5">
+          <strong style="color:var(--live)">⚠ Real money will be spent.</strong>
+          The bot places real MARKET orders on Binance. Entry, DCA, TP, and SL
+          are executed at live market prices. Each cycle checks prices every 10 seconds.
+        </p>
+      </div>
+
+      <div class="capital-box">
+        <h4>💰 Capital Estimate (Worst Case per Symbol)</h4>
+        <div class="capital-row"><span>Entry</span><span id="cap-entry">—</span></div>
+        <div class="capital-row"><span id="cap-dca1-lbl">DCA 1</span><span id="cap-dca1">—</span></div>
+        <div class="capital-row"><span id="cap-dca2-lbl">DCA 2</span><span id="cap-dca2">—</span></div>
+        <div class="capital-row"><span>Per symbol (max)</span><span id="cap-sym">—</span></div>
+        <div class="capital-row" style="color:var(--live)"><span id="cap-total-lbl">Total reserve</span><span id="cap-total">—</span></div>
+        <p style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">
+          Based on advisor DCA allocations. Reserve this to handle worst-case drawdowns.
+        </p>
+      </div>
+
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ TAB: CAMPAIGNS ═══ -->
+<div class="tab-content" id="tab-campaigns">
+<div class="container">
+  <div id="camp-list-wrap">
+    <div class="section">
+      <div class="empty"><div class="icon">⚡</div><div>No live campaigns yet.</div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ TAB: ACTIVITY LOG ═══ -->
+<div class="tab-content" id="tab-activity">
+<div class="container">
+  <div class="section">
+    <div class="section-hdr">
+      📋 Activity Log
+      <span class="badge badge-blue" id="log-total-badge">0</span>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <select id="log-filter" style="background:#0f1117;border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+          <option value="">All events</option>
+          <option value="OPEN">OPEN</option>
+          <option value="DCA1">DCA1</option>
+          <option value="DCA2">DCA2</option>
+          <option value="CLOSE_TP">CLOSE_TP</option>
+          <option value="CLOSE_SL">CLOSE_SL</option>
+          <option value="CLOSE_MANUAL">CLOSE_MANUAL</option>
+          <option value="SKIP_BALANCE">SKIP_BALANCE</option>
+          <option value="SKIP_SIGNAL">SKIP_SIGNAL</option>
+          <option value="DCA_SKIPPED">DCA_SKIPPED</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <button class="btn-sm btn-success" onclick="loadActivityLog()">↻ Refresh</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="log-table">
+        <thead><tr>
+          <th>Time</th><th>Event</th><th>Symbol</th><th>Message</th>
+          <th>Price</th><th>Amount</th><th>PnL</th><th>Bal Before</th><th>Bal After</th>
+        </tr></thead>
+        <tbody id="activity-log-body">
+          <tr><td colspan="9" style="text-align:center;padding:32px;color:var(--muted)">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- Confirm modal -->
+<div class="modal-overlay" id="confirm-modal">
+  <div class="modal">
+    <h2>⚡ Confirm Live Campaign</h2>
+    <p id="modal-body">This will place real orders on Binance using real USDT.<br>Are you sure?</p>
+    <div class="modal-actions">
+      <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeModal()">Cancel</button>
+      <button class="btn-sm btn-danger" id="modal-confirm-btn">Confirm — Use Real Money</button>
+    </div>
+  </div>
+</div>
+
+{% endif %}
+
+<script>
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmt(v, dec=2) { return (typeof v === 'number') ? v.toFixed(dec) : (v || '—'); }
+
+// ── Balance ───────────────────────────────────────────────────────────────────
+async function refreshBalance() {
+  const r = await fetch('/api/live-smart/balance').then(r=>r.ok?r.json():null).catch(()=>null);
+  if (!r || !r.ok) return;
+  document.getElementById('live-balance').textContent = fmt(r.usdt_free, 2);
+  return r.usdt_free;
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  const d = await fetch('/api/live-smart/dashboard')
+    .then(r => r.ok ? r.json() : null).catch(()=>null);
+  if (!d || d.detail) return;
+  renderDashboard(d);
+}
+
+function drawDonut(d) {
+  const canvas = document.getElementById('winloss-chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height, r = 55, cx = w/2, cy = h/2;
+  ctx.clearRect(0, 0, w, h);
+  const total = d.winning_trades + d.losing_trades;
+  if (total === 0) {
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.strokeStyle = '#2a2d3a'; ctx.lineWidth = 18; ctx.stroke();
+  } else {
+    const winA = (d.winning_trades / total) * Math.PI * 2;
+    ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI/2, -Math.PI/2 + winA);
+    ctx.strokeStyle = '#00c896'; ctx.lineWidth = 18; ctx.lineCap = 'butt'; ctx.stroke();
+    if (Math.PI*2 - winA > 0.01) {
+      ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI/2 + winA, -Math.PI/2 + Math.PI*2);
+      ctx.strokeStyle = '#e05252'; ctx.lineWidth = 18; ctx.stroke();
+    }
+  }
+  ctx.fillStyle = '#e0e0e0'; ctx.font = 'bold 20px Segoe UI';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(total > 0 ? `${fmt(d.win_rate,0)}%` : '—', cx, cy);
+}
+
+function renderDashboard(d) {
+  const kpis = [
+    { val: `$${fmt(d.total_invested,2)}`,   lbl: 'Invested (Active)',   cls: 'live-clr', sub: `${d.active_positions} positions` },
+    { val: `${d.total_pnl>=0?'+':''}$${fmt(d.total_pnl,2)}`, lbl: 'Total PnL', cls: d.total_pnl>=0?'up':'dn', sub: `Realized $${fmt(d.realized_pnl,2)} · Open $${fmt(d.open_pnl,2)}` },
+    { val: `${d.total_trades}`,             lbl: 'Closed Trades',       cls: '', sub: `${d.winning_trades}W / ${d.losing_trades}L` },
+    { val: `${fmt(d.win_rate,1)}%`,         lbl: 'Win Rate',            cls: d.win_rate>=50?'up':'dn', sub: `Avg win $${fmt(d.avg_win_usdt,2)} · loss $${fmt(d.avg_loss_usdt,2)}` },
+    { val: `${d.running_campaigns}`,        lbl: 'Running Campaigns',   cls: 'live-clr', sub: `${d.total_campaigns} total` },
+  ];
+  const kpiEl = document.getElementById('dash-kpis');
+  if (kpiEl) kpiEl.innerHTML = kpis.map(k =>
+    `<div class="kpi-card">
+      <div class="kpi-val ${k.cls}">${k.val}</div>
+      <div class="kpi-lbl">${k.lbl}</div>
+      ${k.sub ? `<div class="kpi-sub">${k.sub}</div>` : ''}
+    </div>`).join('');
+
+  setTimeout(() => drawDonut(d), 50);
+
+  const legendEl = document.getElementById('winloss-legend');
+  if (legendEl) legendEl.innerHTML = `
+    <div><span style="color:var(--green)">●</span> Win: <strong>${d.winning_trades}</strong></div>
+    <div><span style="color:var(--red)">●</span> Loss: <strong>${d.losing_trades}</strong></div>
+    <div style="margin-top:4px;color:var(--muted)">Avg win: <strong class="up">+$${fmt(d.avg_win_usdt,2)}</strong></div>
+    <div style="color:var(--muted)">Avg loss: <strong class="dn">$${fmt(d.avg_loss_usdt,2)}</strong></div>`;
+
+  const maxBar = Math.max(Math.abs(d.realized_pnl), Math.abs(d.open_pnl), 1);
+  const pnlBar = (val, max) => {
+    const pct = Math.min(Math.abs(val)/max*100, 100).toFixed(0);
+    const col = val >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden;flex:1">
+      <div style="background:${col};width:${pct}%;height:8px;border-radius:4px"></div></div>`;
+  };
+  const pnlEl = document.getElementById('pnl-breakdown');
+  if (pnlEl) pnlEl.innerHTML = `
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+        <span style="color:var(--muted)">Realized PnL</span>
+        <span class="${d.realized_pnl>=0?'up':'dn'}">${d.realized_pnl>=0?'+':''}$${fmt(d.realized_pnl,2)}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">${pnlBar(d.realized_pnl,maxBar)}</div>
+    </div>
+    <div style="margin-top:10px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+        <span style="color:var(--muted)">Open PnL</span>
+        <span class="${d.open_pnl>=0?'up':'dn'}">${d.open_pnl>=0?'+':''}$${fmt(d.open_pnl,2)}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">${pnlBar(d.open_pnl,maxBar)}</div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px">
+      <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:700">
+        <span>Total PnL</span>
+        <span class="${d.total_pnl>=0?'up':'dn'}">${d.total_pnl>=0?'+':''}$${fmt(d.total_pnl,2)}</span>
+      </div>
+    </div>`;
+
+  const logCount = document.getElementById('log-count');
+  const logBody  = document.getElementById('trade-log-body');
+  if (!logCount || !logBody) return;
+  logCount.textContent = d.trade_log.length;
+
+  const reasonIcon = { tp: '✓ TP', sl: '✗ SL', manual: '⊘ Manual' };
+  const statusMap  = {
+    active:      '<span class="status-active">● Active</span>',
+    sold_tp:     '<span class="status-sold_tp">✓ TP Hit</span>',
+    sold_sl:     '<span class="status-sold_sl">✗ SL Hit</span>',
+    sold_manual: '<span class="status-sold_manual">⊘ Manual</span>',
+  };
+
+  logBody.innerHTML = d.trade_log.map(t => {
+    const pnl_cls = (t.pnl_usdt||0) >= 0 ? 'up' : 'dn';
+    const pnl_str = t.status === 'active'
+      ? `<span class="${pnl_cls}">${(t.pnl_pct||0)>=0?'+':''}${fmt(t.pnl_pct,2)}%<br><small>${(t.pnl_usdt||0)>=0?'+':''}$${fmt(t.pnl_usdt,2)}</small></span>`
+      : `<span class="${pnl_cls}">${(t.pnl_pct!==null&&t.pnl_pct!==undefined)?(t.pnl_pct>=0?'+':'')+fmt(t.pnl_pct,2)+'%<br>':''}<small>${(t.pnl_usdt||0)>=0?'+':''}$${fmt(t.pnl_usdt,2)}</small></span>`;
+    const d1 = t.dca1 ? '<span class="dca-badge">DCA1</span>' : (t.dca1_skipped?'<span class="dca-badge dca-skip">DCA1⚠</span>':'');
+    const d2 = t.dca2 ? '<span class="dca-badge">DCA2</span>' : (t.dca2_skipped?'<span class="dca-badge dca-skip">DCA2⚠</span>':'');
+    return `<tr>
+      <td class="sym">${t.symbol}</td>
+      <td style="color:var(--muted)">#${t.campaign_id}</td>
+      <td>${statusMap[t.status]||t.status}</td>
+      <td>$${t.entry_price ? t.entry_price.toPrecision(5) : '—'}</td>
+      <td>$${t.avg_price   ? t.avg_price.toPrecision(5)   : '—'}</td>
+      <td>${t.current_price ? '$'+t.current_price.toPrecision(5) : '—'}</td>
+      <td>$${fmt(t.invested,2)}</td>
+      <td>${pnl_str}</td>
+      <td>${d1}${d2||'—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${t.order_id||'—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${t.opened_at}</td>
+      <td style="font-size:11px;color:var(--muted)">${t.closed_at||'—'}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="12" style="text-align:center;padding:32px;color:var(--muted)">No trades yet</td></tr>`;
+}
+
+setInterval(() => {
+  if (document.querySelector('[data-tab="dashboard"]')?.classList.contains('active')) loadDashboard();
+}, 15000);
+
+// ── Create Campaign ───────────────────────────────────────────────────────────
+async function updateCapital() {
+  const n     = parseInt(document.getElementById('camp-max').value)    || 3;
+  const entry = parseFloat(document.getElementById('camp-entry').value) || 50;
+
+  const [capData, balData] = await Promise.all([
+    fetch(`/api/live-smart/capital?n=${n}&entry=${entry}`).then(r=>r.json()).catch(()=>null),
+    fetch('/api/live-smart/balance').then(r=>r.ok?r.json():null).catch(()=>null),
+  ]);
+
+  if (capData) {
+    document.getElementById('cap-entry').textContent    = `$${capData.per_symbol_entry}`;
+    document.getElementById('cap-dca1').textContent     = `$${capData.per_symbol_dca1}`;
+    document.getElementById('cap-dca2').textContent     = `$${capData.per_symbol_dca2}`;
+    document.getElementById('cap-sym').textContent      = `$${capData.per_symbol_total}`;
+    document.getElementById('cap-total').textContent    = `$${capData.total_capital}`;
+    document.getElementById('cap-dca1-lbl').textContent = `DCA 1 (~${capData.avg_alloc1_pct}%)`;
+    document.getElementById('cap-dca2-lbl').textContent = `DCA 2 (~${capData.avg_alloc2_pct}%)`;
+    document.getElementById('cap-total-lbl').textContent= `Total reserve (${n} symbols)`;
+  }
+
+  if (balData && balData.ok) {
+    const free   = balData.usdt_free;
+    const worst  = capData ? capData.total_capital : (entry * n);
+    const balEl  = document.getElementById('bal-free');
+    const minEl  = document.getElementById('bal-min');
+    const worstEl= document.getElementById('bal-worst');
+    if (balEl)   { balEl.textContent = `$${fmt(free,2)}`; balEl.className = free>=entry?'balance-ok':'balance-low'; }
+    if (minEl)   minEl.textContent = `$${fmt(entry,2)}`;
+    if (worstEl) { worstEl.textContent = `$${fmt(worst,2)}`; worstEl.className = free>=worst ? 'balance-ok' : 'balance-low'; }
+    document.getElementById('live-balance').textContent = fmt(free, 2);
+
+    const warnEl = document.getElementById('balance-warn');
+    if (free < entry) {
+      warnEl.textContent = `⚠ Balance too low: $${fmt(free,2)} free — need at least $${fmt(entry,2)} to open 1 position`;
+      warnEl.style.display = 'block';
+    } else {
+      warnEl.style.display = 'none';
+    }
+  }
+}
+
+document.getElementById('camp-max')?.addEventListener('input', updateCapital);
+document.getElementById('camp-entry')?.addEventListener('input', updateCapital);
+
+async function checkDataFreshness() {
+  const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
+  const warn = document.getElementById('stale-warn');
+  if (!s || !s.finished_at) { if(warn) warn.style.display='block'; return; }
+  const ageHours = (Date.now() - new Date(s.finished_at.replace(' UTC','Z')).getTime()) / 3_600_000;
+  if(warn) warn.style.display = ageHours > 24 ? 'block' : 'none';
+}
+
+// Modal
+let _pendingCreate = false;
+function closeModal() { document.getElementById('confirm-modal').classList.remove('show'); _pendingCreate = false; }
+
+document.getElementById('btn-create-camp')?.addEventListener('click', async () => {
+  const n     = parseInt(document.getElementById('camp-max').value)    || 3;
+  const entry = parseFloat(document.getElementById('camp-entry').value) || 50;
+  const errEl = document.getElementById('create-error');
+  errEl.style.display = 'none';
+
+  const balData = await fetch('/api/live-smart/balance').then(r=>r.ok?r.json():null).catch(()=>null);
+  if (!balData || !balData.ok || balData.usdt_free < entry) {
+    errEl.textContent = `Insufficient balance: $${fmt(balData?.usdt_free||0,2)} free, need $${fmt(entry,2)}`;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  document.getElementById('modal-body').innerHTML =
+    `This will place <strong style="color:var(--live)">real MARKET orders</strong> on Binance.<br><br>
+    Max positions: <strong>${n}</strong> · Entry per symbol: <strong>$${fmt(entry,2)}</strong><br>
+    Balance available: <strong class="up">$${fmt(balData.usdt_free,2)}</strong><br><br>
+    Are you sure you want to proceed?`;
+
+  document.getElementById('confirm-modal').classList.add('show');
+  document.getElementById('modal-confirm-btn').onclick = () => doCreateCampaign(n, entry);
+});
+
+async function doCreateCampaign(n, entry) {
+  closeModal();
+  const fd = new FormData();
+  fd.append('max_symbols', n);
+  fd.append('entry_amount', entry);
+  const r = await fetch('/api/live-smart/create', { method: 'POST', body: fd });
+  const j = await r.json();
+  const errEl = document.getElementById('create-error');
+  if (j.ok) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector('[data-tab="campaigns"]').classList.add('active');
+    document.getElementById('tab-campaigns').classList.add('active');
+    loadCampaigns();
+  } else {
+    errEl.textContent = 'Error: ' + (j.error || 'Unknown');
+    errEl.style.display = 'block';
+  }
+}
+
+// ── Campaigns ─────────────────────────────────────────────────────────────────
+function posStatusLabel(s) {
+  return ({
+    active:      '<span class="status-active">● Active</span>',
+    sold_tp:     '<span class="status-sold_tp">✓ TP Hit</span>',
+    sold_sl:     '<span class="status-sold_sl">✗ SL Hit</span>',
+    sold_manual: '<span class="status-sold_manual">⊘ Manual</span>',
+  })[s] || s;
+}
+
+function renderCampaigns(campaigns) {
+  const wrap  = document.getElementById('camp-list-wrap');
+  const badge = document.getElementById('camp-count-badge');
+  const running = campaigns.filter(c => c.status === 'running').length;
+  badge.textContent = running;
+  badge.style.display = running > 0 ? 'inline' : 'none';
+
+  if (!campaigns.length) {
+    wrap.innerHTML = `<div class="section"><div class="empty"><div class="icon">⚡</div><div>No live campaigns yet.</div></div></div>`;
+    return;
+  }
+
+  wrap.innerHTML = `<div class="camp-list-section">` + campaigns.map(c => {
+    const toggle = c.status === 'running'
+      ? `<button class="btn-sm btn-danger" onclick="stopCamp(${c.id})">⏸ Stop</button>`
+      : `<button class="btn-sm btn-success" onclick="resumeCamp(${c.id})">▶ Resume</button>`;
+
+    const pos_rows = c.positions.map(p => {
+      const sell_btn = p.status === 'active'
+        ? `<button class="btn-sm btn-danger" style="padding:3px 8px" onclick="sellPos(${p.id})">Sell</button>` : '';
+
+      let pnl_html;
+      if (p.status === 'active') {
+        const cls = (p.pnl_pct||0) >= 0 ? 'up' : 'dn';
+        pnl_html = `<span class="${cls}">${(p.pnl_pct||0)>=0?'+':''}${fmt(p.pnl_pct,2)}%</span>
+                    <span class="${cls}" style="font-size:11px;margin-left:4px">($${fmt(p.pnl_usdt,2)})</span>`;
+      } else {
+        const cls = (p.close_pnl_usdt||0) >= 0 ? 'up' : 'dn';
+        const pct_str = (p.pnl_pct!==null&&p.pnl_pct!==undefined) ? `${p.pnl_pct>=0?'+':''}${fmt(p.pnl_pct,2)}% ` : '';
+        pnl_html = `<span class="${cls}">${pct_str}($${(p.close_pnl_usdt||0)>=0?'+':''}${fmt(p.close_pnl_usdt,2)})</span>`;
+      }
+
+      const dca_count = (p.dca1_triggered?1:0) + (p.dca2_triggered?1:0);
+      const dca_skip  = (p.dca1_skipped||p.dca2_skipped);
+      let dca_html = '—';
+      if (dca_count > 0) {
+        const avg = p.avg_price ? `<br><span style="font-size:10px;color:var(--muted)">Avg→$${p.avg_price.toPrecision(4)}</span>` : '';
+        dca_html = `<span class="dca-badge">${dca_count}x DCA</span>${avg}`;
+      } else if (dca_skip) {
+        dca_html = `<span class="dca-badge dca-skip">⚠ skipped</span>`;
+      }
+
+      return `<tr>
+        <td class="sym">${p.symbol}</td>
+        <td>${posStatusLabel(p.status)}</td>
+        <td>$${p.entry_price ? p.entry_price.toPrecision(5) : '—'}</td>
+        <td>$${p.avg_price   ? p.avg_price.toPrecision(5)   : '—'}</td>
+        <td>${p.current_price ? '$'+p.current_price.toPrecision(5) : '—'}</td>
+        <td>${pnl_html}</td>
+        <td>$${fmt(p.total_invested,2)}</td>
+        <td><span style="color:var(--green)">+${fmt(p.tp_pct,1)}%</span> / <span style="color:var(--red)">-${fmt(p.sl_pct,1)}%</span></td>
+        <td>${dca_html}</td>
+        <td style="font-size:10px;color:var(--muted)">${p.created_at||'—'}</td>
+        <td style="font-size:10px;color:var(--muted)">${p.closed_at||'—'}</td>
+        <td>${sell_btn}</td>
+      </tr>`;
+    }).join('');
+
+    const body = pos_rows
+      ? `<table class="pos-table"><thead><tr>
+          <th>Symbol</th><th>Status</th><th>Entry</th><th>Avg</th>
+          <th>Current</th><th>PnL</th><th>Invested</th><th>TP/SL</th><th>DCA</th>
+          <th>Opened</th><th>Closed</th><th></th>
+         </tr></thead><tbody>${pos_rows}</tbody></table>`
+      : `<div style="padding:16px;color:var(--muted);font-size:13px">⏳ Waiting for next cycle...</div>`;
+
+    return `<div class="camp-card">
+      <div class="camp-header">
+        <h3>Campaign #${c.id} &mdash; ${c.status==='running'?'<span class="status-active">● Running</span>':'<span class="status-stopped">■ Stopped</span>'}</h3>
+        <div class="camp-actions">${toggle}</div>
+      </div>
+      <div class="camp-stats">
+        <div class="camp-stat">Slots: <span>${c.active_count} / ${c.max_symbols}</span></div>
+        <div class="camp-stat">Entry: <span>$${c.entry_amount}</span></div>
+        <div class="camp-stat">Closed: <span>${c.closed_count}</span></div>
+        <div class="camp-stat">Realized PnL: <span class="${c.total_pnl_usdt>=0?'up':'dn'}">${c.total_pnl_usdt>=0?'+':''}$${fmt(c.total_pnl_usdt,2)}</span></div>
+        <div class="camp-stat">Open PnL: <span class="${c.open_pnl_usdt>=0?'up':'dn'}">${c.open_pnl_usdt>=0?'+':''}$${fmt(c.open_pnl_usdt,2)}</span></div>
+        <div class="camp-stat">Created: <span>${c.created_at}</span></div>
+      </div>
+      ${body}
+    </div>`;
+  }).join('') + `</div>`;
+}
+
+async function loadCampaigns() {
+  const data = await fetch('/api/live-smart/list').then(r=>r.json()).catch(()=>[]);
+  renderCampaigns(data);
+}
+async function stopCamp(id)   { await fetch(`/api/live-smart/${id}/stop`,   {method:'POST'}); loadCampaigns(); }
+async function resumeCamp(id) { await fetch(`/api/live-smart/${id}/resume`, {method:'POST'}); loadCampaigns(); }
+async function sellPos(id) {
+  if (!confirm('Sell this position at current market price? This is a REAL order.')) return;
+  const r = await fetch(`/api/live-smart/position/${id}/sell`, {method:'POST'});
+  const j = await r.json();
+  if (j.ok) { loadCampaigns(); loadDashboard(); loadActivityLog(); }
+  else alert(j.error || 'Sell failed');
+}
+
+setInterval(() => {
+  if (document.querySelector('[data-tab="campaigns"]')?.classList.contains('active')) loadCampaigns();
+}, 15000);
+
+// ── Activity Log ──────────────────────────────────────────────────────────────
+async function loadActivityLog() {
+  const filter = document.getElementById('log-filter')?.value || '';
+  const url = `/api/live-smart/logs?limit=200`;
+  const logs = await fetch(url).then(r=>r.json()).catch(()=>[]);
+
+  const filtered = filter ? logs.filter(l => l.event === filter) : logs;
+  const badge = document.getElementById('log-total-badge');
+  if (badge) badge.textContent = filtered.length;
+
+  const body = document.getElementById('activity-log-body');
+  if (!body) return;
+  body.innerHTML = filtered.map(l => {
+    const evtCls = `event-${l.event}`;
+    return `<tr>
+      <td style="white-space:nowrap;color:var(--muted)">${l.created_at}</td>
+      <td><span class="${evtCls}">${l.event}</span></td>
+      <td class="sym">${l.symbol||'—'}</td>
+      <td class="log-msg">${l.message}</td>
+      <td>${l.price ? '$'+l.price.toPrecision(5) : '—'}</td>
+      <td>${l.amount_usdt ? '$'+fmt(l.amount_usdt,2) : '—'}</td>
+      <td class="${(l.pnl_usdt||0)>=0?'up':'dn'}">${l.pnl_usdt!=null?(l.pnl_usdt>=0?'+':'')+'$'+fmt(l.pnl_usdt,4):'—'}</td>
+      <td style="color:var(--muted)">${l.balance_before!=null?'$'+fmt(l.balance_before,2):'—'}</td>
+      <td style="color:var(--muted)">${l.balance_after!=null?'$'+fmt(l.balance_after,2):'—'}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--muted)">No activity yet</td></tr>`;
+}
+
+document.getElementById('log-filter')?.addEventListener('change', loadActivityLog);
+setInterval(() => {
+  if (document.querySelector('[data-tab="activity"]')?.classList.contains('active')) loadActivityLog();
+}, 15000);
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'dashboard')        loadDashboard();
+    if (tab.dataset.tab === 'campaigns')        loadCampaigns();
+    if (tab.dataset.tab === 'activity')         loadActivityLog();
+    if (tab.dataset.tab === 'create-campaign')  { updateCapital(); checkDataFreshness(); }
+  });
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadDashboard();
+loadCampaigns();
+</script>
+</body>
+</html>

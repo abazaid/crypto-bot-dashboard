@@ -82,6 +82,15 @@ from app.services.smart_campaign_service import (
     run_smart_cycle,
     stop_campaign,
 )
+from app.services.live_smart_campaign_service import (
+    create_live_campaign,
+    get_recent_logs,
+    live_campaign_summary,
+    manual_sell_live,
+    resume_live_campaign,
+    run_live_smart_cycle,
+    stop_live_campaign,
+)
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -814,6 +823,13 @@ async def on_startup() -> None:
     from app.models.smart_campaign import SmartCampaign as _SC, SmartPosition as _SP
     _SC.__table__.create(bind=engine, checkfirst=True)
     _SP.__table__.create(bind=engine, checkfirst=True)
+    # Create live smart campaign tables
+    from app.models.live_smart_campaign import (
+        LiveSmartCampaign as _LSC, LiveSmartPosition as _LSP, LiveSmartCampaignLog as _LSCL
+    )
+    _LSC.__table__.create(bind=engine, checkfirst=True)
+    _LSP.__table__.create(bind=engine, checkfirst=True)
+    _LSCL.__table__.create(bind=engine, checkfirst=True)
     _apply_schema_updates()
     db = SessionLocal()
     try:
@@ -973,6 +989,24 @@ async def on_startup() -> None:
         "interval",
         seconds=10,
         id="smart_campaign_cycle",
+        replace_existing=True,
+    )
+
+    # ── Live Smart Campaign cycle (every 10s) ─────────────────────────────
+    def _scheduled_live_smart_campaign() -> None:
+        db = SessionLocal()
+        try:
+            run_live_smart_cycle(db)
+        except Exception as e:
+            logger.error("Live smart campaign cycle error: %s", e)
+        finally:
+            db.close()
+
+    scheduler.add_job(
+        _scheduled_live_smart_campaign,
+        "interval",
+        seconds=10,
+        id="live_smart_campaign_cycle",
         replace_existing=True,
     )
 
@@ -3554,3 +3588,176 @@ async def advisor_refresh():
 async def advisor_status():
     """Polling endpoint — returns current advisor state as JSON."""
     return JSONResponse(advisor_runner.get_state())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LIVE SMART CAMPAIGN ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/live-advisor", response_class=HTMLResponse)
+async def live_advisor_page(request: Request):
+    from app.services.binance_live import is_configured, get_usdt_free
+    configured = is_configured()
+    balance = 0.0
+    if configured:
+        try:
+            balance = get_usdt_free()
+        except Exception:
+            pass
+    return templates.TemplateResponse(
+        "live_advisor.html",
+        {"request": request, "configured": configured, "usdt_balance": round(balance, 2)},
+    )
+
+
+@app.get("/api/live-smart/balance")
+async def api_live_balance():
+    from app.services.binance_live import is_configured, get_usdt_free
+    if not is_configured():
+        return JSONResponse({"ok": False, "error": "API keys not configured"})
+    try:
+        bal = get_usdt_free()
+        return JSONResponse({"ok": True, "usdt_free": round(bal, 2)})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.post("/api/live-smart/create")
+async def api_live_create_campaign(
+    max_symbols: int = Form(5),
+    entry_amount: float = Form(50.0),
+):
+    db = SessionLocal()
+    try:
+        result = create_live_campaign(db, max_symbols, entry_amount)
+        if not result["ok"]:
+            return JSONResponse({"ok": False, "error": result["error"]}, status_code=400)
+        c = result["campaign"]
+        return JSONResponse({"ok": True, "id": c.id})
+    finally:
+        db.close()
+
+
+@app.get("/api/live-smart/list")
+async def api_live_list_campaigns():
+    db = SessionLocal()
+    try:
+        from app.models.live_smart_campaign import LiveSmartCampaign as LSC
+        campaigns = db.query(LSC).order_by(LSC.id.desc()).all()
+        return JSONResponse([live_campaign_summary(db, c) for c in campaigns])
+    finally:
+        db.close()
+
+
+@app.post("/api/live-smart/{campaign_id}/stop")
+async def api_live_stop_campaign(campaign_id: int):
+    db = SessionLocal()
+    try:
+        ok = stop_live_campaign(db, campaign_id)
+        return JSONResponse({"ok": ok})
+    finally:
+        db.close()
+
+
+@app.post("/api/live-smart/{campaign_id}/resume")
+async def api_live_resume_campaign(campaign_id: int):
+    db = SessionLocal()
+    try:
+        ok = resume_live_campaign(db, campaign_id)
+        return JSONResponse({"ok": ok})
+    finally:
+        db.close()
+
+
+@app.post("/api/live-smart/position/{position_id}/sell")
+async def api_live_manual_sell(position_id: int):
+    db = SessionLocal()
+    try:
+        result = manual_sell_live(db, position_id)
+        return JSONResponse(result)
+    finally:
+        db.close()
+
+
+@app.get("/api/live-smart/logs")
+async def api_live_logs(campaign_id: int = None, limit: int = 100):
+    db = SessionLocal()
+    try:
+        logs = get_recent_logs(db, campaign_id=campaign_id, limit=limit)
+        return JSONResponse(logs)
+    finally:
+        db.close()
+
+
+@app.get("/api/live-smart/dashboard")
+async def api_live_dashboard():
+    db = SessionLocal()
+    try:
+        from app.models.live_smart_campaign import LiveSmartCampaign as LSC, LiveSmartPosition as LSP
+        from datetime import datetime as _dt
+        campaigns = db.query(LSC).all()
+        positions = db.query(LSP).all()
+
+        closed  = [p for p in positions if p.status != "active"]
+        active  = [p for p in positions if p.status == "active"]
+        won     = [p for p in closed if (p.close_pnl_usdt or 0) > 0]
+        lost    = [p for p in closed if (p.close_pnl_usdt or 0) <= 0]
+
+        total_invested = sum(p.total_invested_usdt or 0 for p in active)
+        realized_pnl   = sum(p.close_pnl_usdt or 0 for p in closed)
+        open_pnl       = sum(p.pnl_usdt or 0 for p in active)
+        total_pnl      = realized_pnl + open_pnl
+
+        win_rate = (len(won) / len(closed) * 100) if closed else 0
+        avg_win  = (sum(p.close_pnl_usdt or 0 for p in won)  / len(won))  if won  else 0
+        avg_loss = (sum(p.close_pnl_usdt or 0 for p in lost) / len(lost)) if lost else 0
+
+        log = []
+        for p in sorted(positions, key=lambda x: x.created_at or _dt.min, reverse=True)[:50]:
+            log.append({
+                "id":            p.id,
+                "symbol":        p.symbol,
+                "status":        p.status,
+                "entry_price":   p.entry_price,
+                "avg_price":     p.avg_price,
+                "current_price": p.current_price,
+                "invested":      p.total_invested_usdt,
+                "pnl_pct":       p.pnl_pct,
+                "pnl_usdt":      p.pnl_usdt if p.status == "active" else p.close_pnl_usdt,
+                "close_reason":  p.close_reason,
+                "dca1":          p.dca1_triggered,
+                "dca1_skipped":  p.dca1_skipped,
+                "dca2":          p.dca2_triggered,
+                "dca2_skipped":  p.dca2_skipped,
+                "opened_at":     p.created_at.strftime("%Y-%m-%d %H:%M") if p.created_at else "",
+                "closed_at":     p.closed_at.strftime("%Y-%m-%d %H:%M") if p.closed_at else None,
+                "campaign_id":   p.campaign_id,
+                "order_id":      p.binance_order_id,
+            })
+
+        return JSONResponse({
+            "total_campaigns":   len(campaigns),
+            "running_campaigns": sum(1 for c in campaigns if c.status == "running"),
+            "active_positions":  len(active),
+            "total_invested":    round(total_invested, 2),
+            "realized_pnl":      round(realized_pnl,   2),
+            "open_pnl":          round(open_pnl,        2),
+            "total_pnl":         round(total_pnl,       2),
+            "total_trades":      len(closed),
+            "winning_trades":    len(won),
+            "losing_trades":     len(lost),
+            "win_rate":          round(win_rate, 1),
+            "avg_win_usdt":      round(avg_win,  2),
+            "avg_loss_usdt":     round(avg_loss, 2),
+            "trade_log":         log,
+        })
+    finally:
+        db.close()
+
+
+@app.get("/api/live-smart/capital")
+async def api_live_capital(n: int = 5, entry: float = 50.0):
+    from app.services.smart_campaign_service import calculate_required_capital
+    from app.services.live_smart_campaign_service import get_advisor_recommendations
+    recs = get_advisor_recommendations()
+    return JSONResponse(calculate_required_capital(entry, n, recs))
