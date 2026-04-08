@@ -221,7 +221,7 @@
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 <!-- TAB 1: ANALYSIS                                                        -->
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
-<div class="tab-content active" id="tab-analysis">
+<div class="tab-content" id="tab-analysis">
 <div class="container">
 
   <div class="run-panel">
@@ -336,6 +336,15 @@
 </div>
 
 <script>
+// ── Helpers (must be defined first) ──────────────────────────────────────────
+function fmt(v, dec=2) { return (typeof v === 'number') ? v.toFixed(dec) : (v || '—'); }
+function pct_class(v)  { return v > 0 ? 'up' : (v < 0 ? 'dn' : ''); }
+function signal_badge(sig) {
+  const cls  = { BUY: 'badge-green', WATCH: 'badge-yellow', SKIP: 'badge-red' }[sig] || '';
+  const icon = { BUY: '🟢', WATCH: '🟡', SKIP: '🔴' }[sig] || '';
+  return `<span class="badge ${cls}">${icon} ${sig}</span>`;
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 let _dashData = null;
 
@@ -499,15 +508,6 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'create-campaign')  { updateCapital(); checkDataFreshness(); }
   });
 });
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function fmt(v, dec=2) { return (typeof v === 'number') ? v.toFixed(dec) : (v || '—'); }
-function pct_class(v)  { return v > 0 ? 'up' : (v < 0 ? 'dn' : ''); }
-function signal_badge(sig) {
-  const cls  = { BUY: 'badge-green', WATCH: 'badge-yellow', SKIP: 'badge-red' }[sig] || '';
-  const icon = { BUY: '🟢', WATCH: '🟡', SKIP: '🔴' }[sig] || '';
-  return `<span class="badge ${cls}">${icon} ${sig}</span>`;
-}
 
 // ── Capital calculator ────────────────────────────────────────────────────────
 async function updateCapital() {
