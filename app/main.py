@@ -3611,7 +3611,7 @@ async def live_advisor_page(request: Request):
 
 
 @app.get("/api/live-smart/balance")
-async def api_live_balance():
+def api_live_balance():
     from app.services.binance_live import is_configured, get_usdt_free
     if not is_configured():
         return JSONResponse({"ok": False, "error": "API keys not configured"})
@@ -3623,7 +3623,7 @@ async def api_live_balance():
 
 
 @app.post("/api/live-smart/create")
-async def api_live_create_campaign(
+def api_live_create_campaign(
     max_symbols: int = Form(5),
     entry_amount: float = Form(50.0),
 ):
@@ -3650,7 +3650,7 @@ async def api_live_list_campaigns():
 
 
 @app.post("/api/live-smart/{campaign_id}/stop")
-async def api_live_stop_campaign(campaign_id: int):
+def api_live_stop_campaign(campaign_id: int):
     db = SessionLocal()
     try:
         ok = stop_live_campaign(db, campaign_id)
@@ -3660,7 +3660,7 @@ async def api_live_stop_campaign(campaign_id: int):
 
 
 @app.post("/api/live-smart/{campaign_id}/resume")
-async def api_live_resume_campaign(campaign_id: int):
+def api_live_resume_campaign(campaign_id: int):
     db = SessionLocal()
     try:
         ok = resume_live_campaign(db, campaign_id)
@@ -3670,7 +3670,7 @@ async def api_live_resume_campaign(campaign_id: int):
 
 
 @app.post("/api/live-smart/position/{position_id}/sell")
-async def api_live_manual_sell(position_id: int):
+def api_live_manual_sell(position_id: int):
     db = SessionLocal()
     try:
         result = manual_sell_live(db, position_id)
