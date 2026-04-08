@@ -617,8 +617,16 @@ function renderCampaigns(campaigns) {
         pnl_html = `<span class="${cls}">${(p.close_pnl_usdt||0)>=0?'+':''}$${fmt(p.close_pnl_usdt,2)}</span>`;
       }
 
+      // DCA info
+      const dca_count = (p.dca1_triggered ? 1 : 0) + (p.dca2_triggered ? 1 : 0);
+      let dca_html = '—';
+      if (dca_count > 0) {
+        const avg_str = p.avg_price ? `<br><span style="font-size:10px;color:var(--muted)">Avg→$${p.avg_price.toPrecision(4)}</span>` : '';
+        dca_html = `<span class="dca-badge">${dca_count}x DCA</span>${avg_str}`;
+      }
+
       return `<tr>
-        <td class="sym">${p.symbol}${dca1}${dca2}</td>
+        <td class="sym">${p.symbol}</td>
         <td>${posStatusLabel(p.status)}</td>
         <td>$${p.entry_price ? p.entry_price.toPrecision(5) : '—'}</td>
         <td>$${p.avg_price   ? p.avg_price.toPrecision(5)   : '—'}</td>
@@ -626,6 +634,7 @@ function renderCampaigns(campaigns) {
         <td>${pnl_html}</td>
         <td>$${fmt(p.total_invested,2)}</td>
         <td><span style="color:var(--green)">+${fmt(p.tp_pct,1)}%</span> / <span style="color:var(--red)">-${fmt(p.sl_pct,1)}%</span></td>
+        <td>${dca_html}</td>
         <td style="color:var(--muted);font-size:11px">${p.created_at||''}</td>
         <td>${sell_btn}</td>
       </tr>`;
@@ -634,8 +643,8 @@ function renderCampaigns(campaigns) {
     const body = pos_rows
       ? `<table class="pos-table">
           <thead><tr>
-            <th>Symbol</th><th>Status</th><th>Entry</th><th>Avg</th>
-            <th>Current</th><th>PnL</th><th>Invested</th><th>TP / SL</th><th>Opened</th><th></th>
+            <th>Symbol</th><th>Status</th><th>Entry</th><th>Avg Price</th>
+            <th>Current</th><th>PnL</th><th>Invested</th><th>TP / SL</th><th>DCA</th><th>Opened</th><th></th>
           </tr></thead>
           <tbody>${pos_rows}</tbody>
         </table>`
