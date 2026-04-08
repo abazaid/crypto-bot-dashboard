@@ -71,6 +71,17 @@ from app.services.accumulation import (
 )
 from app.services.forecasting import get_forecasts_for_symbols, get_or_build_forecast
 from advisor import runner as advisor_runner
+from app.models.smart_campaign import SmartCampaign, SmartPosition
+from app.services.smart_campaign_service import (
+    calculate_required_capital,
+    campaign_summary,
+    create_campaign,
+    get_advisor_recommendations,
+    manual_sell as smart_manual_sell,
+    resume_campaign,
+    run_smart_cycle,
+    stop_campaign,
+)
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -799,6 +810,10 @@ def _scheduled_live_acc_cycle() -> None:
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    # Create smart campaign tables
+    from app.models.smart_campaign import SmartCampaign as _SC, SmartPosition as _SP
+    _SC.__table__.create(bind=engine, checkfirst=True)
+    _SP.__table__.create(bind=engine, checkfirst=True)
     _apply_schema_updates()
     db = SessionLocal()
     try:
@@ -935,6 +950,24 @@ def on_startup() -> None:
         "interval",
         minutes=30,
         id="advisor_market_watcher",
+        replace_existing=True,
+    )
+
+    # ── Smart Campaign cycle (every 60s) ─────────────────────────────────
+    def _scheduled_smart_campaign() -> None:
+        db = SessionLocal()
+        try:
+            run_smart_cycle(db)
+        except Exception as e:
+            logger.error("Smart campaign cycle error: %s", e)
+        finally:
+            db.close()
+
+    scheduler.add_job(
+        _scheduled_smart_campaign,
+        "interval",
+        seconds=60,
+        id="smart_campaign_cycle",
         replace_existing=True,
     )
 
@@ -3361,6 +3394,81 @@ async def advisor_run(
     if not started:
         return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
     return JSONResponse({"ok": True, "msg": f"Started: {symbols} symbols, {trials} trials"})
+
+
+# ── Smart Campaign routes ──────────────────────────────────────────────────────
+
+@app.get("/api/smart-campaign/capital")
+async def api_smart_capital(n: int = 5, entry: float = 100.0) -> JSONResponse:
+    """Calculate required capital for N symbols with given entry amount."""
+    recs = get_advisor_recommendations()
+    data = calculate_required_capital(entry, n, recs)
+    return JSONResponse(data)
+
+
+@app.post("/api/smart-campaign/create")
+async def api_smart_create(
+    max_symbols: int  = Form(5),
+    entry_amount: float = Form(100.0),
+) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        c = create_campaign(db, max_symbols=max_symbols, entry_amount=entry_amount)
+        return JSONResponse({"ok": True, "id": c.id})
+    finally:
+        db.close()
+
+
+@app.post("/api/smart-campaign/{campaign_id}/stop")
+async def api_smart_stop(campaign_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        ok = stop_campaign(db, campaign_id)
+        return JSONResponse({"ok": ok})
+    finally:
+        db.close()
+
+
+@app.post("/api/smart-campaign/{campaign_id}/resume")
+async def api_smart_resume(campaign_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        ok = resume_campaign(db, campaign_id)
+        return JSONResponse({"ok": ok})
+    finally:
+        db.close()
+
+
+@app.get("/api/smart-campaign/list")
+async def api_smart_list() -> JSONResponse:
+    db = SessionLocal()
+    try:
+        campaigns = db.query(SmartCampaign).order_by(SmartCampaign.created_at.desc()).all()
+        return JSONResponse([campaign_summary(db, c) for c in campaigns])
+    finally:
+        db.close()
+
+
+@app.get("/api/smart-campaign/{campaign_id}")
+async def api_smart_detail(campaign_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        return JSONResponse(campaign_summary(db, c))
+    finally:
+        db.close()
+
+
+@app.post("/api/smart-campaign/position/{position_id}/sell")
+async def api_smart_sell(position_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        result = smart_manual_sell(db, position_id)
+        return JSONResponse(result)
+    finally:
+        db.close()
 
 
 @app.post("/advisor/refresh")
