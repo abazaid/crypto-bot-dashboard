@@ -28,9 +28,13 @@
     .run-row input { background: #0f1117; border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; width: 110px; font-size: 14px; }
     .btn { padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; transition: opacity .15s; }
     .btn:hover { opacity: .85; }
-    .btn-run  { background: var(--green); color: #000; }
-    .btn-stop { background: var(--red); color: #fff; display:none; }
+    .btn-run     { background: var(--green); color: #000; }
+    .btn-refresh { background: var(--blue); color: #fff; }
+    .btn-stop    { background: var(--red); color: #fff; display:none; }
     .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .refresh-status { font-size: 12px; margin-top: 6px; color: var(--muted); }
+    .refresh-status.running { color: var(--blue); }
+    .refresh-status.error   { color: var(--red); }
 
     /* ── Progress ── */
     #progress-wrap { margin-top: 16px; display: none; }
@@ -117,12 +121,15 @@
           <input type="number" name="trials" value="100" min="30" max="500"/>
         </label>
         <button type="submit" class="btn btn-run" id="btn-run">▶ Run</button>
+        <button type="button" class="btn btn-refresh" id="btn-refresh" title="Re-run ML predictions only using latest candles. ~1-2 min, no Hyperopt.">⚡ Quick Refresh</button>
       </div>
     </form>
     <p class="hint">
       Tip: 50 symbols × 100 trials ≈ 10–20 min. 150 symbols × 300 trials ≈ 60–90 min.
       Results auto-refresh every 5s while running.
+      <br>⚡ <strong>Quick Refresh</strong>: updates ML signals only using latest candles (~1-2 min). Runs automatically every hour.
     </p>
+    <div class="refresh-status" id="refresh-status"></div>
 
     <div id="progress-wrap">
       <div class="prog-bar-bg"><div class="prog-bar" id="prog-bar"></div></div>
@@ -296,22 +303,24 @@ function startPolling() {
     const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
     if (!s) return;
     updateProgress(s);
-    if (s.status === 'done' && s.result) { render(s.result); stopPolling(); }
-    if (s.status === 'error') { stopPolling(); }
+    updateRefreshStatus(s);
+    if (s.status === 'done' && s.result) { render(s.result); }
+    if (s.status !== 'running' && s.refresh_status !== 'running') stopPolling();
   }, 5000);
 }
 
 function stopPolling() { clearInterval(_poll); _poll = null; }
 
 function updateProgress(s) {
-  const wrap = document.getElementById('progress-wrap');
-  const bar  = document.getElementById('prog-bar');
-  const txt  = document.getElementById('prog-text');
-  const err  = document.getElementById('error-box');
+  const wrap   = document.getElementById('progress-wrap');
+  const bar    = document.getElementById('prog-bar');
+  const txt    = document.getElementById('prog-text');
+  const err    = document.getElementById('error-box');
   const btnRun = document.getElementById('btn-run');
 
   if (s.status === 'running') {
     wrap.style.display = 'block';
+    bar.style.background = 'var(--green)';
     bar.style.width = (s.progress || 0) + '%';
     txt.textContent = s.step || 'Running...';
     btnRun.textContent = '⏳ Running...';
@@ -328,6 +337,7 @@ function updateProgress(s) {
     btnRun.disabled = false;
   } else if (s.status === 'done') {
     wrap.style.display = 'block';
+    bar.style.background = 'var(--green)';
     bar.style.width = '100%';
     txt.textContent = '✓ Complete — ' + (s.finished_at || '');
     btnRun.textContent = '▶ Run Again';
@@ -338,7 +348,37 @@ function updateProgress(s) {
   }
 }
 
-// ── Form submit ───────────────────────────────────────────────────────────────
+function updateRefreshStatus(s) {
+  const el     = document.getElementById('refresh-status');
+  const btnRef = document.getElementById('btn-refresh');
+  const rs     = s.refresh_status || 'idle';
+
+  if (rs === 'running') {
+    el.className = 'refresh-status running';
+    el.textContent = '⚡ Quick ML refresh in progress...';
+    btnRef.disabled = true;
+    btnRef.textContent = '⏳ Refreshing...';
+  } else if (rs === 'error') {
+    el.className = 'refresh-status error';
+    el.textContent = '✗ Refresh failed: ' + (s.refresh_error || 'Unknown');
+    btnRef.disabled = false;
+    btnRef.textContent = '⚡ Quick Refresh';
+  } else if (rs === 'done' && s.last_refresh_at) {
+    el.className = 'refresh-status';
+    el.textContent = '⚡ Last ML refresh: ' + s.last_refresh_at + ' · Auto-runs every hour';
+    btnRef.disabled = false;
+    btnRef.textContent = '⚡ Quick Refresh';
+  } else {
+    el.textContent = s.last_refresh_at
+      ? '⚡ Last ML refresh: ' + s.last_refresh_at + ' · Auto-runs every hour'
+      : '⚡ Quick Refresh auto-runs every hour — or click to run now';
+    el.className = 'refresh-status';
+    btnRef.disabled = false;
+    btnRef.textContent = '⚡ Quick Refresh';
+  }
+}
+
+// ── Form submit (full run) ────────────────────────────────────────────────────
 document.getElementById('run-form').addEventListener('submit', async e => {
   e.preventDefault();
   const fd = new FormData(e.target);
@@ -349,16 +389,24 @@ document.getElementById('run-form').addEventListener('submit', async e => {
   updateProgress({ status: 'running', progress: 0, step: 'Starting...' });
 });
 
+// ── Quick Refresh button ──────────────────────────────────────────────────────
+document.getElementById('btn-refresh').addEventListener('click', async () => {
+  const resp = await fetch('/advisor/refresh', { method: 'POST' });
+  const json = await resp.json();
+  if (!resp.ok) { alert(json.msg || 'Cannot refresh right now'); return; }
+  updateRefreshStatus({ refresh_status: 'running' });
+  startPolling();
+});
+
 // ── On load ───────────────────────────────────────────────────────────────────
 (async () => {
-  // Check if initial result was injected server-side
   if (window._INITIAL_RESULT) { render(window._INITIAL_RESULT); }
 
-  // Check current status
   const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
   if (s) {
     updateProgress(s);
-    if (s.status === 'running') startPolling();
+    updateRefreshStatus(s);
+    if (s.status === 'running' || s.refresh_status === 'running') startPolling();
     if (s.status === 'done' && s.result) render(s.result);
   }
 })();

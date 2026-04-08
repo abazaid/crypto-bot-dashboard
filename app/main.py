@@ -938,6 +938,26 @@ def on_startup() -> None:
         replace_existing=True,
     )
 
+    # ── Advisor: hourly quick ML refresh ─────────────────────────────────
+    def _scheduled_advisor_refresh() -> None:
+        state = advisor_runner.get_state()
+        if state["status"] == "running":
+            logger.info("Advisor refresh: skipping — full run in progress")
+            return
+        if state["refresh_status"] == "running":
+            logger.info("Advisor refresh: skipping — refresh already running")
+            return
+        logger.info("Advisor: starting hourly quick ML refresh")
+        advisor_runner.start_refresh()
+
+    scheduler.add_job(
+        _scheduled_advisor_refresh,
+        "interval",
+        hours=1,
+        id="advisor_hourly_refresh",
+        replace_existing=True,
+    )
+
     scheduler.start()
 
 
@@ -3341,6 +3361,15 @@ async def advisor_run(
     if not started:
         return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
     return JSONResponse({"ok": True, "msg": f"Started: {symbols} symbols, {trials} trials"})
+
+
+@app.post("/advisor/refresh")
+async def advisor_refresh():
+    """Trigger a quick ML-only refresh (no Hyperopt, ~1-2 min)."""
+    started = advisor_runner.start_refresh()
+    if not started:
+        return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
+    return JSONResponse({"ok": True, "msg": "Quick ML refresh started"})
 
 
 @app.get("/advisor/status")

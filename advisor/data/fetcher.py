@@ -135,6 +135,71 @@ def load_or_fetch(
     return df
 
 
+def topup_ohlcv(
+    symbol: str,
+    interval: str = OHLCV_INTERVAL,
+) -> pd.DataFrame:
+    """
+    Load existing cached parquet and fetch only candles newer than last row.
+    Merges and saves back. Much faster than full re-download.
+    Falls back to full download if no cache exists.
+    """
+    path = _cache_path(symbol, interval)
+
+    if not path.exists():
+        return load_or_fetch(symbol, interval)
+
+    existing = pd.read_parquet(path)
+    if existing.empty:
+        return load_or_fetch(symbol, interval)
+
+    last_ts = existing.index[-1]
+    last_ms = int(last_ts.timestamp() * 1000) + 1  # +1ms to avoid duplicate
+    end_ms  = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    if end_ms - last_ms < 3_600_000:  # Less than 1h since last candle — skip
+        return existing
+
+    url = f"{BINANCE_BASE}/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval,
+              "startTime": last_ms, "endTime": end_ms, "limit": 1000}
+    try:
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        new_rows = resp.json()
+    except Exception as e:
+        logger.warning("Topup failed for %s: %s — using cache", symbol, e)
+        return existing
+
+    if not new_rows:
+        return existing
+
+    new_df = _klines_to_df(new_rows)
+    combined = pd.concat([existing, new_df])
+    combined = combined[~combined.index.duplicated(keep="last")]
+    combined = combined.sort_index()
+    combined.to_parquet(path)
+    logger.debug("Topped up %s: +%d candles (total %d)", symbol, len(new_df), len(combined))
+    return combined
+
+
+def topup_all_symbols(
+    symbols: list[str],
+    interval: str = OHLCV_INTERVAL,
+) -> dict[str, pd.DataFrame]:
+    """Topup OHLCV for all symbols — fast, only fetches new candles."""
+    result: dict[str, pd.DataFrame] = {}
+    for sym in symbols:
+        try:
+            df = topup_ohlcv(sym, interval)
+            if len(df) >= 100:
+                result[sym] = df
+        except Exception as e:
+            logger.warning("Topup error %s: %s", sym, e)
+        time.sleep(0.05)
+    return result
+
+
 def load_all_symbols(
     symbols: list[str],
     interval: str = OHLCV_INTERVAL,
