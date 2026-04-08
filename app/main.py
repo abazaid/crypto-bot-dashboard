@@ -848,6 +848,26 @@ def on_startup() -> None:
         id="live_acc_cycle",
         replace_existing=True,
     )
+
+    # ── Advisor: auto-run daily at 08:00 UTC ──────────────────────────────
+    def _scheduled_advisor() -> None:
+        state = advisor_runner.get_state()
+        if state["status"] == "running":
+            logger.info("Advisor: skipping scheduled run — already running")
+            return
+        logger.info("Advisor: starting scheduled daily run")
+        advisor_runner.start(n_symbols=50, n_trials=100)
+
+    scheduler.add_job(
+        _scheduled_advisor,
+        "cron",
+        hour=8,
+        minute=0,
+        timezone="UTC",
+        id="advisor_daily",
+        replace_existing=True,
+    )
+
     scheduler.start()
 
 
