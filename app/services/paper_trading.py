@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from sqlalchemy.orm import Session
+from collections import defaultdict
+
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.models.paper_v2 import ActivityLog, AppSetting, Campaign, DcaRule, Position, PositionDcaState
@@ -1461,12 +1463,28 @@ def run_cycle(db: Session) -> None:
 
     open_positions = (
         db.query(Position)
+        .options(joinedload(Position.campaign))
         .join(Campaign, Campaign.id == Position.campaign_id)
         .filter(Position.status == "open", Campaign.mode == "paper")
         .all()
     )
     symbols = sorted({p.symbol for p in open_positions})
     prices = get_prices(symbols) if symbols else {}
+
+    # Batch-load all DCA states + rules for open positions in one query
+    pos_ids = [p.id for p in open_positions]
+    dca_states_by_pos: dict[int, list] = defaultdict(list)
+    if pos_ids:
+        all_states = (
+            db.query(PositionDcaState)
+            .options(joinedload(PositionDcaState.rule))
+            .filter(PositionDcaState.position_id.in_(pos_ids))
+            .join(DcaRule, DcaRule.id == PositionDcaState.dca_rule_id)
+            .order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc())
+            .all()
+        )
+        for st in all_states:
+            dca_states_by_pos[st.position_id].append(st)
 
     cash = float(get_setting(db, "paper_cash", "0"))
     changed = False
@@ -1502,13 +1520,7 @@ def run_cycle(db: Session) -> None:
             )
             continue
 
-        states = (
-            db.query(PositionDcaState)
-            .join(DcaRule, DcaRule.id == PositionDcaState.dca_rule_id)
-            .filter(PositionDcaState.position_id == pos.id)
-            .order_by(DcaRule.drop_pct.asc(), DcaRule.id.asc())
-            .all()
-        )
+        states = dca_states_by_pos.get(pos.id, [])
         if campaign.status == "active" and not pos.dca_paused:
             for state in states:
                 if state.executed:
@@ -1673,7 +1685,10 @@ def run_cycle(db: Session) -> None:
             changed = True
             continue
 
-        price_map = get_prices(picks)
+        price_map = {s: prices[s] for s in picks if s in prices}
+        missing_from_cache = [s for s in picks if s not in price_map]
+        if missing_from_cache:
+            price_map.update(get_prices(missing_from_cache))
         for symbol in picks:
             if symbol in open_symbols:
                 continue
@@ -1715,7 +1730,10 @@ def run_cycle(db: Session) -> None:
         if not to_reopen:
             continue
 
-        symbol_prices = get_prices(to_reopen)
+        symbol_prices = {s: prices[s] for s in to_reopen if s in prices}
+        missing_from_cache = [s for s in to_reopen if s not in symbol_prices]
+        if missing_from_cache:
+            symbol_prices.update(get_prices(missing_from_cache))
         rules = (
             db.query(DcaRule)
             .filter(DcaRule.campaign_id == campaign.id)

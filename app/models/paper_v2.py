@@ -12,8 +12,8 @@ class Campaign(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    mode: Mapped[str] = mapped_column(String(20), default="paper", nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), default="paper", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, index=True)
     entry_amount_usdt: Mapped[float] = mapped_column(Float, nullable=False)
     tp_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     sl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -56,7 +56,7 @@ class Position(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), nullable=False, index=True)
     symbol: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(20), default="open", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="open", nullable=False, index=True)
     opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -113,7 +113,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     symbol: Mapped[str] = mapped_column(String(30), default="-", nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

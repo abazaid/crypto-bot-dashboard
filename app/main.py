@@ -1,6 +1,10 @@
+import logging
 import threading
+import time
 import json
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Form, Request
@@ -10,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy import desc
 from sqlalchemy import or_
+from sqlalchemy.orm import joinedload
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
@@ -177,9 +182,11 @@ def _match_date_filter(row: dict, date_key: str, now_dt: datetime) -> bool:
 def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> dict:
     closed_positions = (
         db.query(Position)
+        .options(joinedload(Position.campaign))
         .join(Campaign, Campaign.id == Position.campaign_id)
         .filter(Position.status == "closed", Campaign.mode == mode)
         .order_by(desc(Position.closed_at), desc(Position.id))
+        .limit(2000)
         .all()
     )
     position_ids = [p.id for p in closed_positions]
@@ -364,7 +371,7 @@ def _acc_history_context(db, mode: str, date_filter: str, symbol_filter: str, re
     q = db.query(AccumulationTrade).join(AccumulationPlan, AccumulationPlan.id == AccumulationTrade.plan_id).filter(
         AccumulationPlan.mode == mode
     )
-    rows_all = q.order_by(desc(AccumulationTrade.created_at), desc(AccumulationTrade.id)).all()
+    rows_all = q.order_by(desc(AccumulationTrade.created_at), desc(AccumulationTrade.id)).limit(2000).all()
     now_dt = datetime.utcnow()
 
     def _match_date(t: AccumulationTrade) -> bool:
@@ -710,28 +717,39 @@ def _apply_schema_updates() -> None:
 
 def _scheduled_cycle() -> None:
     if not cycle_lock.acquire(blocking=False):
+        logger.warning("Paper cycle skipped: previous cycle still running")
         return
     db = SessionLocal()
+    t0 = time.monotonic()
     try:
         run_cycle(db)
     finally:
+        elapsed = time.monotonic() - t0
+        if elapsed > settings.fast_loop_seconds * 0.8:
+            logger.warning("Paper cycle took %.2fs (interval=%ss)", elapsed, settings.fast_loop_seconds)
         db.close()
         cycle_lock.release()
 
 
 def _scheduled_live_cycle() -> None:
     if not live_cycle_lock.acquire(blocking=False):
+        logger.warning("Live cycle skipped: previous cycle still running")
         return
     db = SessionLocal()
+    t0 = time.monotonic()
     try:
         run_live_cycle(db)
     finally:
+        elapsed = time.monotonic() - t0
+        if elapsed > settings.fast_loop_seconds * 0.8:
+            logger.warning("Live cycle took %.2fs (interval=%ss)", elapsed, settings.fast_loop_seconds)
         db.close()
         live_cycle_lock.release()
 
 
 def _scheduled_medium_refresh() -> None:
     if not medium_lock.acquire(blocking=False):
+        logger.warning("Medium refresh skipped: previous refresh still running")
         return
     db = SessionLocal()
     try:
@@ -743,6 +761,7 @@ def _scheduled_medium_refresh() -> None:
 
 def _scheduled_slow_recalc() -> None:
     if not slow_lock.acquire(blocking=False):
+        logger.warning("Slow recalc skipped: previous recalc still running")
         return
     db = SessionLocal()
     try:
@@ -754,6 +773,7 @@ def _scheduled_slow_recalc() -> None:
 
 def _scheduled_paper_acc_cycle() -> None:
     if not paper_acc_lock.acquire(blocking=False):
+        logger.warning("Paper accumulation cycle skipped: previous cycle still running")
         return
     db = SessionLocal()
     try:
@@ -765,6 +785,7 @@ def _scheduled_paper_acc_cycle() -> None:
 
 def _scheduled_live_acc_cycle() -> None:
     if not live_acc_lock.acquire(blocking=False):
+        logger.warning("Live accumulation cycle skipped: previous cycle still running")
         return
     db = SessionLocal()
     try:
