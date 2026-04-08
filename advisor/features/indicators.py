@@ -1,86 +1,125 @@
 """
 Technical indicator calculation for the advisor module.
-Uses pandas-ta — no TA-Lib C compilation required.
+Pure pandas/numpy — no external TA library required.
 """
 from __future__ import annotations
 
 import logging
-import warnings
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _ema(series: pd.Series, length: int) -> pd.Series:
+    return series.ewm(span=length, adjust=False).mean()
+
+
+def _rsi(series: pd.Series, length: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0).ewm(com=length - 1, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(com=length - 1, adjust=False).mean()
+    rs = gain / (loss + 1e-9)
+    return 100 - (100 / (1 + rs))
+
+
+def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    ema_fast = _ema(series, fast)
+    ema_slow = _ema(series, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = _ema(macd_line, signal)
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+
+def _bbands(series: pd.Series, length: int = 20, std: float = 2.0):
+    mid = series.rolling(length).mean()
+    stddev = series.rolling(length).std(ddof=0)
+    upper = mid + std * stddev
+    lower = mid - std * stddev
+    return upper, mid, lower
+
+
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(com=length - 1, adjust=False).mean()
+
+
+def _obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    direction = np.sign(close.diff().fillna(0))
+    return (direction * volume).cumsum()
+
+
+def _roc(series: pd.Series, length: int = 10) -> pd.Series:
+    return series.pct_change(length) * 100
+
+
+def _mom(series: pd.Series, length: int = 10) -> pd.Series:
+    return series.diff(length)
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add technical indicators to an OHLCV DataFrame.
     Returns a new DataFrame with all indicators and NaN rows dropped.
-
-    Indicators added:
-      Trend:    EMA20, EMA50, EMA200
-      Momentum: RSI14, MACD line/signal/hist
-      Volatility: BB upper/mid/lower, ATR14, BB width
-      Volume:   Volume ratio (vs 20-period MA), OBV
-      Price:    % change 1h/4h/24h, distance from EMA200
     """
-    import pandas_ta as ta  # import here so it doesn't break if not installed
-
     df = df.copy()
 
     # ── Trend ──────────────────────────────────────────────────────────────
-    df["ema20"]  = ta.ema(df["close"], length=20)
-    df["ema50"]  = ta.ema(df["close"], length=50)
-    df["ema200"] = ta.ema(df["close"], length=200)
+    df["ema20"]  = _ema(df["close"], 20)
+    df["ema50"]  = _ema(df["close"], 50)
+    df["ema200"] = _ema(df["close"], 200)
 
     # ── Momentum ───────────────────────────────────────────────────────────
-    df["rsi"] = ta.rsi(df["close"], length=14)
+    df["rsi"] = _rsi(df["close"], 14)
 
-    macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
-    if macd is not None:
-        df["macd"]        = macd["MACD_12_26_9"]
-        df["macd_signal"] = macd["MACDs_12_26_9"]
-        df["macd_hist"]   = macd["MACDh_12_26_9"]
+    macd_line, signal_line, hist = _macd(df["close"])
+    df["macd"]        = macd_line
+    df["macd_signal"] = signal_line
+    df["macd_hist"]   = hist
 
-    df["roc"]  = ta.roc(df["close"], length=10)   # Rate of change 10h
-    df["mom"]  = ta.mom(df["close"], length=10)   # Momentum 10h
+    df["roc"] = _roc(df["close"], 10)
+    df["mom"] = _mom(df["close"], 10)
 
     # ── Volatility ─────────────────────────────────────────────────────────
-    bb = ta.bbands(df["close"], length=20, std=2)
-    if bb is not None:
-        df["bb_upper"] = bb["BBU_20_2.0"]
-        df["bb_mid"]   = bb["BBM_20_2.0"]
-        df["bb_lower"] = bb["BBL_20_2.0"]
-        df["bb_pct"]   = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"] + 1e-9)
-        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / (df["bb_mid"] + 1e-9)
+    bb_upper, bb_mid, bb_lower = _bbands(df["close"], 20, 2.0)
+    df["bb_upper"] = bb_upper
+    df["bb_mid"]   = bb_mid
+    df["bb_lower"] = bb_lower
+    df["bb_pct"]   = (df["close"] - bb_lower) / (bb_upper - bb_lower + 1e-9)
+    df["bb_width"] = (bb_upper - bb_lower) / (bb_mid + 1e-9)
 
-    df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+    df["atr"] = _atr(df["high"], df["low"], df["close"], 14)
 
     # ── Volume ─────────────────────────────────────────────────────────────
     vol_ma = df["volume"].rolling(20).mean()
-    df["vol_ratio"] = df["volume"] / (vol_ma + 1e-9)  # > 1 = above average volume
-
-    df["obv"] = ta.obv(df["close"], df["volume"])
+    df["vol_ratio"] = df["volume"] / (vol_ma + 1e-9)
+    df["obv"] = _obv(df["close"], df["volume"])
 
     # ── Price change % ─────────────────────────────────────────────────────
     df["pct_1h"]  = df["close"].pct_change(1)  * 100
     df["pct_4h"]  = df["close"].pct_change(4)  * 100
     df["pct_24h"] = df["close"].pct_change(24) * 100
 
-    # Distance from EMA200 (positive = above, negative = below)
-    df["dist_ema200"] = (df["close"] - df["ema200"]) / (df["ema200"] + 1e-9) * 100
-
-    # Distance from lower BB (how close to support)
+    # ── Derived ────────────────────────────────────────────────────────────
+    df["dist_ema200"]  = (df["close"] - df["ema200"]) / (df["ema200"] + 1e-9) * 100
     df["dist_bb_lower"] = (df["close"] - df["bb_lower"]) / (df["close"] + 1e-9) * 100
 
     # ── Trend classification ────────────────────────────────────────────────
     df["trend"] = "sideways"
     df.loc[df["ema20"] > df["ema50"], "trend"] = "bullish"
     df.loc[df["ema20"] < df["ema50"], "trend"] = "bearish"
-    df.loc[df["close"] > df["ema200"], "above_ema200"] = 1
-    df.loc[df["close"] <= df["ema200"], "above_ema200"] = 0
+    df["above_ema200"] = (df["close"] > df["ema200"]).astype(int)
 
     # ── Clean up ────────────────────────────────────────────────────────────
     df = df.replace([np.inf, -np.inf], np.nan)
