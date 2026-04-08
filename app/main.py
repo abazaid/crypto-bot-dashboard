@@ -856,7 +856,7 @@ def on_startup() -> None:
             logger.info("Advisor: skipping scheduled run — already running")
             return
         logger.info("Advisor: starting scheduled daily run")
-        advisor_runner.start(n_symbols=50, n_trials=100)
+        advisor_runner.start(n_symbols=50, n_trials=300)
 
     scheduler.add_job(
         _scheduled_advisor,
