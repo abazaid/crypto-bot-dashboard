@@ -470,7 +470,7 @@ function renderDashboard(d) {
     const pnl_cls = (t.pnl_usdt||0) >= 0 ? 'up' : 'dn';
     const pnl_str = t.status === 'active'
       ? `<span class="${pnl_cls}">${(t.pnl_pct||0)>=0?'+':''}${fmt(t.pnl_pct,2)}%<br><small>${(t.pnl_usdt||0)>=0?'+':''}$${fmt(t.pnl_usdt,2)}</small></span>`
-      : `<span class="${pnl_cls}">${(t.pnl_usdt||0)>=0?'+':''}$${fmt(t.pnl_usdt,2)}</span>`;
+      : `<span class="${pnl_cls}">${(t.pnl_pct!==null&&t.pnl_pct!==undefined)?(t.pnl_pct>=0?'+':'')+fmt(t.pnl_pct,2)+'%<br>':''}<small>${(t.pnl_usdt||0)>=0?'+':''}$${fmt(t.pnl_usdt,2)}</small></span>`;
     const dca = [t.dca1?'<span class="dca-badge">DCA1</span>':'', t.dca2?'<span class="dca-badge">DCA2</span>':''].join('');
     const status_html = t.status === 'active'
       ? '<span style="color:var(--green)">● Active</span>'
@@ -617,7 +617,9 @@ function renderCampaigns(campaigns) {
                     <span class="${cls}" style="font-size:11px;margin-left:4px">($${fmt(p.pnl_usdt,2)})</span>`;
       } else {
         const cls = (p.close_pnl_usdt||0) >= 0 ? 'up' : 'dn';
-        pnl_html = `<span class="${cls}">${(p.close_pnl_usdt||0)>=0?'+':''}$${fmt(p.close_pnl_usdt,2)}</span>`;
+        const pct_str = (p.pnl_pct !== null && p.pnl_pct !== undefined)
+          ? `${p.pnl_pct>=0?'+':''}${fmt(p.pnl_pct,2)}% ` : '';
+        pnl_html = `<span class="${cls}">${pct_str}($${(p.close_pnl_usdt||0)>=0?'+':''}${fmt(p.close_pnl_usdt,2)})</span>`;
       }
 
       // DCA info
@@ -628,6 +630,9 @@ function renderCampaigns(campaigns) {
         dca_html = `<span class="dca-badge">${dca_count}x DCA</span>${avg_str}`;
       }
 
+      const closed_at_html = p.closed_at
+        ? `<span style="color:var(--muted);font-size:11px">${p.closed_at}</span>`
+        : '—';
       return `<tr>
         <td class="sym">${p.symbol}</td>
         <td>${posStatusLabel(p.status)}</td>
@@ -638,7 +643,8 @@ function renderCampaigns(campaigns) {
         <td>$${fmt(p.total_invested,2)}</td>
         <td><span style="color:var(--green)">+${fmt(p.tp_pct,1)}%</span> / <span style="color:var(--red)">-${fmt(p.sl_pct,1)}%</span></td>
         <td>${dca_html}</td>
-        <td style="color:var(--muted);font-size:11px">${p.created_at||''}</td>
+        <td style="color:var(--muted);font-size:11px">${p.created_at||'—'}</td>
+        <td>${closed_at_html}</td>
         <td>${sell_btn}</td>
       </tr>`;
     }).join('');
@@ -647,7 +653,7 @@ function renderCampaigns(campaigns) {
       ? `<table class="pos-table">
           <thead><tr>
             <th>Symbol</th><th>Status</th><th>Entry</th><th>Avg Price</th>
-            <th>Current</th><th>PnL</th><th>Invested</th><th>TP / SL</th><th>DCA</th><th>Opened</th><th></th>
+            <th>Current</th><th>PnL</th><th>Invested</th><th>TP / SL</th><th>DCA</th><th>Opened</th><th>Closed</th><th></th>
           </tr></thead>
           <tbody>${pos_rows}</tbody>
         </table>`

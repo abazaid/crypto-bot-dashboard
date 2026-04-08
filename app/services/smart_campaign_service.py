@@ -259,8 +259,15 @@ def _process_campaign(
     if slots <= 0:
         return
 
-    # Pick candidates not already active
-    candidates = [r for r in recs if r["symbol"] not in active_symbols]
+    # Symbols active in ANY campaign (prevent duplicates across campaigns)
+    all_active_symbols = {
+        p.symbol for p in db.query(SmartPosition).filter(
+            SmartPosition.status == "active",
+        ).all()
+    }
+
+    # Pick candidates not already active in any campaign
+    candidates = [r for r in recs if r["symbol"] not in all_active_symbols]
     opened = 0
     for rec in candidates:
         if opened >= slots:
