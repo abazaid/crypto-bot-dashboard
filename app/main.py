@@ -868,6 +868,76 @@ def on_startup() -> None:
         replace_existing=True,
     )
 
+    # ── Advisor: market volatility watcher (every 30 min) ─────────────────
+    _btc_price_history: list[tuple[datetime, float]] = []  # (timestamp, price)
+
+    def _advisor_market_watcher() -> None:
+        """
+        Checks BTC price every 30 min. Triggers an emergency advisor re-run if:
+          1. BTC drops >4% in 4 hours  (market crash protection)
+          2. BTC spikes >5% in 4 hours (euphoria/pump detection)
+          3. 4h ATR (volatility) doubles vs the previous 24h baseline
+        """
+        try:
+            from app.services.binance_public import get_prices
+            prices = get_prices(["BTCUSDT"])
+            btc_price = prices.get("BTCUSDT")
+            if not btc_price:
+                return
+
+            now = datetime.utcnow()
+            _btc_price_history.append((now, btc_price))
+
+            # Keep only last 25 readings (~12.5 hours at 30-min intervals)
+            cutoff = now - timedelta(hours=13)
+            while _btc_price_history and _btc_price_history[0][0] < cutoff:
+                _btc_price_history.pop(0)
+
+            if len(_btc_price_history) < 8:  # Need at least 4h of data
+                return
+
+            # 4-hour window (8 readings × 30 min)
+            price_4h_ago = _btc_price_history[-8][1]
+            change_4h = (btc_price - price_4h_ago) / price_4h_ago * 100
+
+            # 24h ATR approximation: std of last 24 readings vs last 8
+            if len(_btc_price_history) >= 24:
+                prices_24h = [p for _, p in _btc_price_history[-24:]]
+                prices_4h  = [p for _, p in _btc_price_history[-8:]]
+                import statistics
+                vol_24h = statistics.stdev(prices_24h) / (sum(prices_24h) / len(prices_24h)) * 100
+                vol_4h  = statistics.stdev(prices_4h)  / (sum(prices_4h)  / len(prices_4h))  * 100
+                volatility_spike = vol_4h > vol_24h * 2.0
+            else:
+                volatility_spike = False
+
+            state = advisor_runner.get_state()
+            if state["status"] == "running":
+                return
+
+            reason = None
+            if change_4h <= -4.0:
+                reason = f"BTC crashed {change_4h:.1f}% in 4h — emergency re-analysis"
+            elif change_4h >= 5.0:
+                reason = f"BTC pumped +{change_4h:.1f}% in 4h — re-analyzing opportunities"
+            elif volatility_spike:
+                reason = f"Volatility spike detected (4h vol {vol_4h:.2f}% vs 24h {vol_24h:.2f}%) — re-analyzing"
+
+            if reason:
+                logger.warning("Advisor market watcher triggered: %s", reason)
+                advisor_runner.start(n_symbols=50, n_trials=50)
+
+        except Exception as e:
+            logger.warning("Advisor market watcher error: %s", e)
+
+    scheduler.add_job(
+        _advisor_market_watcher,
+        "interval",
+        minutes=30,
+        id="advisor_market_watcher",
+        replace_existing=True,
+    )
+
     scheduler.start()
 
 
