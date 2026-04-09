@@ -82,7 +82,16 @@ def get_advisor_recommendations() -> list[dict]:
             return []
         with open(latest) as f:
             data = json.load(f)
-        return data.get("recommendations", [])
+        recs = data.get("recommendations", [])
+        # Filter out invalid symbols (non-ASCII / garbage)
+        valid = []
+        for r in recs:
+            sym = r.get("symbol", "")
+            if sym and sym.isascii() and sym.isalnum() and sym.endswith("USDT"):
+                valid.append(r)
+            else:
+                logger.warning("LiveSmart: skipping invalid symbol %r", sym)
+        return valid
     except Exception as e:
         logger.warning("LiveSmart: could not load advisor recs: %s", e)
         return []
@@ -396,7 +405,12 @@ def run_live_smart_cycle(db: Session) -> None:
         try:
             _process_live_campaign(db, campaign, prices, recs)
         except Exception as e:
-            logger.error("LiveSmart %d cycle error: %s", campaign.id, e)
+            logger.error("LiveSmart %d cycle error: %s", campaign.id, e, exc_info=True)
+            try:
+                _log(db, "ERROR", f"Cycle error: {e}", campaign_id=campaign.id)
+                db.commit()
+            except Exception:
+                pass
 
 
 def _process_live_campaign(
@@ -425,17 +439,21 @@ def _process_live_campaign(
         ).all()
     }
 
-    slots = campaign.max_symbols - len(
-        [p for p in db.query(LiveSmartPosition).filter(
-            LiveSmartPosition.campaign_id == campaign.id,
-            LiveSmartPosition.status == "active",
-        ).all()]
-    )
+    current_active_count = len(db.query(LiveSmartPosition).filter(
+        LiveSmartPosition.campaign_id == campaign.id,
+        LiveSmartPosition.status == "active",
+    ).all())
+    slots = campaign.max_symbols - current_active_count
     if slots <= 0:
         return
 
     usdt_free = get_usdt_free()
-    candidates = [r for r in recs if r["symbol"] not in active_symbols]
+    candidates = [r for r in recs if r["symbol"] not in active_symbols and r.get("signal") == "BUY"]
+
+    logger.info(
+        "LiveSmart %d: %d BUY candidates, %d slots, balance=$%.2f",
+        campaign.id, len(candidates), slots, usdt_free,
+    )
 
     opened = 0
     for rec in candidates:
@@ -446,7 +464,7 @@ def _process_live_campaign(
         if not price:
             continue
 
-        # Only open BUY signals — skip others silently (no log spam every 10s)
+            # Only open BUY signals
         signal = rec.get("signal", "SKIP")
         if signal not in ("BUY",):
             continue
