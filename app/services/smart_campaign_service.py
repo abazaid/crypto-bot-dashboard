@@ -267,7 +267,7 @@ def _process_campaign(
     }
 
     # Pick BUY-signal candidates not already active in any campaign
-    candidates = [r for r in recs if r["symbol"] not in all_active_symbols and r.get("signal") == "BUY"]
+    candidates = [r for r in recs if r["symbol"] not in all_active_symbols]
     opened = 0
     for rec in candidates:
         if opened >= slots:

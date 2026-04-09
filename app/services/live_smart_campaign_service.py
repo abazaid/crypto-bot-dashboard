@@ -451,12 +451,11 @@ def _process_live_campaign(
         return
 
     usdt_free = get_usdt_free()
-    candidates = [r for r in recs if r["symbol"] not in active_symbols and r.get("signal") == "BUY"]
+    candidates = [r for r in recs if r["symbol"] not in active_symbols]
 
-    buy_recs = [r for r in recs if r.get("signal") == "BUY"]
     logger.info(
-        "LiveSmart %d: %d total recs, %d BUY, %d candidates (not active), %d slots, balance=$%.2f",
-        campaign.id, len(recs), len(buy_recs), len(candidates), slots, usdt_free,
+        "LiveSmart %d: %d total recs, %d candidates (not active), %d slots, balance=$%.2f",
+        campaign.id, len(recs), len(candidates), slots, usdt_free,
     )
     if not candidates:
         # Log once to Activity why nothing opened
@@ -465,7 +464,7 @@ def _process_live_campaign(
         last = _last_balance_warn.get(-campaign.id)  # reuse debounce dict with negative key
         if not last or (now - last).total_seconds() > 300:
             _last_balance_warn[-campaign.id] = now
-            reason = "no BUY signals" if not buy_recs else f"all {len(buy_recs)} BUY symbols already active"
+            reason = f"all {len(recs)} recommendation symbols already active" if recs else "no recommendations available"
             _log(db, "SKIP_SIGNAL",
                  f"ℹ️ No new positions opened — {reason} | "
                  f"Total recs: {len(recs)}, BUY: {len(buy_recs)}, Active symbols: {len(active_symbols)}",
