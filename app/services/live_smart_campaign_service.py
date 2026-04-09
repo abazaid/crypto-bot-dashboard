@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 # Debounce: only log SKIP_BALANCE once per 5 minutes per campaign
 _last_balance_warn: dict[int, datetime] = {}
+# Debounce: only warn about invalid symbols once per hour
+_warned_invalid_symbols: set[str] = set()
 
 
 # ── Logging helper ────────────────────────────────────────────────────────────
@@ -83,14 +85,15 @@ def get_advisor_recommendations() -> list[dict]:
         with open(latest) as f:
             data = json.load(f)
         recs = data.get("recommendations", [])
-        # Filter out invalid symbols (non-ASCII / garbage)
+        # Filter out invalid symbols (non-ASCII / garbage like 币安人生USDT)
         valid = []
         for r in recs:
             sym = r.get("symbol", "")
             if sym and sym.isascii() and sym.isalnum() and sym.endswith("USDT"):
                 valid.append(r)
-            else:
-                logger.warning("LiveSmart: skipping invalid symbol %r", sym)
+            elif sym not in _warned_invalid_symbols:
+                _warned_invalid_symbols.add(sym)
+                logger.warning("LiveSmart: skipping invalid symbol %r (suppressing future warnings)", sym)
         return valid
     except Exception as e:
         logger.warning("LiveSmart: could not load advisor recs: %s", e)
@@ -450,10 +453,24 @@ def _process_live_campaign(
     usdt_free = get_usdt_free()
     candidates = [r for r in recs if r["symbol"] not in active_symbols and r.get("signal") == "BUY"]
 
+    buy_recs = [r for r in recs if r.get("signal") == "BUY"]
     logger.info(
-        "LiveSmart %d: %d BUY candidates, %d slots, balance=$%.2f",
-        campaign.id, len(candidates), slots, usdt_free,
+        "LiveSmart %d: %d total recs, %d BUY, %d candidates (not active), %d slots, balance=$%.2f",
+        campaign.id, len(recs), len(buy_recs), len(candidates), slots, usdt_free,
     )
+    if not candidates:
+        # Log once to Activity why nothing opened
+        from datetime import datetime as _dtnow
+        now = _dtnow.utcnow()
+        last = _last_balance_warn.get(-campaign.id)  # reuse debounce dict with negative key
+        if not last or (now - last).total_seconds() > 300:
+            _last_balance_warn[-campaign.id] = now
+            reason = "no BUY signals" if not buy_recs else f"all {len(buy_recs)} BUY symbols already active"
+            _log(db, "SKIP_SIGNAL",
+                 f"ℹ️ No new positions opened — {reason} | "
+                 f"Total recs: {len(recs)}, BUY: {len(buy_recs)}, Active symbols: {len(active_symbols)}",
+                 campaign_id=campaign.id)
+            db.commit()
 
     opened = 0
     for rec in candidates:
