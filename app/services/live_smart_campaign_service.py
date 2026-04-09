@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +33,9 @@ from app.services.binance_live import (
 from app.services.binance_public import get_prices
 
 logger = logging.getLogger(__name__)
+
+# Debounce: only log SKIP_BALANCE once per 5 minutes per campaign
+_last_balance_warn: dict[int, datetime] = {}
 
 
 # ── Logging helper ────────────────────────────────────────────────────────────
@@ -443,27 +446,26 @@ def _process_live_campaign(
         if not price:
             continue
 
-        # Log skipped non-BUY signals
+        # Only open BUY signals — skip others silently (no log spam every 10s)
         signal = rec.get("signal", "SKIP")
         if signal not in ("BUY",):
-            _log(
-                db, "SKIP_SIGNAL",
-                f"ℹ️ SKIP {symbol} — signal={signal} (ML prob={rec.get('ml_prob',0)*100:.0f}%), not a BUY",
-                campaign_id=campaign.id, symbol=symbol, price=price,
-            )
-            db.commit()
             continue
 
         usdt_free = get_usdt_free()
         if usdt_free < campaign.entry_amount_usdt:
-            _log(
-                db, "SKIP_BALANCE",
-                f"⚠️ SKIP {symbol} — insufficient balance: ${usdt_free:.2f} free < "
-                f"${campaign.entry_amount_usdt:.2f} needed",
-                campaign_id=campaign.id, symbol=symbol, price=price,
-                balance_before=usdt_free,
-            )
-            db.commit()
+            # Debounce: only log once per 5 min per campaign
+            now = datetime.utcnow()
+            last = _last_balance_warn.get(campaign.id)
+            if not last or (now - last) > timedelta(minutes=5):
+                _last_balance_warn[campaign.id] = now
+                _log(
+                    db, "SKIP_BALANCE",
+                    f"⚠️ SKIP — insufficient balance: ${usdt_free:.2f} free < "
+                    f"${campaign.entry_amount_usdt:.2f} needed",
+                    campaign_id=campaign.id, symbol=symbol, price=price,
+                    balance_before=usdt_free,
+                )
+                db.commit()
             break  # No point checking more symbols — no balance
 
         pos = _open_live_position(db, campaign, rec, balance_before=usdt_free)
