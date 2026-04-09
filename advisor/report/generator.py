@@ -26,6 +26,7 @@ def generate(
     hyperopt_results: list[dict],
     model_metrics: dict,
     top_n: int = REPORT_TOP_N,
+    feature_version: str = "v1",
 ) -> str:
     """
     Build full report string and save to REPORT_DIR.
@@ -185,10 +186,11 @@ def generate(
 
     # Also save latest.json for programmatic use
     latest = {
-        "generated_at":   now,
-        "ml_model":       model_metrics,
-        "top_ml":         ml_predictions[:top_n],
-        "top_hyperopt":   hyperopt_results[:top_n],
+        "generated_at":    now,
+        "feature_version": feature_version,
+        "ml_model":        model_metrics,
+        "top_ml":          ml_predictions[:top_n],
+        "top_hyperopt":    hyperopt_results[:top_n],
         "recommendations": combined[:top_n],
     }
     with open(Path(REPORT_DIR) / "latest.json", "w") as f:

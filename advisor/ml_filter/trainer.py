@@ -29,7 +29,7 @@ from advisor.config import (
     ML_TARGET_HORIZON, ML_TARGET_GAIN_PCT,
     ML_TEST_SPLIT, ML_MODELS_DIR,
 )
-from advisor.features.indicators import FEATURE_COLS
+from advisor.features.indicators import get_feature_cols
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -60,20 +60,21 @@ def _make_labels(df: pd.DataFrame) -> pd.Series:
 
 def prepare_dataset(
     symbol_dfs: dict[str, pd.DataFrame],
+    feature_version: str = "v1",
 ) -> tuple[pd.DataFrame, pd.Series]:
     """
     Combine all symbols into one feature matrix X and label series y.
     Adds a 'symbol' column for tracking but excludes it from features.
     """
+    feature_cols = get_feature_cols(feature_version)
     frames = []
     for symbol, df in symbol_dfs.items():
-        # Ensure all feature columns exist
-        missing = [c for c in FEATURE_COLS if c not in df.columns]
+        missing = [c for c in feature_cols if c not in df.columns]
         if missing:
             logger.warning("Symbol %s missing columns: %s — skipped", symbol, missing)
             continue
 
-        sub = df[FEATURE_COLS].copy()
+        sub = df[feature_cols].copy()
         sub["_symbol"] = symbol
         sub["_label"]  = _make_labels(df)
         frames.append(sub)
@@ -82,11 +83,10 @@ def prepare_dataset(
         raise ValueError("No valid symbol data for training")
 
     combined = pd.concat(frames)
-    # Remove rows with unknown labels
     combined = combined[combined["_label"] != -1]
-    combined = combined.dropna(subset=FEATURE_COLS)
+    combined = combined.dropna(subset=feature_cols)
 
-    X = combined[FEATURE_COLS]
+    X = combined[feature_cols]
     y = combined["_label"]
 
     pos_rate = y.mean() * 100
@@ -151,7 +151,7 @@ def train_model(X: pd.DataFrame, y: pd.Series) -> tuple[object, dict]:
 
     # Feature importance
     importance = dict(zip(
-        FEATURE_COLS,
+        X.columns.tolist(),
         [round(float(v), 4) for v in model.feature_importances_],
     ))
     importance = dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
@@ -196,14 +196,18 @@ def load_model() -> tuple[object | None, dict]:
     return model, metrics
 
 
-def run_training(symbol_dfs: dict[str, pd.DataFrame]) -> tuple[object, dict]:
+def run_training(
+    symbol_dfs: dict[str, pd.DataFrame],
+    feature_version: str = "v1",
+) -> tuple[object, dict]:
     """Full training pipeline: prepare → train → save → return."""
-    print("  Preparing dataset...")
-    X, y = prepare_dataset(symbol_dfs)
+    print(f"  Preparing dataset (feature set: {feature_version.upper()})...")
+    X, y = prepare_dataset(symbol_dfs, feature_version=feature_version)
     print(f"  Dataset: {len(X):,} rows | {y.mean()*100:.1f}% positive")
 
     print("  Training LightGBM model...")
     model, metrics = train_model(X, y)
+    metrics["feature_version"] = feature_version
     print(f"  AUC={metrics['auc']:.3f} | Accuracy={metrics['accuracy']:.3f} | F1={metrics['f1']:.3f}")
 
     save_model(model, metrics)

@@ -73,7 +73,7 @@ _try_load_existing()
 
 
 # ── The actual run logic ───────────────────────────────────────────────────────
-def _run_advisor(n_symbols: int, n_trials: int) -> None:
+def _run_advisor(n_symbols: int, n_trials: int, feature_version: str = "v1") -> None:
     try:
         _update(status="running", started_at=datetime.now(timezone.utc).isoformat(),
                 finished_at=None, error=None, result=None, progress=0)
@@ -90,24 +90,24 @@ def _run_advisor(n_symbols: int, n_trials: int) -> None:
         logger.info("Advisor: loaded %d symbols", len(raw_dfs))
 
         # Step 3: Indicators
-        _update(step="Calculating technical indicators...", progress=25)
+        _update(step=f"Calculating indicators ({feature_version.upper()})...", progress=25)
         from advisor.features.indicators import add_indicators
         indicator_dfs: dict = {}
         for sym, df in raw_dfs.items():
             try:
-                indicator_dfs[sym] = add_indicators(df)
+                indicator_dfs[sym] = add_indicators(df, version=feature_version)
             except Exception as e:
                 logger.warning("Indicator error %s: %s", sym, e)
         logger.info("Advisor: indicators done for %d symbols", len(indicator_dfs))
 
         # Step 4: ML training
-        _update(step="Training LightGBM model...", progress=40)
+        _update(step=f"Training LightGBM model ({feature_version.upper()})...", progress=40)
         from advisor.ml_filter.trainer import run_training
-        model, model_metrics = run_training(indicator_dfs)
+        model, model_metrics = run_training(indicator_dfs, feature_version=feature_version)
 
         _update(step="Generating ML predictions...", progress=55)
         from advisor.ml_filter.predictor import predict_all
-        ml_predictions = predict_all(indicator_dfs, model=model)
+        ml_predictions = predict_all(indicator_dfs, model=model, feature_version=feature_version)
         buy_count = sum(1 for p in ml_predictions if p["signal"] == "BUY")
         logger.info("Advisor: ML done — %d BUY signals", buy_count)
 
@@ -124,6 +124,7 @@ def _run_advisor(n_symbols: int, n_trials: int) -> None:
             ml_predictions=ml_predictions,
             hyperopt_results=hyperopt_results,
             model_metrics=model_metrics,
+            feature_version=feature_version,
         )
 
         # Load result
@@ -160,12 +161,15 @@ def _run_quick_refresh() -> None:
 
         # Load saved model — if none exists, skip
         from advisor.ml_filter.trainer import load_model
-        model, _ = load_model()
+        model, saved_metrics = load_model()
         if model is None:
             _update(refresh_status="error",
                     refresh_error="No trained model yet — run full analysis first")
             logger.warning("Advisor quick refresh: no saved model found")
             return
+
+        # Read feature version from saved model metrics
+        feature_version = saved_metrics.get("feature_version", "v1")
 
         # Load existing latest.json to get symbol list + hyperopt results
         latest_path = Path(REPORT_DIR) / "latest.json"
@@ -193,12 +197,12 @@ def _run_quick_refresh() -> None:
         from advisor.data.fetcher import topup_all_symbols
         raw_dfs = topup_all_symbols(symbols)
 
-        # Recalculate indicators
+        # Recalculate indicators using same version as training
         from advisor.features.indicators import add_indicators
         indicator_dfs: dict = {}
         for sym, df in raw_dfs.items():
             try:
-                indicator_dfs[sym] = add_indicators(df)
+                indicator_dfs[sym] = add_indicators(df, version=feature_version)
             except Exception as e:
                 logger.debug("Indicator error %s: %s", sym, e)
 
@@ -206,9 +210,9 @@ def _run_quick_refresh() -> None:
             _update(refresh_status="error", refresh_error="No valid indicators computed")
             return
 
-        # Re-run predictions with saved model
+        # Re-run predictions with saved model (same feature version)
         from advisor.ml_filter.predictor import predict_all
-        ml_predictions = predict_all(indicator_dfs, model=model)
+        ml_predictions = predict_all(indicator_dfs, model=model, feature_version=feature_version)
         buy_count = sum(1 for p in ml_predictions if p["signal"] == "BUY")
         logger.info("Advisor quick refresh: %d BUY signals", buy_count)
 
@@ -288,7 +292,7 @@ def start_refresh() -> bool:
     return True
 
 
-def start(n_symbols: int = 50, n_trials: int = 100) -> bool:
+def start(n_symbols: int = 50, n_trials: int = 100, feature_version: str = "v1") -> bool:
     """
     Start advisor in background thread.
     Returns False if already running.
@@ -300,7 +304,7 @@ def start(n_symbols: int = 50, n_trials: int = 100) -> bool:
 
     _thread = threading.Thread(
         target=_run_advisor,
-        args=(n_symbols, n_trials),
+        args=(n_symbols, n_trials, feature_version),
         daemon=True,
         name="advisor-runner",
     )

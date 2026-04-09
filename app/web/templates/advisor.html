@@ -248,13 +248,20 @@
         <label>Hyperopt trials per symbol
           <input type="number" name="trials" value="300" min="30" max="500"/>
         </label>
+        <label>Feature Set
+          <select name="feature_version" style="background:#0f1117;border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:13px">
+            <option value="v1">V1 Classic</option>
+            <option value="v2">V2 Enhanced ✨</option>
+          </select>
+        </label>
         <button type="submit" class="btn btn-run" id="btn-run">▶ Run</button>
         <button type="button" class="btn btn-refresh" id="btn-refresh">⚡ Quick Refresh</button>
       </div>
     </form>
     <p class="hint">
       50 symbols × 300 trials ≈ 45–60 min · Results auto-refresh every 5s while running<br>
-      ⚡ <strong>Quick Refresh</strong>: updates ML signals only (~1-2 min) · Runs automatically every hour
+      ⚡ <strong>Quick Refresh</strong>: updates ML signals only (~1-2 min) · Runs automatically every hour<br>
+      ✨ <strong>V2 Enhanced</strong>: adds RSI momentum, candle patterns, ATR% — may improve AUC score
     </p>
     <div class="refresh-status" id="refresh-status"></div>
     <div id="progress-wrap">
@@ -845,8 +852,17 @@ function render(data) {
   const fi    = model.feature_importance || {};
   let html = '';
 
+  // Feature version badge
+  const fv = data.feature_version || 'v1';
+  const fvBadge = fv === 'v2'
+    ? `<span class="badge" style="background:#1a2a1a;color:var(--green);border:1px solid var(--green);margin-left:10px">✨ V2 Enhanced</span>`
+    : `<span class="badge" style="background:#1a1d27;color:var(--muted);border:1px solid var(--border);margin-left:10px">V1 Classic</span>`;
+
   // Model metrics
-  html += `<div class="metrics-row">
+  html += `<div style="display:flex;align-items:center;margin-bottom:12px">
+    <span style="font-size:13px;color:var(--muted)">Feature Set:</span>${fvBadge}
+  </div>
+  <div class="metrics-row">
     <div class="metric-card"><div class="val">${fmt(model.auc,3)}</div><div class="lbl">AUC Score</div></div>
     <div class="metric-card"><div class="val">${fmt(model.accuracy,3)}</div><div class="lbl">Accuracy</div></div>
     <div class="metric-card"><div class="val">${fmt(model.f1,3)}</div><div class="lbl">F1 Score</div></div>

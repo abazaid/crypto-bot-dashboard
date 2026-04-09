@@ -3425,14 +3425,16 @@ async def advisor_page(request: Request):
 @app.post("/advisor/run")
 async def advisor_run(
     request: Request,
-    symbols: int = Form(50),
-    trials:  int = Form(100),
+    symbols:         int = Form(50),
+    trials:          int = Form(100),
+    feature_version: str = Form("v1"),
 ):
     """Trigger advisor run in background."""
-    started = advisor_runner.start(n_symbols=symbols, n_trials=trials)
+    version = feature_version if feature_version in ("v1", "v2") else "v1"
+    started = advisor_runner.start(n_symbols=symbols, n_trials=trials, feature_version=version)
     if not started:
         return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
-    return JSONResponse({"ok": True, "msg": f"Started: {symbols} symbols, {trials} trials"})
+    return JSONResponse({"ok": True, "msg": f"Started: {symbols} symbols, {trials} trials, features={version.upper()}"})
 
 
 # ── Smart Campaign routes ──────────────────────────────────────────────────────

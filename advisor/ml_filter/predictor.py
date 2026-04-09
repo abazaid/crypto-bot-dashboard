@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from advisor.config import ML_MODELS_DIR
-from advisor.features.indicators import FEATURE_COLS
+from advisor.features.indicators import get_feature_cols
 from advisor.ml_filter.trainer import load_model
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 def predict_all(
     symbol_dfs: dict[str, pd.DataFrame],
     model=None,
+    feature_version: str = "v1",
 ) -> list[dict]:
     """
     Generate ML predictions for the latest candle of each symbol.
@@ -53,16 +54,17 @@ def predict_all(
         importance = m.get("feature_importance", {})
         top_features = dict(list(importance.items())[:5])
 
+    feature_cols = get_feature_cols(feature_version)
     results: list[dict] = []
 
     for symbol, df in symbol_dfs.items():
         try:
-            missing = [c for c in FEATURE_COLS if c not in df.columns]
+            missing = [c for c in feature_cols if c not in df.columns]
             if missing:
                 logger.debug("Symbol %s missing: %s", symbol, missing)
                 continue
 
-            latest = df[FEATURE_COLS].dropna().iloc[-1:]
+            latest = df[feature_cols].dropna().iloc[-1:]
             if latest.empty:
                 continue
 

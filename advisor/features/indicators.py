@@ -68,9 +68,11 @@ def _mom(series: pd.Series, length: int = 10) -> pd.Series:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def add_indicators(df: pd.DataFrame, version: str = "v1") -> pd.DataFrame:
     """
     Add technical indicators to an OHLCV DataFrame.
+    version="v1"  — classic indicators (RSI, MACD, BB, EMA, Volume)
+    version="v2"  — v1 + RSI momentum, candle patterns, ATR%, volume trend
     Returns a new DataFrame with all indicators and NaN rows dropped.
     """
     df = df.copy()
@@ -112,7 +114,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["pct_24h"] = df["close"].pct_change(24) * 100
 
     # ── Derived ────────────────────────────────────────────────────────────
-    df["dist_ema200"]  = (df["close"] - df["ema200"]) / (df["ema200"] + 1e-9) * 100
+    df["dist_ema200"]   = (df["close"] - df["ema200"]) / (df["ema200"] + 1e-9) * 100
     df["dist_bb_lower"] = (df["close"] - df["bb_lower"]) / (df["close"] + 1e-9) * 100
 
     # ── Trend classification ────────────────────────────────────────────────
@@ -121,12 +123,37 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[df["ema20"] < df["ema50"], "trend"] = "bearish"
     df["above_ema200"] = (df["close"] > df["ema200"]).astype(int)
 
+    # ── V2 Enhanced Features ────────────────────────────────────────────────
+    if version == "v2":
+        # RSI momentum — direction of RSI, not just level
+        df["rsi_momentum"] = df["rsi"] - df["rsi"].shift(3)
+
+        # Candle body ratio — how strong is the candle body vs full range
+        candle_range = (df["high"] - df["low"]).abs() + 1e-9
+        df["body_ratio"] = (df["close"] - df["open"]).abs() / candle_range
+
+        # Upper wick — rejection from highs (bearish pressure)
+        upper_body = pd.concat([df["open"], df["close"]], axis=1).max(axis=1)
+        df["upper_wick"] = (df["high"] - upper_body) / candle_range
+
+        # Lower wick — rejection from lows (buying pressure)
+        lower_body = pd.concat([df["open"], df["close"]], axis=1).min(axis=1)
+        df["lower_wick"] = (lower_body - df["low"]) / candle_range
+
+        # ATR as % of price — normalised volatility
+        df["atr_pct"] = df["atr"] / (df["close"] + 1e-9) * 100
+
+        # Volume trend — is volume increasing or decreasing?
+        df["vol_trend"] = df["vol_ratio"] - df["vol_ratio"].shift(5)
+
     # ── Clean up ────────────────────────────────────────────────────────────
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=["rsi", "ema200", "bb_pct", "macd"])
 
     return df
 
+
+# ── Feature column sets ────────────────────────────────────────────────────────
 
 FEATURE_COLS = [
     "rsi", "macd", "macd_signal", "macd_hist",
@@ -136,4 +163,15 @@ FEATURE_COLS = [
     "dist_ema200", "dist_bb_lower",
     "above_ema200", "roc", "mom",
 ]
-"""Columns used as ML features (must exist after add_indicators)."""
+"""V1 feature columns — classic indicators."""
+
+FEATURE_COLS_V2 = FEATURE_COLS + [
+    "rsi_momentum", "body_ratio", "upper_wick", "lower_wick",
+    "atr_pct", "vol_trend",
+]
+"""V2 feature columns — V1 + RSI momentum, candle patterns, normalised volatility."""
+
+
+def get_feature_cols(version: str = "v1") -> list[str]:
+    """Return the feature column list for the given version."""
+    return FEATURE_COLS_V2 if version == "v2" else FEATURE_COLS
