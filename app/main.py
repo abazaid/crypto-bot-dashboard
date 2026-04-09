@@ -3488,28 +3488,6 @@ async def api_smart_list() -> JSONResponse:
         db.close()
 
 
-@app.get("/api/smart-campaign/{campaign_id}")
-async def api_smart_detail(campaign_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
-        if not c:
-            return JSONResponse({"error": "Not found"}, status_code=404)
-        return JSONResponse(campaign_summary(db, c))
-    finally:
-        db.close()
-
-
-@app.post("/api/smart-campaign/position/{position_id}/sell")
-async def api_smart_sell(position_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        result = smart_manual_sell(db, position_id)
-        return JSONResponse(result)
-    finally:
-        db.close()
-
-
 @app.get("/api/smart-campaign/dashboard")
 async def api_smart_dashboard() -> JSONResponse:
     """Aggregate stats across all smart campaigns for the dashboard."""
@@ -3571,6 +3549,28 @@ async def api_smart_dashboard() -> JSONResponse:
             "avg_loss_usdt":    round(avg_loss, 2),
             "trade_log":        log,
         })
+    finally:
+        db.close()
+
+
+@app.get("/api/smart-campaign/{campaign_id}")
+async def api_smart_detail(campaign_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        return JSONResponse(campaign_summary(db, c))
+    finally:
+        db.close()
+
+
+@app.post("/api/smart-campaign/position/{position_id}/sell")
+async def api_smart_sell(position_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        result = smart_manual_sell(db, position_id)
+        return JSONResponse(result)
     finally:
         db.close()
 
