@@ -143,6 +143,16 @@
     .kpi-card .kpi-lbl { font-size: 11px; color: var(--muted); }
     .kpi-card .kpi-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
 
+    /* ── Modals ── */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 999; display: none; align-items: center; justify-content: center; }
+    .modal-overlay.show { display: flex; }
+    .modal { background: #1a1d27; border: 2px solid var(--border); border-radius: 12px; padding: 28px 32px; max-width: 440px; width: 90%; }
+    .modal h2 { font-size: 17px; margin-bottom: 12px; }
+    .modal p  { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 20px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+    .modal label  { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+    .modal input  { background: #0f1117; border: 1px solid var(--border); color: var(--text); padding: 8px 10px; border-radius: 6px; font-size: 14px; }
+
     @media (max-width: 700px) {
       .camp-create { grid-template-columns: 1fr; }
       .run-row { flex-direction: column; }
@@ -328,6 +338,11 @@
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-campaigns">
 <div class="container">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
+    <button class="btn" style="background:#2a1212;color:var(--red);border:1px solid var(--red);font-size:13px;padding:7px 18px" onclick="showResetModal()">
+      🗑 Reset All Paper Data
+    </button>
+  </div>
   <div id="camp-list-wrap">
     <div class="section">
       <div class="empty">
@@ -337,6 +352,49 @@
     </div>
   </div>
 </div>
+</div>
+
+<!-- ── Edit Campaign Modal ──────────────────────────────────────────────── -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal" style="border-color:var(--blue)">
+    <h2 style="color:var(--blue)">✏ Edit Campaign</h2>
+    <p>Changes apply to new positions only. Existing open positions are not affected.</p>
+    <label>Max Open Positions
+      <input type="number" id="edit-max" min="1" max="20"/>
+    </label>
+    <label>Entry Amount per Symbol (USDT)
+      <input type="number" id="edit-entry" min="10" step="10"/>
+    </label>
+    <div class="modal-actions">
+      <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeEditModal()">Cancel</button>
+      <button class="btn-sm btn-success" id="edit-confirm-btn">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Campaign Modal ─────────────────────────────────────────────── -->
+<div class="modal-overlay" id="delete-modal">
+  <div class="modal" style="border-color:var(--red)">
+    <h2 style="color:var(--red)">🗑 Delete Campaign</h2>
+    <p id="delete-modal-body">This will permanently delete the campaign and all its position history. The advisor analysis data is not affected.</p>
+    <div class="modal-actions">
+      <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeDeleteModal()">Cancel</button>
+      <button class="btn-sm btn-danger" id="delete-confirm-btn">Delete Campaign</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Reset All Modal ───────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="reset-modal">
+  <div class="modal" style="border-color:var(--red)">
+    <h2 style="color:var(--red)">⚠ Reset All Paper Data</h2>
+    <p>This will permanently delete <strong>ALL campaigns and positions</strong> in paper mode and start fresh.<br><br>
+    Advisor analysis results (ML model, recommendations) are <strong>not</strong> affected.</p>
+    <div class="modal-actions">
+      <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeResetModal()">Cancel</button>
+      <button class="btn-sm btn-danger" id="reset-confirm-btn">Reset Everything</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -614,6 +672,8 @@ function renderCampaigns(campaigns) {
     const toggle = c.status === 'running'
       ? `<button class="btn-sm btn-danger" onclick="stopCamp(${c.id})">⏸ Stop</button>`
       : `<button class="btn-sm btn-success" onclick="resumeCamp(${c.id})">▶ Resume</button>`;
+    const editBtn   = `<button class="btn-sm" style="background:#0d1f33;color:var(--blue);border:1px solid var(--blue)" onclick="showEditModal(${c.id},${c.max_symbols},${c.entry_amount})">✏ Edit</button>`;
+    const deleteBtn = `<button class="btn-sm" style="background:#2a1212;color:var(--red);border:1px solid var(--red)" onclick="showDeleteModal(${c.id})">🗑 Delete</button>`;
 
     const pos_rows = c.positions.map(p => {
       const dca1 = p.dca1_triggered ? '<span class="dca-badge">DCA1✓</span>' : '';
@@ -676,7 +736,7 @@ function renderCampaigns(campaigns) {
     return `<div class="camp-card">
       <div class="camp-header">
         <h3>Campaign #${c.id} &mdash; ${statusLabel(c.status)}</h3>
-        <div class="camp-actions">${toggle}</div>
+        <div class="camp-actions">${editBtn}${deleteBtn}${toggle}</div>
       </div>
       <div class="camp-stats">
         <div class="camp-stat">Slots: <span>${c.active_count} / ${c.max_symbols}</span></div>
@@ -712,6 +772,58 @@ async function sellPos(id) {
   if (j.ok) { loadCampaigns(); }
   else { alert(j.error || 'Sell failed'); }
 }
+
+// ── Edit Modal ────────────────────────────────────────────────────────────────
+let _editCampId = null;
+function showEditModal(id, maxSymbols, entry) {
+  _editCampId = id;
+  document.getElementById('edit-max').value   = maxSymbols;
+  document.getElementById('edit-entry').value = entry;
+  document.getElementById('edit-modal').classList.add('show');
+}
+function closeEditModal() { document.getElementById('edit-modal').classList.remove('show'); }
+document.getElementById('edit-confirm-btn').onclick = async () => {
+  if (!_editCampId) return;
+  const r = await fetch(`/api/smart-campaign/${_editCampId}`, {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      max_symbols:       parseInt(document.getElementById('edit-max').value),
+      entry_amount_usdt: parseFloat(document.getElementById('edit-entry').value),
+    }),
+  });
+  const j = await r.json();
+  closeEditModal();
+  if (j.ok) loadCampaigns();
+  else alert(j.error || 'Edit failed');
+};
+
+// ── Delete Modal ──────────────────────────────────────────────────────────────
+let _deleteCampId = null;
+function showDeleteModal(id) {
+  _deleteCampId = id;
+  document.getElementById('delete-modal-body').textContent =
+    `Campaign #${id} and all its positions will be permanently deleted. The advisor analysis is not affected.`;
+  document.getElementById('delete-modal').classList.add('show');
+}
+function closeDeleteModal() { document.getElementById('delete-modal').classList.remove('show'); }
+document.getElementById('delete-confirm-btn').onclick = async () => {
+  if (!_deleteCampId) return;
+  await fetch(`/api/smart-campaign/${_deleteCampId}`, { method: 'DELETE' });
+  closeDeleteModal();
+  loadCampaigns();
+  loadDashboard();
+};
+
+// ── Reset Modal ───────────────────────────────────────────────────────────────
+function showResetModal() { document.getElementById('reset-modal').classList.add('show'); }
+function closeResetModal() { document.getElementById('reset-modal').classList.remove('show'); }
+document.getElementById('reset-confirm-btn').onclick = async () => {
+  await fetch('/api/smart-campaign/reset', { method: 'POST' });
+  closeResetModal();
+  loadCampaigns();
+  loadDashboard();
+};
 
 // Auto-refresh campaigns every 30s (only if tab is active)
 setInterval(() => {

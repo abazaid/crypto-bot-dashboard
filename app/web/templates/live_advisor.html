@@ -387,7 +387,7 @@
 </div>
 </div>
 
-<!-- Confirm modal -->
+<!-- Confirm create modal -->
 <div class="modal-overlay" id="confirm-modal">
   <div class="modal">
     <h2>⚡ Confirm Live Campaign</h2>
@@ -395,6 +395,37 @@
     <div class="modal-actions">
       <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeModal()">Cancel</button>
       <button class="btn-sm btn-danger" id="modal-confirm-btn">Confirm — Use Real Money</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Campaign Modal -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal" style="border-color:var(--blue)">
+    <h2 style="color:var(--blue)">✏ Edit Live Campaign</h2>
+    <p>Changes apply to new positions only. Existing open positions are not affected.</p>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);margin-bottom:12px">Max Open Positions
+      <input type="number" id="edit-max" min="1" max="20" style="background:#0f1117;border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:14px"/>
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);margin-bottom:20px">Entry Amount per Symbol (USDT)
+      <input type="number" id="edit-entry" min="10" step="10" style="background:#0f1117;border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:14px"/>
+    </label>
+    <div class="modal-actions">
+      <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeEditModal()">Cancel</button>
+      <button class="btn-sm btn-success" id="edit-confirm-btn">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Campaign Modal -->
+<div class="modal-overlay" id="delete-modal">
+  <div class="modal" style="border-color:var(--red)">
+    <h2 style="color:var(--red)">🗑 Delete Live Campaign</h2>
+    <p id="delete-modal-body">This will permanently delete the campaign, all positions, and activity logs.<br><br>
+    ⚠ This does NOT cancel any open orders on Binance. Make sure to close positions manually first.</p>
+    <div class="modal-actions">
+      <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeDeleteModal()">Cancel</button>
+      <button class="btn-sm btn-danger" id="delete-confirm-btn">Delete Campaign</button>
     </div>
   </div>
 </div>
@@ -675,6 +706,8 @@ function renderCampaigns(campaigns) {
     const toggle = c.status === 'running'
       ? `<button class="btn-sm btn-danger" onclick="stopCamp(${c.id})">⏸ Stop</button>`
       : `<button class="btn-sm btn-success" onclick="resumeCamp(${c.id})">▶ Resume</button>`;
+    const editBtn   = `<button class="btn-sm" style="background:#0d1f33;color:var(--blue);border:1px solid var(--blue)" onclick="showEditModal(${c.id},${c.max_symbols},${c.entry_amount})">✏ Edit</button>`;
+    const deleteBtn = `<button class="btn-sm" style="background:#2a1212;color:var(--red);border:1px solid var(--red)" onclick="showDeleteModal(${c.id})">🗑 Delete</button>`;
 
     const pos_rows = c.positions.map(p => {
       const sell_btn = p.status === 'active'
@@ -728,7 +761,7 @@ function renderCampaigns(campaigns) {
     return `<div class="camp-card">
       <div class="camp-header">
         <h3>Campaign #${c.id} &mdash; ${c.status==='running'?'<span class="status-active">● Running</span>':'<span class="status-stopped">■ Stopped</span>'}</h3>
-        <div class="camp-actions">${toggle}</div>
+        <div class="camp-actions">${editBtn}${deleteBtn}${toggle}</div>
       </div>
       <div class="camp-stats">
         <div class="camp-stat">Slots: <span>${c.active_count} / ${c.max_symbols}</span></div>
@@ -756,6 +789,46 @@ async function sellPos(id) {
   if (j.ok) { loadCampaigns(); loadDashboard(); loadActivityLog(); }
   else alert(j.error || 'Sell failed');
 }
+
+// ── Edit Modal ────────────────────────────────────────────────────────────────
+let _editCampId = null;
+function showEditModal(id, maxSymbols, entry) {
+  _editCampId = id;
+  document.getElementById('edit-max').value   = maxSymbols;
+  document.getElementById('edit-entry').value = entry;
+  document.getElementById('edit-modal').classList.add('show');
+}
+function closeEditModal() { document.getElementById('edit-modal').classList.remove('show'); }
+document.getElementById('edit-confirm-btn').onclick = async () => {
+  if (!_editCampId) return;
+  const r = await fetch(`/api/live-smart/${_editCampId}`, {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      max_symbols:       parseInt(document.getElementById('edit-max').value),
+      entry_amount_usdt: parseFloat(document.getElementById('edit-entry').value),
+    }),
+  });
+  const j = await r.json();
+  closeEditModal();
+  if (j.ok) loadCampaigns();
+  else alert(j.error || 'Edit failed');
+};
+
+// ── Delete Modal ──────────────────────────────────────────────────────────────
+let _deleteCampId = null;
+function showDeleteModal(id) {
+  _deleteCampId = id;
+  document.getElementById('delete-modal').classList.add('show');
+}
+function closeDeleteModal() { document.getElementById('delete-modal').classList.remove('show'); }
+document.getElementById('delete-confirm-btn').onclick = async () => {
+  if (!_deleteCampId) return;
+  await fetch(`/api/live-smart/${_deleteCampId}`, { method: 'DELETE' });
+  closeDeleteModal();
+  loadCampaigns();
+  loadDashboard();
+};
 
 setInterval(() => {
   if (document.querySelector('[data-tab="campaigns"]')?.classList.contains('active')) loadCampaigns();

@@ -3553,6 +3553,19 @@ async def api_smart_dashboard() -> JSONResponse:
         db.close()
 
 
+@app.post("/api/smart-campaign/reset")
+async def api_smart_reset() -> JSONResponse:
+    """Delete ALL paper smart campaigns, positions. Keeps advisor analysis intact."""
+    db = SessionLocal()
+    try:
+        db.query(SmartPosition).delete()
+        db.query(SmartCampaign).delete()
+        db.commit()
+        return JSONResponse({"ok": True})
+    finally:
+        db.close()
+
+
 @app.get("/api/smart-campaign/{campaign_id}")
 async def api_smart_detail(campaign_id: int) -> JSONResponse:
     db = SessionLocal()
@@ -3561,6 +3574,39 @@ async def api_smart_detail(campaign_id: int) -> JSONResponse:
         if not c:
             return JSONResponse({"error": "Not found"}, status_code=404)
         return JSONResponse(campaign_summary(db, c))
+    finally:
+        db.close()
+
+
+@app.put("/api/smart-campaign/{campaign_id}")
+async def api_smart_edit(campaign_id: int, request: Request) -> JSONResponse:
+    body = await request.json()
+    db = SessionLocal()
+    try:
+        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        if "max_symbols" in body:
+            c.max_symbols = int(body["max_symbols"])
+        if "entry_amount_usdt" in body:
+            c.entry_amount_usdt = float(body["entry_amount_usdt"])
+        db.commit()
+        return JSONResponse({"ok": True})
+    finally:
+        db.close()
+
+
+@app.delete("/api/smart-campaign/{campaign_id}")
+async def api_smart_delete(campaign_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        db.query(SmartPosition).filter(SmartPosition.campaign_id == campaign_id).delete()
+        db.delete(c)
+        db.commit()
+        return JSONResponse({"ok": True})
     finally:
         db.close()
 
@@ -3751,6 +3797,41 @@ async def api_live_dashboard():
             "avg_loss_usdt":     round(avg_loss, 2),
             "trade_log":         log,
         })
+    finally:
+        db.close()
+
+
+@app.put("/api/live-smart/{campaign_id}")
+async def api_live_smart_edit(campaign_id: int, request: Request) -> JSONResponse:
+    body = await request.json()
+    db = SessionLocal()
+    try:
+        c = db.query(LiveSmartCampaign).filter(LiveSmartCampaign.id == campaign_id).first()
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        if "max_symbols" in body:
+            c.max_symbols = int(body["max_symbols"])
+        if "entry_amount_usdt" in body:
+            c.entry_amount_usdt = float(body["entry_amount_usdt"])
+        db.commit()
+        return JSONResponse({"ok": True})
+    finally:
+        db.close()
+
+
+@app.delete("/api/live-smart/{campaign_id}")
+async def api_live_smart_delete(campaign_id: int) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        from app.models.live_smart_campaign import LiveSmartCampaignLog
+        c = db.query(LiveSmartCampaign).filter(LiveSmartCampaign.id == campaign_id).first()
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        db.query(LiveSmartCampaignLog).filter(LiveSmartCampaignLog.campaign_id == campaign_id).delete()
+        db.query(LiveSmartPosition).filter(LiveSmartPosition.campaign_id == campaign_id).delete()
+        db.delete(c)
+        db.commit()
+        return JSONResponse({"ok": True})
     finally:
         db.close()
 
