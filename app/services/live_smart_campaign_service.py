@@ -467,7 +467,7 @@ def _process_live_campaign(
             reason = f"all {len(recs)} recommendation symbols already active" if recs else "no recommendations available"
             _log(db, "SKIP_SIGNAL",
                  f"ℹ️ No new positions opened — {reason} | "
-                 f"Total recs: {len(recs)}, BUY: {len(buy_recs)}, Active symbols: {len(active_symbols)}",
+                 f"Total recs: {len(recs)}, Active symbols: {len(active_symbols)}",
                  campaign_id=campaign.id)
             db.commit()
 
@@ -478,11 +478,6 @@ def _process_live_campaign(
         symbol = rec["symbol"]
         price  = prices.get(symbol)
         if not price:
-            continue
-
-            # Only open BUY signals
-        signal = rec.get("signal", "SKIP")
-        if signal not in ("BUY",):
             continue
 
         usdt_free = get_usdt_free()
