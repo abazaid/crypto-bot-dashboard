@@ -367,7 +367,7 @@
     </label>
     <div class="modal-actions">
       <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeEditModal()">Cancel</button>
-      <button class="btn-sm btn-success" id="edit-confirm-btn">Save Changes</button>
+      <button class="btn-sm btn-success" onclick="confirmEdit()">Save Changes</button>
     </div>
   </div>
 </div>
@@ -379,7 +379,7 @@
     <p id="delete-modal-body">This will permanently delete the campaign and all its position history. The advisor analysis data is not affected.</p>
     <div class="modal-actions">
       <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeDeleteModal()">Cancel</button>
-      <button class="btn-sm btn-danger" id="delete-confirm-btn">Delete Campaign</button>
+      <button class="btn-sm btn-danger" onclick="confirmDelete()">Delete Campaign</button>
     </div>
   </div>
 </div>
@@ -392,7 +392,7 @@
     Advisor analysis results (ML model, recommendations) are <strong>not</strong> affected.</p>
     <div class="modal-actions">
       <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeResetModal()">Cancel</button>
-      <button class="btn-sm btn-danger" id="reset-confirm-btn">Reset Everything</button>
+      <button class="btn-sm btn-danger" onclick="confirmReset()">Reset Everything</button>
     </div>
   </div>
 </div>
@@ -782,7 +782,7 @@ function showEditModal(id, maxSymbols, entry) {
   document.getElementById('edit-modal').classList.add('show');
 }
 function closeEditModal() { document.getElementById('edit-modal').classList.remove('show'); }
-document.getElementById('edit-confirm-btn').onclick = async () => {
+async function confirmEdit() {
   if (!_editCampId) return;
   const r = await fetch(`/api/smart-campaign/${_editCampId}`, {
     method: 'PUT',
@@ -796,7 +796,7 @@ document.getElementById('edit-confirm-btn').onclick = async () => {
   closeEditModal();
   if (j.ok) loadCampaigns();
   else alert(j.error || 'Edit failed');
-};
+}
 
 // ── Delete Modal ──────────────────────────────────────────────────────────────
 let _deleteCampId = null;
@@ -807,23 +807,23 @@ function showDeleteModal(id) {
   document.getElementById('delete-modal').classList.add('show');
 }
 function closeDeleteModal() { document.getElementById('delete-modal').classList.remove('show'); }
-document.getElementById('delete-confirm-btn').onclick = async () => {
+async function confirmDelete() {
   if (!_deleteCampId) return;
   await fetch(`/api/smart-campaign/${_deleteCampId}`, { method: 'DELETE' });
   closeDeleteModal();
   loadCampaigns();
   loadDashboard();
-};
+}
 
 // ── Reset Modal ───────────────────────────────────────────────────────────────
 function showResetModal() { document.getElementById('reset-modal').classList.add('show'); }
 function closeResetModal() { document.getElementById('reset-modal').classList.remove('show'); }
-document.getElementById('reset-confirm-btn').onclick = async () => {
+async function confirmReset() {
   await fetch('/api/smart-campaign/reset', { method: 'POST' });
   closeResetModal();
   loadCampaigns();
   loadDashboard();
-};
+}
 
 // Auto-refresh campaigns every 30s (only if tab is active)
 setInterval(() => {

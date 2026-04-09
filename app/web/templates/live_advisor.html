@@ -412,7 +412,7 @@
     </label>
     <div class="modal-actions">
       <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeEditModal()">Cancel</button>
-      <button class="btn-sm btn-success" id="edit-confirm-btn">Save Changes</button>
+      <button class="btn-sm btn-success" onclick="confirmEdit()">Save Changes</button>
     </div>
   </div>
 </div>
@@ -425,7 +425,7 @@
     ⚠ This does NOT cancel any open orders on Binance. Make sure to close positions manually first.</p>
     <div class="modal-actions">
       <button class="btn-sm" style="background:var(--border);color:var(--text)" onclick="closeDeleteModal()">Cancel</button>
-      <button class="btn-sm btn-danger" id="delete-confirm-btn">Delete Campaign</button>
+      <button class="btn-sm btn-danger" onclick="confirmDelete()">Delete Campaign</button>
     </div>
   </div>
 </div>
@@ -799,7 +799,7 @@ function showEditModal(id, maxSymbols, entry) {
   document.getElementById('edit-modal').classList.add('show');
 }
 function closeEditModal() { document.getElementById('edit-modal').classList.remove('show'); }
-document.getElementById('edit-confirm-btn').onclick = async () => {
+async function confirmEdit() {
   if (!_editCampId) return;
   const r = await fetch(`/api/live-smart/${_editCampId}`, {
     method: 'PUT',
@@ -813,7 +813,7 @@ document.getElementById('edit-confirm-btn').onclick = async () => {
   closeEditModal();
   if (j.ok) loadCampaigns();
   else alert(j.error || 'Edit failed');
-};
+}
 
 // ── Delete Modal ──────────────────────────────────────────────────────────────
 let _deleteCampId = null;
@@ -822,13 +822,13 @@ function showDeleteModal(id) {
   document.getElementById('delete-modal').classList.add('show');
 }
 function closeDeleteModal() { document.getElementById('delete-modal').classList.remove('show'); }
-document.getElementById('delete-confirm-btn').onclick = async () => {
+async function confirmDelete() {
   if (!_deleteCampId) return;
   await fetch(`/api/live-smart/${_deleteCampId}`, { method: 'DELETE' });
   closeDeleteModal();
   loadCampaigns();
   loadDashboard();
-};
+}
 
 setInterval(() => {
   if (document.querySelector('[data-tab="campaigns"]')?.classList.contains('active')) loadCampaigns();
