@@ -2744,7 +2744,7 @@ async def edit_paper_campaign(
 
 
 @app.post("/live/campaigns")
-async def create_live_campaign(
+async def create_live_campaign_route(
     request: Request,
     name: str = Form(...),
     entry_amount_usdt: str = Form(...),

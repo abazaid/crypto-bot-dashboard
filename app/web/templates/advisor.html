@@ -362,10 +362,18 @@ if (_capInput) _capInput.addEventListener('input', () => {
 });
 
 async function loadDashboard() {
-  const d = await fetch('/api/smart-campaign/dashboard')
-    .then(r => r.ok ? r.json() : null)
-    .catch(() => null);
-  if (!d || d.detail) return;
+  let d;
+  try {
+    const r = await fetch('/api/smart-campaign/dashboard');
+    d = await r.json();
+  } catch(e) { return; }
+  if (!d || d.detail || d.total_campaigns === undefined) {
+    // Show empty state instead of blank
+    const kpiEl = document.getElementById('dash-kpis');
+    if (kpiEl) kpiEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:16px">
+      No campaigns yet — create one in the <strong>Create Campaign</strong> tab.</div>`;
+    return;
+  }
   _dashData = d;
   renderDashboard(d);
 }

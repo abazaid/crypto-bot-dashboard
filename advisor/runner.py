@@ -10,7 +10,13 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+# Riyadh = UTC+3
+_RIYADH = timezone(timedelta(hours=3))
+
+def _now_riyadh() -> str:
+    return datetime.now(_RIYADH).strftime("%Y-%m-%d %H:%M AST")
 from pathlib import Path
 
 from advisor.config import REPORT_DIR
@@ -131,7 +137,7 @@ def _run_advisor(n_symbols: int, n_trials: int) -> None:
             status="done",
             step="Complete",
             progress=100,
-            finished_at=datetime.now(timezone.utc).isoformat(),
+            finished_at=_now_riyadh(),
             result=result,
         )
         logger.info("Advisor: run complete")
@@ -227,7 +233,7 @@ def _run_quick_refresh() -> None:
         combined.sort(key=lambda x: x["combined_score"], reverse=True)
 
         # Save updated latest.json (keep ml_model + hyperopt, refresh ml + recommendations)
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        now_str = _now_riyadh()
         updated = dict(existing)
         updated["generated_at"]    = now_str
         updated["refreshed_at"]    = now_str
