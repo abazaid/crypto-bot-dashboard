@@ -39,10 +39,30 @@ _state: dict = {
     "refresh_error":    None,
 }
 
+# ── Separate V2 state ─────────────────────────────────────────────────────────
+_lock_v2 = threading.Lock()
+_state_v2: dict = {
+    "status":           "idle",
+    "started_at":       None,
+    "finished_at":      None,
+    "step":             "",
+    "progress":         0,
+    "error":            None,
+    "result":           None,
+    "refresh_status":   "idle",
+    "last_refresh_at":  None,
+    "refresh_error":    None,
+}
+
 
 def get_state() -> dict:
     with _lock:
         return dict(_state)
+
+
+def get_state_v2() -> dict:
+    with _lock_v2:
+        return dict(_state_v2)
 
 
 def _set(key: str, value) -> None:
@@ -55,16 +75,28 @@ def _update(**kwargs) -> None:
         _state.update(kwargs)
 
 
+def _update_v2(**kwargs) -> None:
+    with _lock_v2:
+        _state_v2.update(kwargs)
+
+
 # ── Load existing results on startup ──────────────────────────────────────────
 def _try_load_existing() -> None:
-    latest = Path(REPORT_DIR) / "latest.json"
-    if latest.exists():
+    for version, updater in [("v1", _update), ("v2", _update_v2)]:
+        versioned = Path(REPORT_DIR) / f"latest_{version}.json"
+        # Fall back to latest.json for v1 if no versioned file yet
+        path = versioned if versioned.exists() else (
+            Path(REPORT_DIR) / "latest.json" if version == "v1" else None
+        )
+        if not path or not path.exists():
+            continue
         try:
-            with open(latest) as f:
+            with open(path) as f:
                 data = json.load(f)
-            _update(status="done", result=data,
-                    finished_at=data.get("generated_at", ""))
-            logger.info("Advisor: loaded existing results from %s", latest)
+            if data.get("feature_version", "v1") == version or version == "v1":
+                updater(status="done", result=data,
+                        finished_at=data.get("generated_at", ""))
+                logger.info("Advisor: loaded %s results from %s", version, path)
         except Exception:
             pass
 
@@ -73,24 +105,30 @@ _try_load_existing()
 
 
 # ── The actual run logic ───────────────────────────────────────────────────────
-def _run_advisor(n_symbols: int, n_trials: int, feature_version: str = "v1") -> None:
+def _run_advisor_impl(
+    n_symbols: int,
+    n_trials: int,
+    feature_version: str,
+    upd,          # callable(**kwargs) to update the right state dict
+    result_file: str,
+) -> None:
     try:
-        _update(status="running", started_at=datetime.now(timezone.utc).isoformat(),
-                finished_at=None, error=None, result=None, progress=0)
+        upd(status="running", started_at=datetime.now(timezone.utc).isoformat(),
+            finished_at=None, error=None, result=None, progress=0)
 
         # Step 1: Discover symbols
-        _update(step="Discovering top symbols from Binance...", progress=5)
+        upd(step="Discovering top symbols from Binance...", progress=5)
         from advisor.data.fetcher import get_top_symbols, load_all_symbols
         symbols = get_top_symbols(n=n_symbols)
-        logger.info("Advisor: found %d symbols", len(symbols))
+        logger.info("Advisor [%s]: found %d symbols", feature_version, len(symbols))
 
         # Step 2: Download OHLCV
-        _update(step=f"Downloading OHLCV history for {len(symbols)} symbols...", progress=10)
+        upd(step=f"Downloading OHLCV history for {len(symbols)} symbols...", progress=10)
         raw_dfs = load_all_symbols(symbols, force_refresh=False)
-        logger.info("Advisor: loaded %d symbols", len(raw_dfs))
+        logger.info("Advisor [%s]: loaded %d symbols", feature_version, len(raw_dfs))
 
         # Step 3: Indicators
-        _update(step=f"Calculating indicators ({feature_version.upper()})...", progress=25)
+        upd(step=f"Calculating indicators ({feature_version.upper()})...", progress=25)
         from advisor.features.indicators import add_indicators
         indicator_dfs: dict = {}
         for sym, df in raw_dfs.items():
@@ -98,27 +136,27 @@ def _run_advisor(n_symbols: int, n_trials: int, feature_version: str = "v1") -> 
                 indicator_dfs[sym] = add_indicators(df, version=feature_version)
             except Exception as e:
                 logger.warning("Indicator error %s: %s", sym, e)
-        logger.info("Advisor: indicators done for %d symbols", len(indicator_dfs))
+        logger.info("Advisor [%s]: indicators done for %d symbols", feature_version, len(indicator_dfs))
 
         # Step 4: ML training
-        _update(step=f"Training LightGBM model ({feature_version.upper()})...", progress=40)
+        upd(step=f"Training LightGBM model ({feature_version.upper()})...", progress=40)
         from advisor.ml_filter.trainer import run_training
         model, model_metrics = run_training(indicator_dfs, feature_version=feature_version)
 
-        _update(step="Generating ML predictions...", progress=55)
+        upd(step="Generating ML predictions...", progress=55)
         from advisor.ml_filter.predictor import predict_all
         ml_predictions = predict_all(indicator_dfs, model=model, feature_version=feature_version)
         buy_count = sum(1 for p in ml_predictions if p["signal"] == "BUY")
-        logger.info("Advisor: ML done — %d BUY signals", buy_count)
+        logger.info("Advisor [%s]: ML done — %d BUY signals", feature_version, buy_count)
 
         # Step 5: Hyperopt
-        _update(step=f"Running Hyperopt ({n_trials} trials × {len(indicator_dfs)} symbols)...", progress=60)
+        upd(step=f"Running Hyperopt ({n_trials} trials × {len(indicator_dfs)} symbols)...", progress=60)
         from advisor.hyperopt.engine import optimize_all
         hyperopt_results = optimize_all(indicator_dfs, n_trials=n_trials)
-        logger.info("Advisor: hyperopt done for %d symbols", len(hyperopt_results))
+        logger.info("Advisor [%s]: hyperopt done for %d symbols", feature_version, len(hyperopt_results))
 
         # Step 6: Report
-        _update(step="Generating report...", progress=95)
+        upd(step="Generating report...", progress=95)
         from advisor.report.generator import generate
         generate(
             ml_predictions=ml_predictions,
@@ -127,25 +165,35 @@ def _run_advisor(n_symbols: int, n_trials: int, feature_version: str = "v1") -> 
             feature_version=feature_version,
         )
 
-        # Load result
-        latest = Path(REPORT_DIR) / "latest.json"
+        # Load result from version-specific file
+        result_path = Path(REPORT_DIR) / result_file
+        if not result_path.exists():
+            result_path = Path(REPORT_DIR) / "latest.json"
         result = {}
-        if latest.exists():
-            with open(latest) as f:
+        if result_path.exists():
+            with open(result_path) as f:
                 result = json.load(f)
 
-        _update(
+        upd(
             status="done",
             step="Complete",
             progress=100,
             finished_at=_now_riyadh(),
             result=result,
         )
-        logger.info("Advisor: run complete")
+        logger.info("Advisor [%s]: run complete", feature_version)
 
     except Exception as e:
-        logger.exception("Advisor run failed")
-        _update(status="error", step="", error=str(e), progress=0)
+        logger.exception("Advisor [%s] run failed", feature_version)
+        upd(status="error", step="", error=str(e), progress=0)
+
+
+def _run_advisor(n_symbols: int, n_trials: int, feature_version: str = "v1") -> None:
+    _run_advisor_impl(n_symbols, n_trials, feature_version, _update, "latest_v1.json")
+
+
+def _run_advisor_v2(n_symbols: int, n_trials: int) -> None:
+    _run_advisor_impl(n_symbols, n_trials, "v2", _update_v2, "latest_v2.json")
 
 
 # ── Quick refresh (ML only, no Hyperopt, no retraining) ───────────────────────
@@ -269,6 +317,7 @@ def _run_quick_refresh() -> None:
 # ── Public API ─────────────────────────────────────────────────────────────────
 _thread: threading.Thread | None = None
 _refresh_thread: threading.Thread | None = None
+_thread_v2: threading.Thread | None = None
 
 
 def start_refresh() -> bool:
@@ -309,4 +358,21 @@ def start(n_symbols: int = 50, n_trials: int = 100, feature_version: str = "v1")
         name="advisor-runner",
     )
     _thread.start()
+    return True
+
+
+def start_v2(n_symbols: int = 50, n_trials: int = 100) -> bool:
+    """Start a V2 feature-set advisor run in its own background thread."""
+    global _thread_v2
+    with _lock_v2:
+        if _state_v2["status"] == "running":
+            return False
+
+    _thread_v2 = threading.Thread(
+        target=_run_advisor_v2,
+        args=(n_symbols, n_trials),
+        daemon=True,
+        name="advisor-runner-v2",
+    )
+    _thread_v2.start()
     return True

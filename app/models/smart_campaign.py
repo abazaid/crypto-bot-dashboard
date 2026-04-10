@@ -19,6 +19,7 @@ class SmartCampaign(Base):
     status          = Column(String, default="running", index=True)  # running | stopped
     max_symbols     = Column(Integer, default=5)
     entry_amount_usdt = Column(Float, default=100.0)
+    feature_version = Column(String, default="v1")      # v1 | v2
     mode            = Column(String, default="paper")   # paper (future: live)
     created_at      = Column(DateTime, default=datetime.utcnow)
     updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

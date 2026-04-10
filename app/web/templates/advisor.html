@@ -176,7 +176,8 @@
 <!-- ── Tabs ──────────────────────────────────────────────────────────────── -->
 <div class="tabs">
   <div class="tab active" data-tab="dashboard">🏠 Dashboard</div>
-  <div class="tab" data-tab="analysis">📊 Analysis</div>
+  <div class="tab" data-tab="analysis">📊 Analysis V1</div>
+  <div class="tab" data-tab="analysis-v2">✨ Analysis V2</div>
   <div class="tab" data-tab="create-campaign">＋ Create Campaign</div>
   <div class="tab" data-tab="campaigns">🤖 Campaigns <span id="camp-count-badge" style="display:none" class="badge badge-blue">0</span></div>
 </div>
@@ -233,13 +234,13 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
-<!-- TAB 1: ANALYSIS                                                        -->
+<!-- TAB 1: ANALYSIS V1                                                     -->
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-analysis">
 <div class="container">
 
   <div class="run-panel">
-    <h2>⚙ Run Analysis</h2>
+    <h2>⚙ Run V1 Classic Analysis</h2>
     <form id="run-form">
       <div class="run-row">
         <label>Symbols (top N by volume)
@@ -248,20 +249,14 @@
         <label>Hyperopt trials per symbol
           <input type="number" name="trials" value="300" min="30" max="500"/>
         </label>
-        <label>Feature Set
-          <select name="feature_version" style="background:#0f1117;border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:13px">
-            <option value="v1">V1 Classic</option>
-            <option value="v2">V2 Enhanced ✨</option>
-          </select>
-        </label>
-        <button type="submit" class="btn btn-run" id="btn-run">▶ Run</button>
+        <button type="submit" class="btn btn-run" id="btn-run">▶ Run V1</button>
         <button type="button" class="btn btn-refresh" id="btn-refresh">⚡ Quick Refresh</button>
       </div>
     </form>
     <p class="hint">
       50 symbols × 300 trials ≈ 45–60 min · Results auto-refresh every 5s while running<br>
       ⚡ <strong>Quick Refresh</strong>: updates ML signals only (~1-2 min) · Runs automatically every hour<br>
-      ✨ <strong>V2 Enhanced</strong>: adds RSI momentum, candle patterns, ATR% — may improve AUC score
+      ✨ Want V2 Enhanced features? Use the <strong>Analysis V2</strong> tab.
     </p>
     <div class="refresh-status" id="refresh-status"></div>
     <div id="progress-wrap">
@@ -288,7 +283,50 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
-<!-- TAB 2: CREATE CAMPAIGN                                                 -->
+<!-- TAB 2: ANALYSIS V2                                                     -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div class="tab-content" id="tab-analysis-v2">
+<div class="container">
+
+  <div class="run-panel" style="border-color:#9b59b6">
+    <h2 style="color:#9b59b6">✨ Run V2 Enhanced Analysis</h2>
+    <form id="run-form-v2">
+      <div class="run-row">
+        <label>Symbols (top N by volume)
+          <input type="number" name="symbols" value="50" min="10" max="150"/>
+        </label>
+        <label>Hyperopt trials per symbol
+          <input type="number" name="trials" value="300" min="30" max="500"/>
+        </label>
+        <button type="submit" class="btn" style="background:#9b59b6;color:#fff" id="btn-run-v2">✨ Run V2</button>
+      </div>
+    </form>
+    <p class="hint">
+      V2 Enhanced adds: <strong>RSI momentum, candle body/wick ratios, ATR%, volume trend</strong><br>
+      Same Hyperopt parameters. Model trained on V2 features — independent from V1.
+    </p>
+    <div class="refresh-status" id="refresh-status-v2"></div>
+    <div id="progress-wrap-v2" style="margin-top:16px;display:none">
+      <div class="prog-bar-bg"><div class="prog-bar" id="prog-bar-v2" style="background:#9b59b6"></div></div>
+      <div class="prog-text" id="prog-text-v2">Starting...</div>
+    </div>
+    <div class="error-box" id="error-box-v2"></div>
+  </div>
+
+  <div id="results-area-v2">
+    <div class="section">
+      <div class="empty">
+        <div class="icon">✨</div>
+        <div>No V2 results yet — click <strong>Run V2</strong> to train with enhanced features.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- TAB 3: CREATE CAMPAIGN                                                 -->
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-create-campaign">
 <div class="container">
@@ -309,6 +347,12 @@
         </label>
         <label>Entry Amount per Symbol (USDT)
           <input type="number" id="camp-entry" value="100" min="10" step="10"/>
+        </label>
+        <label>Feature Set (Advisor Version)
+          <select id="camp-fv" style="background:#0f1117;border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px">
+            <option value="v1">V1 Classic — uses V1 analysis results</option>
+            <option value="v2">✨ V2 Enhanced — uses V2 analysis results</option>
+          </select>
         </label>
 
         <button class="btn btn-run" id="btn-create-camp">＋ Create Campaign</button>
@@ -585,6 +629,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'dashboard')        loadDashboard();
     if (tab.dataset.tab === 'campaigns')        loadCampaigns();
     if (tab.dataset.tab === 'create-campaign')  { updateCapital(); checkDataFreshness(); }
+    if (tab.dataset.tab === 'analysis-v2')      loadV2Status();
   });
 });
 
@@ -621,9 +666,11 @@ async function checkDataFreshness() {
 document.getElementById('btn-create-camp').addEventListener('click', async () => {
   const n     = parseInt(document.getElementById('camp-max').value)    || 5;
   const entry = parseFloat(document.getElementById('camp-entry').value) || 100;
+  const fv    = document.getElementById('camp-fv').value || 'v1';
   const fd = new FormData();
   fd.append('max_symbols', n);
   fd.append('entry_amount', entry);
+  fd.append('feature_version', fv);
   const r = await fetch('/api/smart-campaign/create', { method: 'POST', body: fd });
   const j = await r.json();
   if (j.ok) {
@@ -740,9 +787,12 @@ function renderCampaigns(campaigns) {
           ⏳ Waiting for next cycle to open positions from advisor recommendations...
         </div>`;
 
+    const fvBadge = (c.feature_version === 'v2')
+      ? `<span class="badge" style="background:#1a0d33;color:#9b59b6;border:1px solid #9b59b6;font-size:11px">✨ V2</span>`
+      : `<span class="badge" style="background:#1a1d27;color:var(--muted);border:1px solid var(--border);font-size:11px">V1</span>`;
     return `<div class="camp-card">
       <div class="camp-header">
-        <h3>Campaign #${c.id} &mdash; ${statusLabel(c.status)}</h3>
+        <h3>Campaign #${c.id} ${fvBadge} &mdash; ${statusLabel(c.status)}</h3>
         <div class="camp-actions">${editBtn}${deleteBtn}${toggle}</div>
       </div>
       <div class="camp-stats">
@@ -1036,25 +1086,101 @@ document.getElementById('btn-refresh').addEventListener('click', async () => {
   startPolling();
 });
 
+// ── V2 Analysis ───────────────────────────────────────────────────────────────
+let _pollV2 = null;
+
+function renderV2(data) {
+  if (!data) return;
+  document.getElementById('results-area-v2').innerHTML = '';
+  // Reuse the same render function but target results-area-v2
+  const savedArea = document.getElementById('results-area');
+  const v2area = document.getElementById('results-area-v2');
+  // Temporarily swap the target
+  const orig = savedArea.id;
+  savedArea.id = '__hidden_results';
+  v2area.id = 'results-area';
+  render(data);
+  savedArea.id = orig;
+  v2area.id = 'results-area-v2';
+}
+
+function updateProgressV2(s) {
+  const wrap = document.getElementById('progress-wrap-v2');
+  const bar  = document.getElementById('prog-bar-v2');
+  const txt  = document.getElementById('prog-text-v2');
+  const err  = document.getElementById('error-box-v2');
+  const btn  = document.getElementById('btn-run-v2');
+  if (s.status === 'running') {
+    wrap.style.display = 'block'; bar.style.width = (s.progress||0) + '%';
+    txt.textContent = s.step || 'Running...';
+    btn.textContent = '⏳ Running...'; btn.disabled = true; err.style.display = 'none';
+  } else if (s.status === 'error') {
+    wrap.style.display = 'block'; bar.style.width = '0%';
+    txt.textContent = 'Failed'; err.textContent = '✗ ' + (s.error||'Unknown');
+    err.style.display = 'block'; btn.textContent = '✨ Run V2'; btn.disabled = false;
+  } else if (s.status === 'done') {
+    wrap.style.display = 'block'; bar.style.width = '100%';
+    txt.textContent = '✓ Complete — ' + (s.finished_at||'');
+    btn.textContent = '✨ Run V2 Again'; btn.disabled = false;
+  } else {
+    btn.textContent = '✨ Run V2'; btn.disabled = false;
+  }
+}
+
+function startPollingV2() {
+  if (_pollV2) return;
+  _pollV2 = setInterval(async () => {
+    const s = await fetch('/advisor/status-v2').then(r=>r.json()).catch(()=>null);
+    if (!s) return;
+    updateProgressV2(s);
+    if (s.status === 'done' && s.result) renderV2(s.result);
+    if (s.status !== 'running') { clearInterval(_pollV2); _pollV2 = null; }
+  }, 5000);
+}
+
+document.getElementById('run-form-v2').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const r = await fetch('/advisor/run-v2', { method: 'POST', body: fd });
+  const j = await r.json();
+  if (!r.ok) { alert(j.msg || 'Already running'); return; }
+  startPollingV2();
+  updateProgressV2({ status: 'running', progress: 0, step: 'Starting V2...' });
+});
+
+async function loadV2Status() {
+  const s = await fetch('/advisor/status-v2').then(r=>r.json()).catch(()=>null);
+  if (!s) return;
+  updateProgressV2(s);
+  if (s.status === 'running') startPollingV2();
+  if (s.status === 'done' && s.result) renderV2(s.result);
+}
+
 // ── On load ───────────────────────────────────────────────────────────────────
 (async () => {
   // Load dashboard first (active tab on load)
   loadDashboard();
   loadCampaigns(); // for badge count
 
-  // Check advisor status for analysis tab
+  // Check advisor status for analysis tab (V1)
   const s = await fetch('/advisor/status').then(r=>r.json()).catch(()=>null);
   if (s) {
     updateProgress(s);
     updateRefreshStatus(s);
     if (s.status === 'running' || s.refresh_status === 'running') startPolling();
-    // Only render analysis results if analysis tab is active
     if (s.status === 'done' && s.result) {
       if (window._INITIAL_RESULT) render(window._INITIAL_RESULT);
       else render(s.result);
     }
   } else if (window._INITIAL_RESULT) {
     render(window._INITIAL_RESULT);
+  }
+
+  // Pre-load V2 status (don't show results unless tab opened)
+  const sv2 = await fetch('/advisor/status-v2').then(r=>r.json()).catch(()=>null);
+  if (sv2) {
+    updateProgressV2(sv2);
+    if (sv2.status === 'running') startPollingV2();
   }
 })();
 </script>

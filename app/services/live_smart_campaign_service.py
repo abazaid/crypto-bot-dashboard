@@ -76,10 +76,12 @@ def _log(
 
 # ── Advisor data ───────────────────────────────────────────────────────────────
 
-def get_advisor_recommendations() -> list[dict]:
+def get_advisor_recommendations(feature_version: str = "v1") -> list[dict]:
     try:
         from advisor.config import REPORT_DIR
-        latest = Path(REPORT_DIR) / "latest.json"
+        # Try version-specific file first, fall back to latest.json
+        versioned = Path(REPORT_DIR) / f"latest_{feature_version}.json"
+        latest = versioned if versioned.exists() else Path(REPORT_DIR) / "latest.json"
         if not latest.exists():
             return []
         with open(latest) as f:
@@ -389,10 +391,13 @@ def run_live_smart_cycle(db: Session) -> None:
         return
 
     all_symbols: set[str] = set()
-    recs = get_advisor_recommendations()
-    for r in recs:
-        all_symbols.add(r["symbol"])
+    recs_by_version: dict[str, list[dict]] = {}
     for c in campaigns:
+        fv = getattr(c, "feature_version", None) or "v1"
+        if fv not in recs_by_version:
+            recs_by_version[fv] = get_advisor_recommendations(fv)
+        for r in recs_by_version[fv]:
+            all_symbols.add(r["symbol"])
         for p in db.query(LiveSmartPosition).filter(
             LiveSmartPosition.campaign_id == c.id,
             LiveSmartPosition.status == "active",
@@ -406,6 +411,8 @@ def run_live_smart_cycle(db: Session) -> None:
 
     for campaign in campaigns:
         try:
+            fv = getattr(campaign, "feature_version", None) or "v1"
+            recs = recs_by_version.get(fv, [])
             _process_live_campaign(db, campaign, prices, recs)
         except Exception as e:
             logger.error("LiveSmart %d cycle error: %s", campaign.id, e, exc_info=True)
@@ -520,7 +527,7 @@ def manual_sell_live(db: Session, position_id: int) -> dict:
 # ── Campaign CRUD ─────────────────────────────────────────────────────────────
 
 def create_live_campaign(
-    db: Session, max_symbols: int, entry_amount: float
+    db: Session, max_symbols: int, entry_amount: float, feature_version: str = "v1"
 ) -> dict:
     """Create campaign only if balance is sufficient."""
     if not is_configured():
@@ -536,7 +543,7 @@ def create_live_campaign(
             "error": f"Insufficient balance: ${usdt_free:.2f} free, need at least ${entry_amount:.2f} to open 1 position",
         }
 
-    c = LiveSmartCampaign(max_symbols=max_symbols, entry_amount_usdt=entry_amount)
+    c = LiveSmartCampaign(max_symbols=max_symbols, entry_amount_usdt=entry_amount, feature_version=feature_version)
     db.add(c)
     db.flush()
 
@@ -589,16 +596,17 @@ def live_campaign_summary(db: Session, campaign: LiveSmartCampaign) -> dict:
     open_pnl  = sum(p.pnl_usdt or 0 for p in active)
 
     return {
-        "id":             campaign.id,
-        "status":         campaign.status,
-        "max_symbols":    campaign.max_symbols,
-        "entry_amount":   campaign.entry_amount_usdt,
-        "active_count":   len(active),
-        "closed_count":   len(closed),
-        "total_pnl_usdt": round(total_pnl, 4),
-        "open_pnl_usdt":  round(open_pnl,  4),
-        "created_at":     campaign.created_at.strftime("%Y-%m-%d %H:%M") if campaign.created_at else "",
-        "positions":      [_live_pos_dict(p) for p in positions],
+        "id":              campaign.id,
+        "status":          campaign.status,
+        "max_symbols":     campaign.max_symbols,
+        "entry_amount":    campaign.entry_amount_usdt,
+        "feature_version": getattr(campaign, "feature_version", "v1") or "v1",
+        "active_count":    len(active),
+        "closed_count":    len(closed),
+        "total_pnl_usdt":  round(total_pnl, 4),
+        "open_pnl_usdt":   round(open_pnl,  4),
+        "created_at":      campaign.created_at.strftime("%Y-%m-%d %H:%M") if campaign.created_at else "",
+        "positions":       [_live_pos_dict(p) for p in positions],
     }
 
 

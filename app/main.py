@@ -716,6 +716,8 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE positions ADD COLUMN tp_order_qty FLOAT",
         "ALTER TABLE positions ADD COLUMN open_fee_usdt FLOAT NOT NULL DEFAULT 0",
         "ALTER TABLE positions ADD COLUMN close_fee_usdt FLOAT NOT NULL DEFAULT 0",
+        "ALTER TABLE smart_campaigns ADD COLUMN feature_version VARCHAR DEFAULT 'v1'",
+        "ALTER TABLE live_smart_campaigns ADD COLUMN feature_version VARCHAR DEFAULT 'v1'",
     ]
     with engine.begin() as conn:
         for stmt in stmts:
@@ -3449,12 +3451,14 @@ async def api_smart_capital(n: int = 5, entry: float = 100.0) -> JSONResponse:
 
 @app.post("/api/smart-campaign/create")
 async def api_smart_create(
-    max_symbols: int  = Form(5),
-    entry_amount: float = Form(100.0),
+    max_symbols:     int   = Form(5),
+    entry_amount:    float = Form(100.0),
+    feature_version: str   = Form("v1"),
 ) -> JSONResponse:
     db = SessionLocal()
     try:
-        c = create_campaign(db, max_symbols=max_symbols, entry_amount=entry_amount)
+        version = feature_version if feature_version in ("v1", "v2") else "v1"
+        c = create_campaign(db, max_symbols=max_symbols, entry_amount=entry_amount, feature_version=version)
         return JSONResponse({"ok": True, "id": c.id})
     finally:
         db.close()
@@ -3638,6 +3642,24 @@ async def advisor_status():
     return JSONResponse(advisor_runner.get_state())
 
 
+@app.post("/advisor/run-v2")
+async def advisor_run_v2(
+    symbols: int = Form(50),
+    trials:  int = Form(100),
+):
+    """Trigger V2 advisor run in background (separate from V1)."""
+    started = advisor_runner.start_v2(n_symbols=symbols, n_trials=trials)
+    if not started:
+        return JSONResponse({"ok": False, "msg": "V2 analysis already running"}, status_code=409)
+    return JSONResponse({"ok": True, "msg": f"V2 started: {symbols} symbols, {trials} trials"})
+
+
+@app.get("/advisor/status-v2")
+async def advisor_status_v2():
+    """Polling endpoint for V2 advisor state."""
+    return JSONResponse(advisor_runner.get_state_v2())
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LIVE SMART CAMPAIGN ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3672,12 +3694,14 @@ def api_live_balance():
 
 @app.post("/api/live-smart/create")
 def api_live_create_campaign(
-    max_symbols: int = Form(5),
-    entry_amount: float = Form(50.0),
+    max_symbols:     int   = Form(5),
+    entry_amount:    float = Form(50.0),
+    feature_version: str   = Form("v1"),
 ):
     db = SessionLocal()
     try:
-        result = create_live_campaign(db, max_symbols, entry_amount)
+        version = feature_version if feature_version in ("v1", "v2") else "v1"
+        result = create_live_campaign(db, max_symbols, entry_amount, feature_version=version)
         if not result["ok"]:
             return JSONResponse({"ok": False, "error": result["error"]}, status_code=400)
         c = result["campaign"]

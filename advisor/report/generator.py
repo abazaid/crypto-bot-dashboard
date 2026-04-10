@@ -184,7 +184,7 @@ def generate(
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_text)
 
-    # Also save latest.json for programmatic use
+    # Save latest.json for programmatic use
     latest = {
         "generated_at":    now,
         "feature_version": feature_version,
@@ -193,7 +193,10 @@ def generate(
         "top_hyperopt":    hyperopt_results[:top_n],
         "recommendations": combined[:top_n],
     }
+    # Always save to latest.json (backward compat) and version-specific file
     with open(Path(REPORT_DIR) / "latest.json", "w") as f:
+        json.dump(latest, f, indent=2)
+    with open(Path(REPORT_DIR) / f"latest_{feature_version}.json", "w") as f:
         json.dump(latest, f, indent=2)
 
     return report_text
