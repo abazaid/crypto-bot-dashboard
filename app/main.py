@@ -719,12 +719,12 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE smart_campaigns ADD COLUMN feature_version VARCHAR DEFAULT 'v1'",
         "ALTER TABLE live_smart_campaigns ADD COLUMN feature_version VARCHAR DEFAULT 'v1'",
     ]
-    with engine.begin() as conn:
-        for stmt in stmts:
-            try:
+    for stmt in stmts:
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(stmt))
-            except Exception:
-                pass
+        except Exception:
+            pass  # Column already exists — expected on restart
         # Backfill: old loop campaigns should run in strict AI mode.
         try:
             conn.execute(
