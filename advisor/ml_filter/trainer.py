@@ -166,23 +166,36 @@ def train_model(X: pd.DataFrame, y: pd.Series) -> tuple[object, dict]:
 
 # ── Save / load ───────────────────────────────────────────────────────────────
 
-def save_model(model: object, metrics: dict) -> None:
-    """Save model to disk."""
+def save_model(model: object, metrics: dict, version: str = "v1") -> None:
+    """Save model to disk. Each feature version has its own files."""
     Path(ML_MODELS_DIR).mkdir(parents=True, exist_ok=True)
-    model_path   = Path(ML_MODELS_DIR) / "model.pkl"
-    metrics_path = Path(ML_MODELS_DIR) / "metrics.json"
+    suffix = f"_{version}" if version != "v1" else ""
+    model_path   = Path(ML_MODELS_DIR) / f"model{suffix}.pkl"
+    metrics_path = Path(ML_MODELS_DIR) / f"metrics{suffix}.json"
 
     joblib.dump(model, model_path)
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
 
-    logger.info("Model saved to %s", model_path)
+    # Also save to legacy paths for backward compat (v1 only)
+    if version == "v1":
+        joblib.dump(model, Path(ML_MODELS_DIR) / "model.pkl")
+        with open(Path(ML_MODELS_DIR) / "metrics.json", "w") as f:
+            json.dump(metrics, f, indent=2)
+
+    logger.info("Model [%s] saved to %s", version, model_path)
 
 
-def load_model() -> tuple[object | None, dict]:
+def load_model(version: str = "v1") -> tuple[object | None, dict]:
     """Load model from disk. Returns (model, metrics) or (None, {})."""
-    model_path   = Path(ML_MODELS_DIR) / "model.pkl"
-    metrics_path = Path(ML_MODELS_DIR) / "metrics.json"
+    suffix = f"_{version}" if version != "v1" else ""
+    model_path   = Path(ML_MODELS_DIR) / f"model{suffix}.pkl"
+    metrics_path = Path(ML_MODELS_DIR) / f"metrics{suffix}.json"
+
+    # Fall back to legacy filenames for v1
+    if not model_path.exists() and version == "v1":
+        model_path   = Path(ML_MODELS_DIR) / "model.pkl"
+        metrics_path = Path(ML_MODELS_DIR) / "metrics.json"
 
     if not model_path.exists():
         return None, {}
@@ -210,5 +223,5 @@ def run_training(
     metrics["feature_version"] = feature_version
     print(f"  AUC={metrics['auc']:.3f} | Accuracy={metrics['accuracy']:.3f} | F1={metrics['f1']:.3f}")
 
-    save_model(model, metrics)
+    save_model(model, metrics, version=feature_version)
     return model, metrics

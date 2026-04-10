@@ -299,11 +299,13 @@
           <input type="number" name="trials" value="300" min="30" max="500"/>
         </label>
         <button type="submit" class="btn" style="background:#9b59b6;color:#fff" id="btn-run-v2">✨ Run V2</button>
+        <button type="button" class="btn btn-refresh" id="btn-refresh-v2">⚡ Quick Refresh V2</button>
       </div>
     </form>
     <p class="hint">
       V2 Enhanced adds: <strong>RSI momentum, candle body/wick ratios, ATR%, volume trend</strong><br>
-      Same Hyperopt parameters. Model trained on V2 features — independent from V1.
+      Same Hyperopt parameters. Model trained on V2 features — independent from V1.<br>
+      ⚡ <strong>Quick Refresh V2</strong>: updates ML signals only (~1-2 min) · Auto-runs every hour
     </p>
     <div class="refresh-status" id="refresh-status-v2"></div>
     <div id="progress-wrap-v2" style="margin-top:16px;display:none">
@@ -1113,17 +1115,40 @@ function updateProgressV2(s) {
   if (s.status === 'running') {
     wrap.style.display = 'block'; bar.style.width = (s.progress||0) + '%';
     txt.textContent = s.step || 'Running...';
-    btn.textContent = '⏳ Running...'; btn.disabled = true; err.style.display = 'none';
+    if(btn) { btn.textContent = '⏳ Running...'; btn.disabled = true; }
+    if(err) err.style.display = 'none';
   } else if (s.status === 'error') {
     wrap.style.display = 'block'; bar.style.width = '0%';
-    txt.textContent = 'Failed'; err.textContent = '✗ ' + (s.error||'Unknown');
-    err.style.display = 'block'; btn.textContent = '✨ Run V2'; btn.disabled = false;
+    txt.textContent = 'Failed';
+    if(err) { err.textContent = '✗ ' + (s.error||'Unknown'); err.style.display = 'block'; }
+    if(btn) { btn.textContent = '✨ Run V2'; btn.disabled = false; }
   } else if (s.status === 'done') {
     wrap.style.display = 'block'; bar.style.width = '100%';
     txt.textContent = '✓ Complete — ' + (s.finished_at||'');
-    btn.textContent = '✨ Run V2 Again'; btn.disabled = false;
+    if(btn) { btn.textContent = '✨ Run V2 Again'; btn.disabled = false; }
   } else {
-    btn.textContent = '✨ Run V2'; btn.disabled = false;
+    if(btn) { btn.textContent = '✨ Run V2'; btn.disabled = false; }
+  }
+  updateRefreshStatusV2(s);
+}
+
+function updateRefreshStatusV2(s) {
+  const el  = document.getElementById('refresh-status-v2');
+  const btn = document.getElementById('btn-refresh-v2');
+  if (!el) return;
+  const rs = s.refresh_status || 'idle';
+  if (rs === 'running') {
+    el.className = 'refresh-status running'; el.textContent = '⚡ Quick V2 ML refresh in progress...';
+    if(btn) { btn.disabled = true; btn.textContent = '⏳ Refreshing...'; }
+  } else if (rs === 'error') {
+    el.className = 'refresh-status error'; el.textContent = '✗ V2 Refresh failed: ' + (s.refresh_error||'');
+    if(btn) { btn.disabled = false; btn.textContent = '⚡ Quick Refresh V2'; }
+  } else {
+    el.className = 'refresh-status';
+    el.textContent = s.last_refresh_at
+      ? '⚡ Last V2 ML refresh: ' + s.last_refresh_at + ' · Auto-runs every hour'
+      : (s.status === 'done' ? '⚡ Quick Refresh V2 runs automatically every hour' : '');
+    if(btn) { btn.disabled = false; btn.textContent = '⚡ Quick Refresh V2'; }
   }
 }
 
@@ -1134,7 +1159,7 @@ function startPollingV2() {
     if (!s) return;
     updateProgressV2(s);
     if (s.status === 'done' && s.result) renderV2(s.result);
-    if (s.status !== 'running') { clearInterval(_pollV2); _pollV2 = null; }
+    if (s.status !== 'running' && s.refresh_status !== 'running') { clearInterval(_pollV2); _pollV2 = null; }
   }, 5000);
 }
 
@@ -1146,6 +1171,14 @@ document.getElementById('run-form-v2').addEventListener('submit', async e => {
   if (!r.ok) { alert(j.msg || 'Already running'); return; }
   startPollingV2();
   updateProgressV2({ status: 'running', progress: 0, step: 'Starting V2...' });
+});
+
+document.getElementById('btn-refresh-v2').addEventListener('click', async () => {
+  const r = await fetch('/advisor/refresh-v2', { method: 'POST' });
+  const j = await r.json();
+  if (!r.ok) { alert(j.msg || 'Cannot refresh now'); return; }
+  updateRefreshStatusV2({ refresh_status: 'running' });
+  startPollingV2();
 });
 
 async function loadV2Status() {

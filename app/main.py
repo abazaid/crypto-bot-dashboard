@@ -1012,23 +1012,37 @@ async def on_startup() -> None:
         replace_existing=True,
     )
 
-    # ── Advisor: hourly quick ML refresh ─────────────────────────────────
+    # ── Advisor: hourly quick ML refresh (V1) ────────────────────────────
     def _scheduled_advisor_refresh() -> None:
         state = advisor_runner.get_state()
-        if state["status"] == "running":
-            logger.info("Advisor refresh: skipping — full run in progress")
+        if state["status"] == "running" or state["refresh_status"] == "running":
             return
-        if state["refresh_status"] == "running":
-            logger.info("Advisor refresh: skipping — refresh already running")
-            return
-        logger.info("Advisor: starting hourly quick ML refresh")
-        advisor_runner.start_refresh()
+        if state["status"] == "done":
+            logger.info("Advisor V1: starting hourly quick ML refresh")
+            advisor_runner.start_refresh()
 
     scheduler.add_job(
         _scheduled_advisor_refresh,
         "interval",
         hours=1,
         id="advisor_hourly_refresh",
+        replace_existing=True,
+    )
+
+    # ── Advisor: hourly quick ML refresh (V2) ────────────────────────────
+    def _scheduled_advisor_refresh_v2() -> None:
+        state = advisor_runner.get_state_v2()
+        if state["status"] == "running" or state["refresh_status"] == "running":
+            return
+        if state["status"] == "done":
+            logger.info("Advisor V2: starting hourly quick ML refresh")
+            advisor_runner.start_refresh_v2()
+
+    scheduler.add_job(
+        _scheduled_advisor_refresh_v2,
+        "interval",
+        hours=1,
+        id="advisor_hourly_refresh_v2",
         replace_existing=True,
     )
 
@@ -3634,6 +3648,15 @@ async def advisor_refresh():
     if not started:
         return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
     return JSONResponse({"ok": True, "msg": "Quick ML refresh started"})
+
+
+@app.post("/advisor/refresh-v2")
+async def advisor_refresh_v2():
+    """Trigger a quick ML-only V2 refresh."""
+    started = advisor_runner.start_refresh_v2()
+    if not started:
+        return JSONResponse({"ok": False, "msg": "V2 refresh already running"}, status_code=409)
+    return JSONResponse({"ok": True, "msg": "V2 Quick ML refresh started"})
 
 
 @app.get("/advisor/status")

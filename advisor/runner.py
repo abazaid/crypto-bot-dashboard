@@ -314,10 +314,110 @@ def _run_quick_refresh() -> None:
         _update(refresh_status="error", refresh_error=str(e))
 
 
+# ── Quick refresh V2 ─────────────────────────────────────────────────────────
+def _run_quick_refresh_v2() -> None:
+    """Same as V1 quick refresh but uses latest_v2.json and V2 feature set."""
+    try:
+        _update_v2(refresh_status="running", refresh_error=None)
+        logger.info("Advisor V2: starting quick ML refresh")
+
+        from advisor.ml_filter.trainer import load_model
+        model, saved_metrics = load_model(version="v2")
+        if model is None:
+            _update_v2(refresh_status="error",
+                       refresh_error="No V2 model yet — run full V2 analysis first")
+            return
+
+        latest_path = Path(REPORT_DIR) / "latest_v2.json"
+        if not latest_path.exists():
+            _update_v2(refresh_status="error",
+                       refresh_error="No V2 results — run full V2 analysis first")
+            return
+
+        with open(latest_path) as f:
+            existing = json.load(f)
+
+        prev_ml      = existing.get("top_ml", [])
+        prev_hyperopt = existing.get("top_hyperopt", [])
+        if not prev_ml:
+            _update_v2(refresh_status="error",
+                       refresh_error="No previous V2 ML results to refresh from")
+            return
+
+        symbols = list({r["symbol"] for r in prev_ml + prev_hyperopt})
+        logger.info("Advisor V2 quick refresh: topping up %d symbols", len(symbols))
+
+        from advisor.data.fetcher import topup_all_symbols
+        raw_dfs = topup_all_symbols(symbols)
+
+        from advisor.features.indicators import add_indicators
+        indicator_dfs: dict = {}
+        for sym, df in raw_dfs.items():
+            try:
+                indicator_dfs[sym] = add_indicators(df, version="v2")
+            except Exception as e:
+                logger.debug("V2 indicator error %s: %s", sym, e)
+
+        if not indicator_dfs:
+            _update_v2(refresh_status="error", refresh_error="No valid indicators computed")
+            return
+
+        from advisor.ml_filter.predictor import predict_all
+        ml_predictions = predict_all(indicator_dfs, model=model, feature_version="v2")
+        buy_count = sum(1 for p in ml_predictions if p["signal"] == "BUY")
+        logger.info("Advisor V2 quick refresh: %d BUY signals", buy_count)
+
+        ho_by_sym = {r["symbol"]: r for r in prev_hyperopt}
+        combined = []
+        for pred in ml_predictions:
+            if pred["signal"] != "BUY":
+                continue
+            ho = ho_by_sym.get(pred["symbol"])
+            if not ho or ho.get("score", 0) <= 0:
+                continue
+            combined.append({
+                "symbol":         pred["symbol"],
+                "ml_prob":        pred["probability"],
+                "ho_score":       ho["score"],
+                "win_rate":       ho["metrics"].get("win_rate", 0),
+                "avg_profit":     ho["metrics"].get("avg_profit_pct", 0),
+                "params":         ho["best_params"],
+                "combined_score": pred["probability"] * ho["score"],
+            })
+        combined.sort(key=lambda x: x["combined_score"], reverse=True)
+
+        now_str = _now_riyadh()
+        updated = dict(existing)
+        updated["generated_at"]    = now_str
+        updated["refreshed_at"]    = now_str
+        updated["top_ml"]          = ml_predictions[:20]
+        updated["recommendations"] = combined[:20]
+
+        with open(latest_path, "w") as f:
+            json.dump(updated, f, indent=2)
+
+        _update_v2(
+            result=updated,
+            refresh_status="done",
+            last_refresh_at=now_str,
+            refresh_error=None,
+        )
+        with _lock_v2:
+            if _state_v2["status"] == "done":
+                _state_v2["finished_at"] = now_str
+
+        logger.info("Advisor V2 quick refresh complete — %d symbols, %d BUY", len(indicator_dfs), buy_count)
+
+    except Exception as e:
+        logger.exception("Advisor V2 quick refresh failed")
+        _update_v2(refresh_status="error", refresh_error=str(e))
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 _thread: threading.Thread | None = None
 _refresh_thread: threading.Thread | None = None
 _thread_v2: threading.Thread | None = None
+_refresh_thread_v2: threading.Thread | None = None
 
 
 def start_refresh() -> bool:
@@ -358,6 +458,24 @@ def start(n_symbols: int = 50, n_trials: int = 100, feature_version: str = "v1")
         name="advisor-runner",
     )
     _thread.start()
+    return True
+
+
+def start_refresh_v2() -> bool:
+    """Quick ML-only refresh for V2. Returns False if already running."""
+    global _refresh_thread_v2
+    with _lock_v2:
+        if _state_v2["status"] == "running":
+            return False
+        if _state_v2["refresh_status"] == "running":
+            return False
+
+    _refresh_thread_v2 = threading.Thread(
+        target=_run_quick_refresh_v2,
+        daemon=True,
+        name="advisor-refresh-v2",
+    )
+    _refresh_thread_v2.start()
     return True
 
 
