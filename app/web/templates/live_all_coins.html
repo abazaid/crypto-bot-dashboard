@@ -24,19 +24,19 @@
     <section class="cards four">
       <article class="card stat">
         <h3>Coins</h3>
-        <p>{{ data.summary.coins_count }}</p>
+        <p id="ac-stat-coins">{{ data.summary.coins_count }}</p>
       </article>
       <article class="card stat">
         <h3>Invested</h3>
-        <p>{{ "%.2f"|format(data.summary.invested_total) }} USDT</p>
+        <p id="ac-stat-invested">{{ "%.2f"|format(data.summary.invested_total) }} USDT</p>
       </article>
       <article class="card stat">
         <h3>Market Value</h3>
-        <p>{{ "%.2f"|format(data.summary.market_total) }} USDT</p>
+        <p id="ac-stat-market">{{ "%.2f"|format(data.summary.market_total) }} USDT</p>
       </article>
       <article class="card stat">
         <h3>Total PnL</h3>
-        <p class="{{ 'pnl-pos' if data.summary.pnl_total >= 0 else 'pnl-neg' }}">
+        <p id="ac-stat-pnl" class="{{ 'pnl-pos' if data.summary.pnl_total >= 0 else 'pnl-neg' }}">
           {{ "%+.2f"|format(data.summary.pnl_total) }} USDT ({{ "%+.2f"|format(data.summary.pnl_pct) }}%)
         </p>
       </article>
@@ -110,15 +110,15 @@
           </thead>
           <tbody id="all-coins-tbody">
             {% for r in data.rows %}
-            <tr>
+            <tr data-symbol="{{ r.symbol }}">
               <td data-sort="symbol" data-value="{{ r.symbol }}">{{ r.symbol }}</td>
-              <td data-sort="qty_total" data-value="{{ r.qty_total }}">{{ "%.8f"|format(r.qty_total) }}</td>
-              <td data-sort="qty_free" data-value="{{ r.qty_free }}">{{ "%.8f"|format(r.qty_free) }}</td>
+              <td data-sort="qty_total" data-value="{{ r.qty_total }}" class="ac-qty-total">{{ "%.8f"|format(r.qty_total) }}</td>
+              <td data-sort="qty_free" data-value="{{ r.qty_free }}" class="ac-qty-free">{{ "%.8f"|format(r.qty_free) }}</td>
               <td data-sort="avg_entry" data-value="{{ r.avg_entry }}">{{ "%.8f"|format(r.avg_entry) }}</td>
-              <td data-sort="price" data-value="{{ r.price }}">{{ "%.8f"|format(r.price) }}</td>
+              <td data-sort="price" data-value="{{ r.price }}" class="ac-price">{{ "%.8f"|format(r.price) }}</td>
               <td data-sort="invested" data-value="{{ r.invested }}">{{ "%.2f"|format(r.invested) }}</td>
-              <td data-sort="market_value" data-value="{{ r.market_value }}">{{ "%.2f"|format(r.market_value) }}</td>
-              <td data-sort="pnl" data-value="{{ r.pnl }}" class="{{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">
+              <td data-sort="market_value" data-value="{{ r.market_value }}" class="ac-market-value">{{ "%.2f"|format(r.market_value) }}</td>
+              <td data-sort="pnl" data-value="{{ r.pnl }}" class="ac-pnl {{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">
                 {{ "%+.2f"|format(r.pnl) }} ({{ "%+.2f"|format(r.pnl_pct) }}%)
               </td>
               <td data-sort="forecast_move" data-value="{{ r.forecast.expected_move_pct if r.forecast else -9999 }}">
@@ -132,7 +132,7 @@
                   -
                 {% endif %}
               </td>
-              <td data-sort="tp_price" data-value="{{ r.tp_price if r.tp_price else -1 }}">
+              <td data-sort="tp_price" data-value="{{ r.tp_price if r.tp_price else -1 }}" class="ac-tp">
                 {% if r.tp_price %}
                   <span class="pnl-pos">{{ "%.8f"|format(r.tp_price) }}</span>
                   <div class="muted-line" style="margin-top:4px;">Qty {{ "%.8f"|format(r.tp_qty or 0) }}{% if r.tp_count and r.tp_count > 1 %} | {{ r.tp_count }} orders{% endif %}</div>
@@ -149,10 +149,8 @@
                   <button type="submit" class="btn-secondary">Cancel Sell Orders</button>
                 </form>
               </td>
-              <td data-sort="status" data-value="{{ r.status }}">
-                <span class="badge">
-                  {{ r.status }}
-                </span>
+              <td data-sort="status" data-value="{{ r.status }}" class="ac-status">
+                <span class="badge">{{ r.status }}</span>
               </td>
               <td>
                 <form method="post" action="/live/all-coins/{{ r.symbol }}/close" onsubmit="return confirm('Close {{ r.symbol }} with market sell now?');">
@@ -185,6 +183,7 @@
   </div>
 </section>
 <script>
+  // ── Table sort ──────────────────────────────────────────────────────────────
   window.initAllCoinsSort = function initAllCoinsSort() {
     const tableBody = document.getElementById("all-coins-tbody");
     if (!tableBody) return;
@@ -245,5 +244,99 @@
     });
   };
   window.initAllCoinsSort();
+
+  // ── In-place price polling (every 10 s, no page reload) ─────────────────────
+  function fmt8(n) { return Number(n).toFixed(8); }
+  function fmt2(n) { return Number(n).toFixed(2); }
+  function fmtPnl(pnl, pct) {
+    const sign = pnl >= 0 ? "+" : "";
+    return `${sign}${fmt2(pnl)} (${pct >= 0 ? "+" : ""}${fmt2(pct)}%)`;
+  }
+
+  async function refreshAllCoinsPrices() {
+    let data;
+    try {
+      const res = await fetch("/live/all-coins/api/prices");
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) {
+      return;
+    }
+
+    // Update summary cards
+    const s = data.summary || {};
+    const elCoins   = document.getElementById("ac-stat-coins");
+    const elInvest  = document.getElementById("ac-stat-invested");
+    const elMarket  = document.getElementById("ac-stat-market");
+    const elPnl     = document.getElementById("ac-stat-pnl");
+    if (elCoins)  elCoins.textContent  = s.coins_count;
+    if (elInvest) elInvest.textContent = fmt2(s.invested_total) + " USDT";
+    if (elMarket) elMarket.textContent = fmt2(s.market_total) + " USDT";
+    if (elPnl) {
+      elPnl.textContent = fmtPnl(s.pnl_total, s.pnl_pct) + " USDT (" + (s.pnl_pct >= 0 ? "+" : "") + fmt2(s.pnl_pct) + "%)";
+      // rebuild full string properly
+      elPnl.textContent = (s.pnl_total >= 0 ? "+" : "") + fmt2(s.pnl_total) + " USDT (" + (s.pnl_pct >= 0 ? "+" : "") + fmt2(s.pnl_pct) + "%)";
+      elPnl.className = s.pnl_total >= 0 ? "pnl-pos" : "pnl-neg";
+    }
+
+    // Update table rows in-place
+    for (const r of (data.rows || [])) {
+      const tr = document.querySelector(`tr[data-symbol="${r.symbol}"]`);
+      if (!tr) continue;
+
+      const priceCell = tr.querySelector(".ac-price");
+      if (priceCell) {
+        priceCell.textContent = fmt8(r.price);
+        priceCell.setAttribute("data-value", r.price);
+      }
+
+      const qtyTotalCell = tr.querySelector(".ac-qty-total");
+      if (qtyTotalCell) {
+        qtyTotalCell.textContent = fmt8(r.qty_total);
+        qtyTotalCell.setAttribute("data-value", r.qty_total);
+      }
+
+      const qtyFreeCell = tr.querySelector(".ac-qty-free");
+      if (qtyFreeCell) {
+        qtyFreeCell.textContent = fmt8(r.qty_free);
+        qtyFreeCell.setAttribute("data-value", r.qty_free);
+      }
+
+      const mvCell = tr.querySelector(".ac-market-value");
+      if (mvCell) {
+        mvCell.textContent = fmt2(r.market_value);
+        mvCell.setAttribute("data-value", r.market_value);
+      }
+
+      const pnlCell = tr.querySelector(".ac-pnl");
+      if (pnlCell) {
+        pnlCell.textContent = fmtPnl(r.pnl, r.pnl_pct);
+        pnlCell.setAttribute("data-value", r.pnl);
+        pnlCell.className = "ac-pnl " + (r.pnl >= 0 ? "pnl-pos" : "pnl-neg");
+      }
+
+      const tpCell = tr.querySelector(".ac-tp");
+      if (tpCell) {
+        tpCell.setAttribute("data-value", r.tp_price != null ? r.tp_price : -1);
+        if (r.tp_price) {
+          let tpHtml = `<span class="pnl-pos">${fmt8(r.tp_price)}</span>`;
+          tpHtml += `<div class="muted-line" style="margin-top:4px;">Qty ${fmt8(r.tp_qty || 0)}`;
+          if (r.tp_count && r.tp_count > 1) tpHtml += ` | ${r.tp_count} orders`;
+          tpHtml += `</div>`;
+          tpCell.innerHTML = tpHtml;
+        } else {
+          tpCell.innerHTML = "-";
+        }
+      }
+
+      const statusCell = tr.querySelector(".ac-status");
+      if (statusCell) {
+        statusCell.setAttribute("data-value", r.status);
+        statusCell.innerHTML = `<span class="badge">${r.status}</span>`;
+      }
+    }
+  }
+
+  setInterval(refreshAllCoinsPrices, 10000);
 </script>
 {% endblock %}

@@ -1803,6 +1803,76 @@ async def live_all_coins_page(
         db.close()
 
 
+@app.get("/live/all-coins/api/prices")
+async def live_all_coins_prices_api() -> JSONResponse:
+    """Return live prices, PnL, and open-sell TP data for all coin positions (no forecast). Used by the in-page polling JS."""
+    try:
+        data = list_spot_coin_positions(cache_ttl_seconds=10)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    tp_map: dict[str, dict] = {}
+    try:
+        open_orders = get_open_orders()
+        for o in open_orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED"}:
+                continue
+            sym = str(o.get("symbol", "")).upper()
+            price = float(o.get("price", 0.0) or 0.0)
+            orig_qty = float(o.get("origQty", 0.0) or 0.0)
+            exec_qty = float(o.get("executedQty", 0.0) or 0.0)
+            rem_qty = max(0.0, orig_qty - exec_qty)
+            if price <= 0 or rem_qty <= 0:
+                continue
+            cur = tp_map.get(sym)
+            if not cur:
+                tp_map[sym] = {"price": price, "qty": rem_qty, "count": 1}
+            else:
+                cur["count"] = int(cur.get("count", 1)) + 1
+                if price < float(cur.get("price", price)):
+                    cur["price"] = price
+                    cur["qty"] = rem_qty
+    except Exception:
+        tp_map = {}
+
+    rows = []
+    for r in data.get("rows", []):
+        sym = str(r.get("symbol", "")).upper()
+        tp = tp_map.get(sym)
+        rows.append(
+            {
+                "symbol": sym,
+                "price": float(r.get("price", 0.0)),
+                "qty_total": float(r.get("qty_total", 0.0)),
+                "qty_free": float(r.get("qty_free", 0.0)),
+                "market_value": float(r.get("market_value", 0.0)),
+                "pnl": float(r.get("pnl", 0.0)),
+                "pnl_pct": float(r.get("pnl_pct", 0.0)),
+                "status": str(r.get("status", "flat")),
+                "tp_price": float(tp["price"]) if tp else None,
+                "tp_qty": float(tp["qty"]) if tp else None,
+                "tp_count": int(tp["count"]) if tp else 0,
+            }
+        )
+
+    summary = data.get("summary", {})
+    return JSONResponse(
+        {
+            "rows": rows,
+            "summary": {
+                "coins_count": int(summary.get("coins_count", 0)),
+                "invested_total": float(summary.get("invested_total", 0.0)),
+                "market_total": float(summary.get("market_total", 0.0)),
+                "pnl_total": float(summary.get("pnl_total", 0.0)),
+                "pnl_pct": float(summary.get("pnl_pct", 0.0)),
+            },
+        }
+    )
+
+
 @app.post("/live/all-coins/{symbol}/tp")
 async def live_all_coins_set_tp(symbol: str, tp_price: str = Form(...)) -> RedirectResponse:
     db = SessionLocal()
