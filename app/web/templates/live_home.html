@@ -24,16 +24,16 @@
     <section class="cards three">
       <article class="card stat">
         <h3>Cash</h3>
-        <p>{{ "%.2f"|format(wallet.cash) }} USDT</p>
+        <p id="lh-stat-cash">{{ "%.2f"|format(wallet.cash) }} USDT</p>
       </article>
       <article class="card stat">
         <h3>Equity</h3>
-        <p>{{ "%.2f"|format(wallet.equity) }} USDT</p>
+        <p id="lh-stat-equity">{{ "%.2f"|format(wallet.equity) }} USDT</p>
       </article>
       <article class="card stat">
         <h3>PnL</h3>
         {% set total_pnl = wallet.realized_pnl + wallet.unrealized_pnl %}
-        <p class="{{ 'pnl-pos' if total_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(total_pnl) }} USDT</p>
+        <p id="lh-stat-pnl" class="{{ 'pnl-pos' if total_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(total_pnl) }} USDT</p>
       </article>
     </section>
 
@@ -60,34 +60,34 @@
         </thead>
         <tbody>
           {% for item in campaigns %}
-          <tr>
+          <tr data-campaign-id="{{ item.campaign.id }}">
             <td>{{ item.campaign.name }}</td>
             <td>{{ item.campaign.status }}</td>
             <td>{{ "Loop AI" if item.campaign.loop_enabled else ("Smart DCA" if item.campaign.smart_dca_enabled else "Standard") }}</td>
             <td>{{ "AI" if item.campaign.ai_dca_enabled else "Manual" }}</td>
             <td>{{ "On" if item.campaign.trend_filter_enabled else "Off" }}</td>
             <td>{{ "On" if item.campaign.auto_reentry_enabled else "Off" }}</td>
-            <td>{{ item.stats.open_count }}</td>
-            <td>{{ item.stats.closed_count }}</td>
-            <td>{{ item.stats.dca_done_count }}</td>
-            <td class="{{ 'pnl-pos' if item.stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.realized_pnl) }}</td>
-            <td class="{{ 'pnl-pos' if item.stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.unrealized_pnl) }}</td>
+            <td class="lh-open-count">{{ item.stats.open_count }}</td>
+            <td class="lh-closed-count">{{ item.stats.closed_count }}</td>
+            <td class="lh-dca-count">{{ item.stats.dca_done_count }}</td>
+            <td class="lh-realized {{ 'pnl-pos' if item.stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.realized_pnl) }}</td>
+            <td class="lh-unrealized {{ 'pnl-pos' if item.stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(item.stats.unrealized_pnl) }}</td>
             <td><a href="/live/campaigns/{{ item.campaign.id }}">Open</a></td>
           </tr>
           {% endfor %}
           {% for r in accumulation_rows %}
-          <tr>
+          <tr data-acc-id="{{ r.plan.id }}">
             <td>{{ r.plan.name }}</td>
             <td>{{ r.plan.status }}</td>
             <td>Accumulation</td>
             <td>-</td>
             <td>-</td>
             <td>-</td>
-            <td>{{ 1 if (r.plan.coin_qty or 0) > 0 else 0 }}</td>
-            <td>{{ 0 if (r.plan.coin_qty or 0) > 0 else 1 }}</td>
+            <td class="lh-open-count">{{ 1 if (r.plan.coin_qty or 0) > 0 else 0 }}</td>
+            <td class="lh-closed-count">{{ 0 if (r.plan.coin_qty or 0) > 0 else 1 }}</td>
             <td>-</td>
-            <td class="{{ 'pnl-pos' if (r.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.plan.realized_pnl_usdt or 0) }}</td>
-            <td class="{{ 'pnl-pos' if (r.unrealized_pnl or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.unrealized_pnl or 0) }}</td>
+            <td class="lh-realized {{ 'pnl-pos' if (r.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.plan.realized_pnl_usdt or 0) }}</td>
+            <td class="lh-unrealized {{ 'pnl-pos' if (r.unrealized_pnl or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.unrealized_pnl or 0) }}</td>
             <td><a href="/live/accumulation/{{ r.plan.id }}">Open</a></td>
           </tr>
           {% endfor %}
@@ -114,5 +114,73 @@
     </section>
   </div>
 </section>
+
+<script>
+  function fmt2(n) { return (n >= 0 ? "+" : "") + Number(n).toFixed(2); }
+
+  async function refreshLiveHomeSummary() {
+    let data;
+    try {
+      const res = await fetch("/live/api/summary");
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) {
+      return;
+    }
+
+    // Wallet cards
+    const w = data.wallet || {};
+    const totalPnl = (w.realized_pnl || 0) + (w.unrealized_pnl || 0);
+    const elCash   = document.getElementById("lh-stat-cash");
+    const elEquity = document.getElementById("lh-stat-equity");
+    const elPnl    = document.getElementById("lh-stat-pnl");
+    if (elCash)   elCash.textContent   = Number(w.cash || 0).toFixed(2) + " USDT";
+    if (elEquity) elEquity.textContent = Number(w.equity || 0).toFixed(2) + " USDT";
+    if (elPnl) {
+      elPnl.textContent = fmt2(totalPnl) + " USDT";
+      elPnl.className = totalPnl >= 0 ? "pnl-pos" : "pnl-neg";
+    }
+
+    // Campaign rows
+    for (const c of (data.campaigns || [])) {
+      const tr = document.querySelector(`tr[data-campaign-id="${c.id}"]`);
+      if (!tr) continue;
+      const openCell = tr.querySelector(".lh-open-count");
+      const closedCell = tr.querySelector(".lh-closed-count");
+      const dcaCell = tr.querySelector(".lh-dca-count");
+      const realCell = tr.querySelector(".lh-realized");
+      const unrealCell = tr.querySelector(".lh-unrealized");
+      if (openCell)   openCell.textContent   = c.open_count;
+      if (closedCell) closedCell.textContent = c.closed_count;
+      if (dcaCell)    dcaCell.textContent    = c.dca_done_count;
+      if (realCell) {
+        realCell.textContent = fmt2(c.realized_pnl);
+        realCell.className = "lh-realized " + (c.realized_pnl >= 0 ? "pnl-pos" : "pnl-neg");
+      }
+      if (unrealCell) {
+        unrealCell.textContent = fmt2(c.unrealized_pnl);
+        unrealCell.className = "lh-unrealized " + (c.unrealized_pnl >= 0 ? "pnl-pos" : "pnl-neg");
+      }
+    }
+
+    // Accumulation rows
+    for (const a of (data.accumulation || [])) {
+      const tr = document.querySelector(`tr[data-acc-id="${a.id}"]`);
+      if (!tr) continue;
+      const realCell  = tr.querySelector(".lh-realized");
+      const unrealCell = tr.querySelector(".lh-unrealized");
+      if (realCell) {
+        realCell.textContent = fmt2(a.realized_pnl);
+        realCell.className = "lh-realized " + (a.realized_pnl >= 0 ? "pnl-pos" : "pnl-neg");
+      }
+      if (unrealCell) {
+        unrealCell.textContent = fmt2(a.unrealized_pnl);
+        unrealCell.className = "lh-unrealized " + (a.unrealized_pnl >= 0 ? "pnl-pos" : "pnl-neg");
+      }
+    }
+  }
+
+  setInterval(refreshLiveHomeSummary, 10000);
+</script>
 {% endblock %}
 

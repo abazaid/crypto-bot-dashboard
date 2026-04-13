@@ -1420,6 +1420,69 @@ async def live_dashboard(request: Request) -> HTMLResponse:
         db.close()
 
 
+@app.get("/live/api/summary")
+async def live_summary_api() -> JSONResponse:
+    """Return wallet stats and per-campaign PnL for in-page polling on /live."""
+    db = SessionLocal()
+    try:
+        wallet_data: dict = {
+            "cash": 0.0, "equity": 0.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0,
+        }
+        try:
+            wallet_data = live_wallet_snapshot(db)
+        except Exception:
+            pass
+
+        campaigns = db.query(Campaign).filter(Campaign.mode == "live").order_by(desc(Campaign.created_at)).all()
+        campaign_rows = []
+        for c in campaigns:
+            stats = _campaign_stats(db, c)
+            campaign_rows.append(
+                {
+                    "id": c.id,
+                    "open_count": stats["open_count"],
+                    "closed_count": stats["closed_count"],
+                    "dca_done_count": stats["dca_done_count"],
+                    "realized_pnl": float(stats["realized_pnl"]),
+                    "unrealized_pnl": float(stats["unrealized_pnl"]),
+                }
+            )
+
+        acc_plans = (
+            db.query(AccumulationPlan)
+            .filter(AccumulationPlan.mode == "live")
+            .order_by(desc(AccumulationPlan.created_at))
+            .all()
+        )
+        acc_rows = []
+        for p in acc_plans:
+            if float(p.coin_qty or 0.0) <= 0.0:
+                continue
+            r = _acc_plan_view_row(p)
+            acc_rows.append(
+                {
+                    "id": p.id,
+                    "realized_pnl": float(p.realized_pnl_usdt or 0.0),
+                    "unrealized_pnl": float(r["unrealized_pnl"]),
+                }
+            )
+
+        return JSONResponse(
+            {
+                "wallet": {
+                    "cash": float(wallet_data.get("cash", 0.0)),
+                    "equity": float(wallet_data.get("equity", 0.0)),
+                    "realized_pnl": float(wallet_data.get("realized_pnl", 0.0)),
+                    "unrealized_pnl": float(wallet_data.get("unrealized_pnl", 0.0)),
+                },
+                "campaigns": campaign_rows,
+                "accumulation": acc_rows,
+            }
+        )
+    finally:
+        db.close()
+
+
 @app.get("/live/campaigns")
 async def live_campaigns_alias() -> RedirectResponse:
     return RedirectResponse("/live", status_code=303)
