@@ -2290,6 +2290,53 @@ async def live_campaign_details(request: Request, campaign_id: int) -> HTMLRespo
         db.close()
 
 
+@app.get("/live/campaigns/{campaign_id}/api/prices")
+async def live_campaign_prices_api(campaign_id: int) -> JSONResponse:
+    """Return live mark prices and PnL for open positions in a campaign. Used by in-page polling JS."""
+    db = SessionLocal()
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "live").first()
+        if not campaign:
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+        positions = db.query(Position).filter(Position.campaign_id == campaign_id).order_by(desc(Position.id)).all()
+        open_symbols = [p.symbol for p in positions if p.status == "open"]
+        prices = get_prices(open_symbols) if open_symbols else {}
+        stats = _campaign_stats(db, campaign)
+
+        position_rows = []
+        for p in positions:
+            if p.status == "open":
+                mark = float(prices.get(p.symbol, p.average_price))
+                pnl = (mark * float(p.total_qty)) - float(p.total_invested_usdt)
+                pnl_pct = (pnl / float(p.total_invested_usdt) * 100.0) if float(p.total_invested_usdt) > 0 else 0.0
+            else:
+                mark = float(p.close_price or p.average_price)
+                pnl = float(p.realized_pnl_usdt or 0.0)
+                pnl_pct = (pnl / float(p.total_invested_usdt) * 100.0) if float(p.total_invested_usdt) > 0 else 0.0
+            position_rows.append(
+                {
+                    "id": p.id,
+                    "mark": mark,
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                }
+            )
+
+        return JSONResponse(
+            {
+                "stats": {
+                    "open_count": stats["open_count"],
+                    "realized_pnl": float(stats["realized_pnl"]),
+                    "unrealized_pnl": float(stats["unrealized_pnl"]),
+                },
+                "positions": position_rows,
+            }
+        )
+    finally:
+        db.close()
+
+
 @app.get("/paper/history", response_class=HTMLResponse)
 async def paper_trading_history(request: Request) -> HTMLResponse:
     db = SessionLocal()

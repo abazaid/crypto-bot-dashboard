@@ -12,15 +12,15 @@
   </article>
   <article class="card stat">
     <h3>Open</h3>
-    <p>{{ stats.open_count }}</p>
+    <p id="lc-stat-open">{{ stats.open_count }}</p>
   </article>
   <article class="card stat">
     <h3>Realized</h3>
-    <p class="{{ 'pnl-pos' if stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.realized_pnl) }} USDT</p>
+    <p id="lc-stat-realized" class="{{ 'pnl-pos' if stats.realized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.realized_pnl) }} USDT</p>
   </article>
   <article class="card stat">
     <h3>Unrealized</h3>
-    <p class="{{ 'pnl-pos' if stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.unrealized_pnl) }} USDT</p>
+    <p id="lc-stat-unrealized" class="{{ 'pnl-pos' if stats.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(stats.unrealized_pnl) }} USDT</p>
   </article>
 </section>
 
@@ -223,7 +223,7 @@
       {% set new_avg = p.average_price if dca_count > 0 else none %}
       {% set new_target = ((new_avg * (1 + (campaign.tp_pct / 100.0))) if (campaign.tp_pct is not none and new_avg is not none) else none) %}
       {% set tp_price = (p.average_price * (1 + (campaign.tp_pct / 100.0))) if campaign.tp_pct is not none else none %}
-      <tr>
+      <tr data-pos-id="{{ p.id }}" data-pos-status="{{ p.status }}">
         <td>{{ p.symbol }}</td>
         <td><span class="badge">{{ p.status }}</span></td>
         <td>{{ p.opened_at.strftime("%Y-%m-%d %H:%M") if p.opened_at else "-" }}</td>
@@ -234,10 +234,10 @@
         <td>{{ "%.6f"|format(new_avg) if new_avg is not none else "-" }}</td>
         <td>{{ "%.6f"|format(new_target) if new_target is not none else "-" }}</td>
         <td>{{ "%.6f"|format(tp_price) if tp_price is not none else "-" }}</td>
-        <td>{{ "%.6f"|format(mark) }}</td>
+        <td class="lc-mark">{{ "%.6f"|format(mark) }}</td>
         <td>{{ "%.2f"|format(p.total_invested_usdt) }}</td>
         <td>{{ "%.8f"|format(p.total_qty) }}</td>
-        <td class="{{ 'pnl-pos' if pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(pnl) }} ({{ "%+.2f"|format(pnl_pct) }}%)</td>
+        <td class="lc-pnl {{ 'pnl-pos' if pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(pnl) }} ({{ "%+.2f"|format(pnl_pct) }}%)</td>
         <td><button type="button" class="mini-btn dca-view-btn" data-position-id="{{ p.id }}">View</button></td>
         <td>
           {% if p.status == "open" %}
@@ -330,6 +330,54 @@
   };
 
   window.initPaperCampaignPage();
+
+  // ── In-place price polling (every 10 s) ─────────────────────────────────────
+  const CAMPAIGN_ID = {{ campaign.id }};
+
+  async function refreshCampaignPrices() {
+    let data;
+    try {
+      const res = await fetch(`/live/campaigns/${CAMPAIGN_ID}/api/prices`);
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) {
+      return;
+    }
+
+    // Summary cards
+    const s = data.stats || {};
+    const elOpen   = document.getElementById("lc-stat-open");
+    const elReal   = document.getElementById("lc-stat-realized");
+    const elUnreal = document.getElementById("lc-stat-unrealized");
+    if (elOpen)   elOpen.textContent   = s.open_count;
+    if (elReal) {
+      elReal.textContent = (s.realized_pnl >= 0 ? "+" : "") + Number(s.realized_pnl).toFixed(2) + " USDT";
+      elReal.className = s.realized_pnl >= 0 ? "pnl-pos" : "pnl-neg";
+    }
+    if (elUnreal) {
+      elUnreal.textContent = (s.unrealized_pnl >= 0 ? "+" : "") + Number(s.unrealized_pnl).toFixed(2) + " USDT";
+      elUnreal.className = s.unrealized_pnl >= 0 ? "pnl-pos" : "pnl-neg";
+    }
+
+    // Position rows (open only — closed prices never change)
+    for (const p of (data.positions || [])) {
+      const tr = document.querySelector(`tr[data-pos-id="${p.id}"]`);
+      if (!tr || tr.getAttribute("data-pos-status") !== "open") continue;
+
+      const markCell = tr.querySelector(".lc-mark");
+      if (markCell) markCell.textContent = Number(p.mark).toFixed(6);
+
+      const pnlCell = tr.querySelector(".lc-pnl");
+      if (pnlCell) {
+        const sign = p.pnl >= 0 ? "+" : "";
+        const pctSign = p.pnl_pct >= 0 ? "+" : "";
+        pnlCell.textContent = `${sign}${Number(p.pnl).toFixed(2)} (${pctSign}${Number(p.pnl_pct).toFixed(2)}%)`;
+        pnlCell.className = "lc-pnl " + (p.pnl >= 0 ? "pnl-pos" : "pnl-neg");
+      }
+    }
+  }
+
+  setInterval(refreshCampaignPrices, 10000);
 </script>
 {% endblock %}
 
