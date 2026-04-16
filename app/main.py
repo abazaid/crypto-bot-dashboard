@@ -111,6 +111,8 @@ medium_lock = threading.Lock()
 slow_lock = threading.Lock()
 paper_acc_lock = threading.Lock()
 live_acc_lock = threading.Lock()
+all_coins_cache_lock = threading.Lock()
+_ALL_COINS_PAGE_CACHE: dict[str, dict] = {}
 
 
 def _context(active: str, **kwargs) -> dict:
@@ -1778,6 +1780,130 @@ def _build_tp_map_from_orders(open_orders: list[dict]) -> dict[str, dict]:
     return tp_map
 
 
+def _empty_all_coins_data() -> dict:
+    return {
+        "rows": [],
+        "summary": {
+            "coins_count": 0,
+            "invested_total": 0.0,
+            "market_total": 0.0,
+            "pnl_total": 0.0,
+            "pnl_pct": 0.0,
+        },
+    }
+
+
+def _get_all_coins_cached_payload(cache_key: str, max_age_seconds: int) -> dict | None:
+    with all_coins_cache_lock:
+        cached = _ALL_COINS_PAGE_CACHE.get(cache_key)
+        if not cached:
+            return None
+        age = time.time() - float(cached.get("created_at", 0.0))
+        if age > max(1, int(max_age_seconds)):
+            return None
+        return cached.get("payload")
+
+
+def _get_all_coins_cached_summary(cache_key: str) -> dict:
+    with all_coins_cache_lock:
+        cached = _ALL_COINS_PAGE_CACHE.get(cache_key)
+        if cached and isinstance(cached.get("payload"), dict):
+            payload = cached["payload"]
+            if isinstance(payload.get("summary"), dict):
+                return payload["summary"]
+    return _empty_all_coins_data()["summary"]
+
+
+def _set_all_coins_cached_payload(cache_key: str, payload: dict) -> None:
+    with all_coins_cache_lock:
+        _ALL_COINS_PAGE_CACHE[cache_key] = {
+            "created_at": time.time(),
+            "payload": payload,
+        }
+
+
+def _clear_all_coins_cached_payload(cache_key: str) -> None:
+    with all_coins_cache_lock:
+        _ALL_COINS_PAGE_CACHE.pop(cache_key, None)
+
+
+def _serialize_forecast(fc: dict | None) -> dict | None:
+    if not fc:
+        return None
+    return {
+        "expected_move_pct": float(fc.get("expected_move_pct", 0.0) or 0.0),
+        "confidence_pct": float(fc.get("confidence_pct", 0.0) or 0.0),
+        "bias": str(fc.get("bias", "neutral") or "neutral"),
+        "arrow": str(fc.get("arrow", "-") or "-"),
+        "tooltip": str(fc.get("tooltip", "") or ""),
+    }
+
+
+def _build_all_coins_page_payload(
+    db,
+    *,
+    list_positions_fn,
+    get_open_orders_fn,
+    cache_ttl_seconds: int,
+    include_forecasts: bool,
+) -> dict:
+    data = list_positions_fn(cache_ttl_seconds=cache_ttl_seconds)
+    rows = data.get("rows", [])
+    symbols = [str(r.get("symbol", "")).upper() for r in rows]
+    f_map: dict[str, dict] = {}
+    if include_forecasts and symbols:
+        try:
+            f_map = get_forecasts_for_symbols(
+                db,
+                symbols,
+                build_limit=max(1, int(settings.forecast_build_per_request)),
+            )
+        except Exception:
+            f_map = {}
+
+    tp_map: dict[str, dict] = {}
+    try:
+        tp_map = _build_tp_map_from_orders(get_open_orders_fn())
+    except Exception:
+        tp_map = {}
+
+    out_rows = []
+    for r in rows:
+        sym = str(r.get("symbol", "")).upper()
+        tp = tp_map.get(sym)
+        forecast = _serialize_forecast(f_map.get(sym))
+        out_rows.append(
+            {
+                "symbol": sym,
+                "qty_total": float(r.get("qty_total", 0.0) or 0.0),
+                "qty_free": float(r.get("qty_free", 0.0) or 0.0),
+                "avg_entry": float(r.get("avg_entry", 0.0) or 0.0),
+                "price": float(r.get("price", 0.0) or 0.0),
+                "invested": float(r.get("invested", 0.0) or 0.0),
+                "market_value": float(r.get("market_value", 0.0) or 0.0),
+                "pnl": float(r.get("pnl", 0.0) or 0.0),
+                "pnl_pct": float(r.get("pnl_pct", 0.0) or 0.0),
+                "status": str(r.get("status", "flat") or "flat"),
+                "tp_price": float(tp.get("price", 0.0)) if tp else None,
+                "tp_qty": float(tp.get("qty", 0.0)) if tp else None,
+                "tp_count": int(tp.get("count", 0)) if tp else 0,
+                "forecast": forecast,
+            }
+        )
+
+    summary = data.get("summary", {})
+    return {
+        "rows": out_rows,
+        "summary": {
+            "coins_count": int(summary.get("coins_count", 0)),
+            "invested_total": float(summary.get("invested_total", 0.0) or 0.0),
+            "market_total": float(summary.get("market_total", 0.0) or 0.0),
+            "pnl_total": float(summary.get("pnl_total", 0.0) or 0.0),
+            "pnl_pct": float(summary.get("pnl_pct", 0.0) or 0.0),
+        },
+    }
+
+
 @app.get("/live/all-coins", response_class=HTMLResponse)
 async def live_all_coins_page(
     request: Request,
@@ -1789,74 +1915,9 @@ async def live_all_coins_page(
         error = None
         symbol_query = str(symbol or "").upper().strip()
         forecast_card = None
-        data = {"rows": [], "summary": {"coins_count": 0, "invested_total": 0.0, "market_total": 0.0, "pnl_total": 0.0, "pnl_pct": 0.0}}
+        data = _empty_all_coins_data()
+        data["summary"] = _get_all_coins_cached_summary("live_all_coins_full")
         try:
-            data = list_spot_coin_positions(cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)))
-            symbols = [str(r.get("symbol", "")).upper() for r in data.get("rows", [])]
-            f_map = get_forecasts_for_symbols(
-                db,
-                symbols,
-                build_limit=max(1, int(settings.forecast_build_per_request)),
-            )
-            tp_map: dict[str, dict] = {}
-            try:
-                open_orders = get_open_orders()
-                for o in open_orders:
-                    side = str(o.get("side", "")).upper()
-                    otype = str(o.get("type", "")).upper()
-                    status = str(o.get("status", "")).upper()
-                    if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED"}:
-                        continue
-                    sym = str(o.get("symbol", "")).upper()
-                    price = float(o.get("price", 0.0) or 0.0)
-                    orig_qty = float(o.get("origQty", 0.0) or 0.0)
-                    exec_qty = float(o.get("executedQty", 0.0) or 0.0)
-                    rem_qty = max(0.0, orig_qty - exec_qty)
-                    if price <= 0 or rem_qty <= 0:
-                        continue
-                    cur = tp_map.get(sym)
-                    if not cur:
-                        tp_map[sym] = {"price": price, "qty": rem_qty, "count": 1}
-                    else:
-                        cur["count"] = int(cur.get("count", 1)) + 1
-                        # keep nearest (lower) TP by price if multiple
-                        if price < float(cur.get("price", price)):
-                            cur["price"] = price
-                            cur["qty"] = rem_qty
-            except Exception:
-                tp_map = {}
-
-            for r in data.get("rows", []):
-                sym = str(r.get("symbol", "")).upper()
-                tp = tp_map.get(sym)
-                r["tp_price"] = float(tp.get("price", 0.0)) if tp else None
-                r["tp_qty"] = float(tp.get("qty", 0.0)) if tp else None
-                r["tp_count"] = int(tp.get("count", 0)) if tp else 0
-                fc = f_map.get(sym)
-                if not fc:
-                    try:
-                        fc = get_or_build_forecast(
-                            db,
-                            sym,
-                            force_refresh=False,
-                            interval=settings.forecast_interval,
-                            horizon_days=settings.forecast_horizon_days,
-                        )
-                    except Exception as e:
-                        fc = {
-                            "symbol": sym,
-                            "expected_move_pct": 0.0,
-                            "confidence_pct": 40.0,
-                            "bias": "neutral",
-                            "volatility_level": "unknown",
-                            "direction": "flat",
-                            "arrow": "-",
-                            "tooltip": f"Forecast unavailable now for {sym}: {e}",
-                            "cached": False,
-                            "fallback": True,
-                        }
-                r["forecast"] = fc
-
             if symbol_query:
                 qsym = symbol_query if symbol_query.endswith("USDT") else f"{symbol_query}USDT"
                 try:
@@ -1894,6 +1955,8 @@ async def live_all_coins_page(
                 forecast_symbol=symbol_query,
                 forecast_card=forecast_card,
                 forecast_build_per_request=max(1, int(settings.forecast_build_per_request)),
+                data_api_url="/live/all-coins/api/data",
+                actions_prefix="/live/all-coins",
             ),
         )
     finally:
@@ -1970,6 +2033,29 @@ async def live_all_coins_prices_api() -> JSONResponse:
     )
 
 
+@app.get("/live/all-coins/api/data")
+async def live_all_coins_data_api() -> JSONResponse:
+    cached = _get_all_coins_cached_payload("live_all_coins_full", max_age_seconds=30)
+    if cached is not None:
+        return JSONResponse(cached)
+
+    db = SessionLocal()
+    try:
+        payload = _build_all_coins_page_payload(
+            db,
+            list_positions_fn=list_spot_coin_positions,
+            get_open_orders_fn=get_open_orders,
+            cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)),
+            include_forecasts=True,
+        )
+        _set_all_coins_cached_payload("live_all_coins_full", payload)
+        return JSONResponse(payload)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 @app.post("/live/all-coins/{symbol}/tp")
 async def live_all_coins_set_tp(symbol: str, tp_price: str = Form(...)) -> RedirectResponse:
     db = SessionLocal()
@@ -2027,6 +2113,7 @@ async def live_all_coins_set_tp(symbol: str, tp_price: str = Form(...)) -> Redir
         db.commit()
         return RedirectResponse("/live/all-coins", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_full")
         db.close()
 
 
@@ -2071,6 +2158,7 @@ async def live_all_coins_cancel_symbol_sell_orders(symbol: str) -> RedirectRespo
         db.commit()
         return RedirectResponse("/live/all-coins", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_full")
         db.close()
 
 
@@ -2112,6 +2200,7 @@ async def live_all_coins_cancel_all_sell_orders() -> RedirectResponse:
         db.commit()
         return RedirectResponse("/live/all-coins", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_full")
         db.close()
 
 
@@ -2249,6 +2338,7 @@ async def live_all_coins_close(symbol: str) -> RedirectResponse:
         db.commit()
         return RedirectResponse("/live/all-coins", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_full")
         db.close()
 
 
@@ -2263,61 +2353,9 @@ async def live_all_coins_binance_2_page(
         error = None
         symbol_query = str(symbol or "").upper().strip()
         forecast_card = None
-        data = {
-            "rows": [],
-            "summary": {
-                "coins_count": 0,
-                "invested_total": 0.0,
-                "market_total": 0.0,
-                "pnl_total": 0.0,
-                "pnl_pct": 0.0,
-            },
-        }
+        data = _empty_all_coins_data()
+        data["summary"] = _get_all_coins_cached_summary("live_all_coins_binance_2_full")
         try:
-            data = list_spot_coin_positions_2(cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)))
-            symbols = [str(r.get("symbol", "")).upper() for r in data.get("rows", [])]
-            f_map = get_forecasts_for_symbols(
-                db,
-                symbols,
-                build_limit=max(1, int(settings.forecast_build_per_request)),
-            )
-            tp_map: dict[str, dict] = {}
-            try:
-                tp_map = _build_tp_map_from_orders(get_open_orders_2())
-            except Exception:
-                tp_map = {}
-
-            for r in data.get("rows", []):
-                sym = str(r.get("symbol", "")).upper()
-                tp = tp_map.get(sym)
-                r["tp_price"] = float(tp.get("price", 0.0)) if tp else None
-                r["tp_qty"] = float(tp.get("qty", 0.0)) if tp else None
-                r["tp_count"] = int(tp.get("count", 0)) if tp else 0
-                fc = f_map.get(sym)
-                if not fc:
-                    try:
-                        fc = get_or_build_forecast(
-                            db,
-                            sym,
-                            force_refresh=False,
-                            interval=settings.forecast_interval,
-                            horizon_days=settings.forecast_horizon_days,
-                        )
-                    except Exception as e:
-                        fc = {
-                            "symbol": sym,
-                            "expected_move_pct": 0.0,
-                            "confidence_pct": 40.0,
-                            "bias": "neutral",
-                            "volatility_level": "unknown",
-                            "direction": "flat",
-                            "arrow": "-",
-                            "tooltip": f"Forecast unavailable now for {sym}: {e}",
-                            "cached": False,
-                            "fallback": True,
-                        }
-                r["forecast"] = fc
-
             if symbol_query:
                 qsym = symbol_query if symbol_query.endswith("USDT") else f"{symbol_query}USDT"
                 try:
@@ -2350,6 +2388,8 @@ async def live_all_coins_binance_2_page(
                 forecast_symbol=symbol_query,
                 forecast_card=forecast_card,
                 forecast_build_per_request=max(1, int(settings.forecast_build_per_request)),
+                data_api_url="/live/all-coins-binance-2/api/data",
+                actions_prefix="/live/all-coins-binance-2",
             ),
         )
     finally:
@@ -2402,6 +2442,29 @@ async def live_all_coins_binance_2_prices_api() -> JSONResponse:
             },
         }
     )
+
+
+@app.get("/live/all-coins-binance-2/api/data")
+async def live_all_coins_binance_2_data_api() -> JSONResponse:
+    cached = _get_all_coins_cached_payload("live_all_coins_binance_2_full", max_age_seconds=30)
+    if cached is not None:
+        return JSONResponse(cached)
+
+    db = SessionLocal()
+    try:
+        payload = _build_all_coins_page_payload(
+            db,
+            list_positions_fn=list_spot_coin_positions_2,
+            get_open_orders_fn=get_open_orders_2,
+            cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)),
+            include_forecasts=True,
+        )
+        _set_all_coins_cached_payload("live_all_coins_binance_2_full", payload)
+        return JSONResponse(payload)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
 
 
 @app.post("/live/all-coins-binance-2/{symbol}/tp")
@@ -2461,6 +2524,7 @@ async def live_all_coins_binance_2_set_tp(symbol: str, tp_price: str = Form(...)
         db.commit()
         return RedirectResponse("/live/all-coins-binance-2", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_binance_2_full")
         db.close()
 
 
@@ -2505,6 +2569,7 @@ async def live_all_coins_binance_2_cancel_symbol_sell_orders(symbol: str) -> Red
         db.commit()
         return RedirectResponse("/live/all-coins-binance-2", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_binance_2_full")
         db.close()
 
 
@@ -2546,6 +2611,7 @@ async def live_all_coins_binance_2_cancel_all_sell_orders() -> RedirectResponse:
         db.commit()
         return RedirectResponse("/live/all-coins-binance-2", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_binance_2_full")
         db.close()
 
 
@@ -2607,6 +2673,7 @@ async def live_all_coins_binance_2_close(symbol: str) -> RedirectResponse:
         db.commit()
         return RedirectResponse("/live/all-coins-binance-2", status_code=303)
     finally:
+        _clear_all_coins_cached_payload("live_all_coins_binance_2_full")
         db.close()
 
 

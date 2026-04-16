@@ -89,7 +89,7 @@
       <form method="post" action="/live/all-coins/cancel-all-sell-orders" style="margin-bottom: 12px;" onsubmit="return confirm('Cancel ALL open SELL LIMIT orders now?');">
         <button type="submit" class="sell-btn">Cancel All Sell Orders</button>
       </form>
-      {% if data.rows %}
+      <p id="all-coins-load-status" class="muted-line">Loading account coins...</p>
       <div class="table-scroll">
         <table class="campaigns-table">
           <thead>
@@ -110,62 +110,12 @@
             </tr>
           </thead>
           <tbody id="all-coins-tbody">
-            {% for r in data.rows %}
-            <tr data-symbol="{{ r.symbol }}">
-              <td data-sort="symbol" data-value="{{ r.symbol }}">{{ r.symbol }}</td>
-              <td data-sort="qty_total" data-value="{{ r.qty_total }}" class="ac-qty-total">{{ "%.8f"|format(r.qty_total) }}</td>
-              <td data-sort="qty_free" data-value="{{ r.qty_free }}" class="ac-qty-free">{{ "%.8f"|format(r.qty_free) }}</td>
-              <td data-sort="avg_entry" data-value="{{ r.avg_entry }}">{{ "%.8f"|format(r.avg_entry) }}</td>
-              <td data-sort="price" data-value="{{ r.price }}" class="ac-price">{{ "%.8f"|format(r.price) }}</td>
-              <td data-sort="invested" data-value="{{ r.invested }}">{{ "%.2f"|format(r.invested) }}</td>
-              <td data-sort="market_value" data-value="{{ r.market_value }}" class="ac-market-value">{{ "%.2f"|format(r.market_value) }}</td>
-              <td data-sort="pnl" data-value="{{ r.pnl }}" class="ac-pnl {{ 'pnl-pos' if r.pnl >= 0 else 'pnl-neg' }}">
-                {{ "%+.2f"|format(r.pnl) }} ({{ "%+.2f"|format(r.pnl_pct) }}%)
-              </td>
-              <td data-sort="forecast_move" data-value="{{ r.forecast.expected_move_pct if r.forecast else -9999 }}">
-                {% if r.forecast %}
-                  <div class="forecast-badge {{ 'bull' if r.forecast.expected_move_pct > 0 else ('bear' if r.forecast.expected_move_pct < 0 else 'neutral') }}"
-                       title="{{ r.forecast.tooltip }}">
-                    <div>{{ r.forecast.arrow }} {{ "%+.1f"|format(r.forecast.expected_move_pct) }}%</div>
-                    <small>{{ "%.0f"|format(r.forecast.confidence_pct) }}% conf</small>
-                  </div>
-                {% else %}
-                  -
-                {% endif %}
-              </td>
-              <td data-sort="tp_price" data-value="{{ r.tp_price if r.tp_price else -1 }}" class="ac-tp">
-                {% if r.tp_price %}
-                  <span class="pnl-pos">{{ "%.8f"|format(r.tp_price) }}</span>
-                  <div class="muted-line" style="margin-top:4px;">Qty {{ "%.8f"|format(r.tp_qty or 0) }}{% if r.tp_count and r.tp_count > 1 %} | {{ r.tp_count }} orders{% endif %}</div>
-                {% else %}
-                  -
-                {% endif %}
-              </td>
-              <td>
-                <form method="post" action="/live/all-coins/{{ r.symbol }}/tp" class="inline-form" onsubmit="return confirm('Replace TP for {{ r.symbol }} with new target?');">
-                  <input type="number" step="0.00000001" min="0" name="tp_price" required value="{{ '%.8f'|format(r.tp_price) if r.tp_price else ('%.8f'|format(r.avg_entry * 1.01 if r.avg_entry else r.price * 1.01)) }}">
-                  <button type="submit">Set TP</button>
-                </form>
-                <form method="post" action="/live/all-coins/{{ r.symbol }}/cancel-sell-orders" style="margin-top:6px;" onsubmit="return confirm('Cancel all SELL LIMIT orders for {{ r.symbol }} only?');">
-                  <button type="submit" class="btn-secondary">Cancel Sell Orders</button>
-                </form>
-              </td>
-              <td data-sort="status" data-value="{{ r.status }}" class="ac-status">
-                <span class="badge">{{ r.status }}</span>
-              </td>
-              <td>
-                <form method="post" action="/live/all-coins/{{ r.symbol }}/close" onsubmit="return confirm('Close {{ r.symbol }} with market sell now?');">
-                  <button type="submit" class="sell-btn">Close</button>
-                </form>
-              </td>
+            <tr>
+              <td colspan="13" class="muted-line">Loading account coins...</td>
             </tr>
-            {% endfor %}
           </tbody>
         </table>
       </div>
-      {% else %}
-      <p>No coin balances found.</p>
-      {% endif %}
     </section>
 
     <section class="card">
@@ -184,7 +134,9 @@
   </div>
 </section>
 <script>
-  // ── Table sort ──────────────────────────────────────────────────────────────
+  const ALL_COINS_DATA_API_URL = {{ data_api_url|tojson }};
+  const ALL_COINS_ACTIONS_PREFIX = {{ actions_prefix|tojson }};
+
   window.initAllCoinsSort = function initAllCoinsSort() {
     const tableBody = document.getElementById("all-coins-tbody");
     if (!tableBody) return;
@@ -213,7 +165,7 @@
     }
 
     function sortBy(key, type, dir) {
-      const rows = Array.from(tableBody.querySelectorAll("tr"));
+      const rows = Array.from(tableBody.querySelectorAll("tr[data-symbol]"));
       rows.sort((a, b) => {
         const aCell = a.querySelector(`td[data-sort="${key}"]`);
         const bCell = b.querySelector(`td[data-sort="${key}"]`);
@@ -246,41 +198,130 @@
   };
   window.initAllCoinsSort();
 
-  // ── In-place price polling (every 10 s, no page reload) ─────────────────────
-  function fmt8(n) { return Number(n).toFixed(8); }
-  function fmt2(n) { return Number(n).toFixed(2); }
+  function fmt8(n) { return Number(n || 0).toFixed(8); }
+  function fmt2(n) { return Number(n || 0).toFixed(2); }
   function fmtPnl(pnl, pct) {
     const sign = pnl >= 0 ? "+" : "";
     return `${sign}${fmt2(pnl)} (${pct >= 0 ? "+" : ""}${fmt2(pct)}%)`;
   }
-
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+  function renderForecastCell(forecast) {
+    if (!forecast) return "-";
+    const move = Number(forecast.expected_move_pct || 0);
+    const klass = move > 0 ? "bull" : (move < 0 ? "bear" : "neutral");
+    const tooltip = escapeHtml(forecast.tooltip || "");
+    return `<div class="forecast-badge ${klass}" title="${tooltip}"><div>${escapeHtml(forecast.arrow || '-')} ${move >= 0 ? '+' : ''}${move.toFixed(1)}%</div><small>${Math.round(Number(forecast.confidence_pct || 0))}% conf</small></div>`;
+  }
+  function renderTpCell(row) {
+    if (!row.tp_price) return "-";
+    let html = `<span class="pnl-pos">${fmt8(row.tp_price)}</span>`;
+    html += `<div class="muted-line" style="margin-top:4px;">Qty ${fmt8(row.tp_qty || 0)}`;
+    if (row.tp_count && row.tp_count > 1) html += ` | ${row.tp_count} orders`;
+    html += `</div>`;
+    return html;
+  }
+  function buildTpValue(row) {
+    if (row.tp_price) return fmt8(row.tp_price);
+    const base = Number(row.avg_entry || 0) > 0 ? Number(row.avg_entry) : Number(row.price || 0);
+    return fmt8(base * 1.01);
+  }
+  function renderAllCoinsRow(row) {
+    const symbol = escapeHtml(row.symbol);
+    const forecastMove = row.forecast ? Number(row.forecast.expected_move_pct || 0) : -9999;
+    const pnlClass = Number(row.pnl || 0) >= 0 ? "pnl-pos" : "pnl-neg";
+    return `
+      <tr data-symbol="${symbol}">
+        <td data-sort="symbol" data-value="${symbol}">${symbol}</td>
+        <td data-sort="qty_total" data-value="${Number(row.qty_total || 0)}" class="ac-qty-total">${fmt8(row.qty_total)}</td>
+        <td data-sort="qty_free" data-value="${Number(row.qty_free || 0)}" class="ac-qty-free">${fmt8(row.qty_free)}</td>
+        <td data-sort="avg_entry" data-value="${Number(row.avg_entry || 0)}">${fmt8(row.avg_entry)}</td>
+        <td data-sort="price" data-value="${Number(row.price || 0)}" class="ac-price">${fmt8(row.price)}</td>
+        <td data-sort="invested" data-value="${Number(row.invested || 0)}">${fmt2(row.invested)}</td>
+        <td data-sort="market_value" data-value="${Number(row.market_value || 0)}" class="ac-market-value">${fmt2(row.market_value)}</td>
+        <td data-sort="pnl" data-value="${Number(row.pnl || 0)}" class="ac-pnl ${pnlClass}">${fmtPnl(Number(row.pnl || 0), Number(row.pnl_pct || 0))}</td>
+        <td data-sort="forecast_move" data-value="${forecastMove}">${renderForecastCell(row.forecast)}</td>
+        <td data-sort="tp_price" data-value="${row.tp_price != null ? Number(row.tp_price) : -1}" class="ac-tp">${renderTpCell(row)}</td>
+        <td>
+          <form method="post" action="${ALL_COINS_ACTIONS_PREFIX}/${symbol}/tp" class="inline-form" onsubmit="return confirm('Replace TP for ${symbol} with new target?');">
+            <input type="number" step="0.00000001" min="0" name="tp_price" required value="${buildTpValue(row)}">
+            <button type="submit">Set TP</button>
+          </form>
+          <form method="post" action="${ALL_COINS_ACTIONS_PREFIX}/${symbol}/cancel-sell-orders" style="margin-top:6px;" onsubmit="return confirm('Cancel all SELL LIMIT orders for ${symbol} only?');">
+            <button type="submit" class="btn-secondary">Cancel Sell Orders</button>
+          </form>
+        </td>
+        <td data-sort="status" data-value="${escapeHtml(row.status || 'flat')}" class="ac-status"><span class="badge">${escapeHtml(row.status || 'flat')}</span></td>
+        <td>
+          <form method="post" action="${ALL_COINS_ACTIONS_PREFIX}/${symbol}/close" onsubmit="return confirm('Close ${symbol} with market sell now?');">
+            <button type="submit" class="sell-btn">Close</button>
+          </form>
+        </td>
+      </tr>`;
+  }
+  function renderSummary(summary) {
+    const s = summary || {};
+    const elCoins = document.getElementById("ac-stat-coins");
+    const elInvest = document.getElementById("ac-stat-invested");
+    const elMarket = document.getElementById("ac-stat-market");
+    const elPnl = document.getElementById("ac-stat-pnl");
+    if (elCoins) elCoins.textContent = Number(s.coins_count || 0);
+    if (elInvest) elInvest.textContent = fmt2(s.invested_total) + " USDT";
+    if (elMarket) elMarket.textContent = fmt2(s.market_total) + " USDT";
+    if (elPnl) {
+      elPnl.textContent = (Number(s.pnl_total || 0) >= 0 ? "+" : "") + fmt2(s.pnl_total) + " USDT (" + (Number(s.pnl_pct || 0) >= 0 ? "+" : "") + fmt2(s.pnl_pct) + "%)";
+      elPnl.className = Number(s.pnl_total || 0) >= 0 ? "pnl-pos" : "pnl-neg";
+    }
+  }
+  function renderTableRows(rows) {
+    const tableBody = document.getElementById("all-coins-tbody");
+    const status = document.getElementById("all-coins-load-status");
+    if (!tableBody) return;
+    if (!rows || !rows.length) {
+      tableBody.innerHTML = '<tr><td colspan="13" class="muted-line">No coin balances found.</td></tr>';
+      if (status) status.textContent = "Loaded.";
+      return;
+    }
+    tableBody.innerHTML = rows.map(renderAllCoinsRow).join("");
+    if (status) status.textContent = `Loaded ${rows.length} coin rows.`;
+    window.initAllCoinsSort();
+  }
+  async function loadAllCoinsData() {
+    const status = document.getElementById("all-coins-load-status");
+    try {
+      const res = await fetch(ALL_COINS_DATA_API_URL, { headers: { "X-Requested-With": "fetch" } });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || `Request failed with ${res.status}`);
+      }
+      renderSummary(data.summary || {});
+      renderTableRows(data.rows || []);
+    } catch (e) {
+      const tableBody = document.getElementById("all-coins-tbody");
+      if (tableBody) {
+        tableBody.innerHTML = `<tr><td colspan="13" class="pnl-neg">${escapeHtml(e.message || 'Failed to load account coins.')}</td></tr>`;
+      }
+      if (status) status.textContent = "Loading failed.";
+    }
+  }
   async function refreshAllCoinsPrices() {
     let data;
     try {
-      const res = await fetch("/live/all-coins/api/prices");
+      const res = await fetch(`${ALL_COINS_ACTIONS_PREFIX}/api/prices`);
       if (!res.ok) return;
       data = await res.json();
     } catch (e) {
       return;
     }
 
-    // Update summary cards
-    const s = data.summary || {};
-    const elCoins   = document.getElementById("ac-stat-coins");
-    const elInvest  = document.getElementById("ac-stat-invested");
-    const elMarket  = document.getElementById("ac-stat-market");
-    const elPnl     = document.getElementById("ac-stat-pnl");
-    if (elCoins)  elCoins.textContent  = s.coins_count;
-    if (elInvest) elInvest.textContent = fmt2(s.invested_total) + " USDT";
-    if (elMarket) elMarket.textContent = fmt2(s.market_total) + " USDT";
-    if (elPnl) {
-      elPnl.textContent = fmtPnl(s.pnl_total, s.pnl_pct) + " USDT (" + (s.pnl_pct >= 0 ? "+" : "") + fmt2(s.pnl_pct) + "%)";
-      // rebuild full string properly
-      elPnl.textContent = (s.pnl_total >= 0 ? "+" : "") + fmt2(s.pnl_total) + " USDT (" + (s.pnl_pct >= 0 ? "+" : "") + fmt2(s.pnl_pct) + "%)";
-      elPnl.className = s.pnl_total >= 0 ? "pnl-pos" : "pnl-neg";
-    }
+    renderSummary(data.summary || {});
 
-    // Update table rows in-place
     for (const r of (data.rows || [])) {
       const tr = document.querySelector(`tr[data-symbol="${r.symbol}"]`);
       if (!tr) continue;
@@ -319,25 +360,19 @@
       const tpCell = tr.querySelector(".ac-tp");
       if (tpCell) {
         tpCell.setAttribute("data-value", r.tp_price != null ? r.tp_price : -1);
-        if (r.tp_price) {
-          let tpHtml = `<span class="pnl-pos">${fmt8(r.tp_price)}</span>`;
-          tpHtml += `<div class="muted-line" style="margin-top:4px;">Qty ${fmt8(r.tp_qty || 0)}`;
-          if (r.tp_count && r.tp_count > 1) tpHtml += ` | ${r.tp_count} orders`;
-          tpHtml += `</div>`;
-          tpCell.innerHTML = tpHtml;
-        } else {
-          tpCell.innerHTML = "-";
-        }
+        tpCell.innerHTML = renderTpCell(r);
       }
 
       const statusCell = tr.querySelector(".ac-status");
       if (statusCell) {
         statusCell.setAttribute("data-value", r.status);
-        statusCell.innerHTML = `<span class="badge">${r.status}</span>`;
+        statusCell.innerHTML = `<span class="badge">${escapeHtml(r.status)}</span>`;
       }
     }
   }
 
-  setInterval(refreshAllCoinsPrices, 10000);
+  loadAllCoinsData().finally(() => {
+    setInterval(refreshAllCoinsPrices, 10000);
+  });
 </script>
 {% endblock %}
