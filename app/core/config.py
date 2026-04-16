@@ -22,6 +22,8 @@ class Settings:
     dca_scale_5 = float(os.getenv("DCA_SCALE_5", "4.5"))
     binance_api_key = os.getenv("BINANCE_API_KEY", "").strip()
     binance_api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
+    binance_api_key_2 = os.getenv("BINANCE_API_KEY_2", "").strip()
+    binance_api_secret_2 = os.getenv("BINANCE_API_SECRET_2", "").strip()
     live_entry_limit_buffer_pct = float(os.getenv("LIVE_ENTRY_LIMIT_BUFFER_PCT", "0.03"))
     live_entry_limit_fallback_market = os.getenv("LIVE_ENTRY_LIMIT_FALLBACK_MARKET", "true").lower() == "true"
     forecast_interval = os.getenv("FORECAST_INTERVAL", "4h")

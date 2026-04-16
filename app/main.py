@@ -40,6 +40,14 @@ from app.services.binance_live import (
     place_limit_sell_qty,
     place_market_sell_qty,
 )
+from app.services.binance_live_2 import (
+    cancel_order as cancel_order_2,
+    get_open_orders as get_open_orders_2,
+    list_spot_coin_positions as list_spot_coin_positions_2,
+    normalize_qty_for_sell as normalize_qty_for_sell_2,
+    place_limit_sell_qty as place_limit_sell_qty_2,
+    place_market_sell_qty as place_market_sell_qty_2,
+)
 from app.services.paper_trading import (
     add_log,
     build_smart_dca_plan,
@@ -1744,6 +1752,32 @@ async def live_trading_history(request: Request) -> HTMLResponse:
         db.close()
 
 
+def _build_tp_map_from_orders(open_orders: list[dict]) -> dict[str, dict]:
+    tp_map: dict[str, dict] = {}
+    for o in open_orders:
+        side = str(o.get("side", "")).upper()
+        otype = str(o.get("type", "")).upper()
+        status = str(o.get("status", "")).upper()
+        if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED"}:
+            continue
+        sym = str(o.get("symbol", "")).upper()
+        price = float(o.get("price", 0.0) or 0.0)
+        orig_qty = float(o.get("origQty", 0.0) or 0.0)
+        exec_qty = float(o.get("executedQty", 0.0) or 0.0)
+        rem_qty = max(0.0, orig_qty - exec_qty)
+        if price <= 0 or rem_qty <= 0:
+            continue
+        cur = tp_map.get(sym)
+        if not cur:
+            tp_map[sym] = {"price": price, "qty": rem_qty, "count": 1}
+        else:
+            cur["count"] = int(cur.get("count", 1)) + 1
+            if price < float(cur.get("price", price)):
+                cur["price"] = price
+                cur["qty"] = rem_qty
+    return tp_map
+
+
 @app.get("/live/all-coins", response_class=HTMLResponse)
 async def live_all_coins_page(
     request: Request,
@@ -2214,6 +2248,364 @@ async def live_all_coins_close(symbol: str) -> RedirectResponse:
         add_live_log(db, "LIVE_ALLCOIN_CLOSE_FAIL", str(symbol or "-").upper(), f"error={e}")
         db.commit()
         return RedirectResponse("/live/all-coins", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/live/all-coins-binance-2", response_class=HTMLResponse)
+async def live_all_coins_binance_2_page(
+    request: Request,
+    symbol: str = "",
+    refresh_forecast: int = 0,
+) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        error = None
+        symbol_query = str(symbol or "").upper().strip()
+        forecast_card = None
+        data = {
+            "rows": [],
+            "summary": {
+                "coins_count": 0,
+                "invested_total": 0.0,
+                "market_total": 0.0,
+                "pnl_total": 0.0,
+                "pnl_pct": 0.0,
+            },
+        }
+        try:
+            data = list_spot_coin_positions_2(cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)))
+            symbols = [str(r.get("symbol", "")).upper() for r in data.get("rows", [])]
+            f_map = get_forecasts_for_symbols(
+                db,
+                symbols,
+                build_limit=max(1, int(settings.forecast_build_per_request)),
+            )
+            tp_map: dict[str, dict] = {}
+            try:
+                tp_map = _build_tp_map_from_orders(get_open_orders_2())
+            except Exception:
+                tp_map = {}
+
+            for r in data.get("rows", []):
+                sym = str(r.get("symbol", "")).upper()
+                tp = tp_map.get(sym)
+                r["tp_price"] = float(tp.get("price", 0.0)) if tp else None
+                r["tp_qty"] = float(tp.get("qty", 0.0)) if tp else None
+                r["tp_count"] = int(tp.get("count", 0)) if tp else 0
+                fc = f_map.get(sym)
+                if not fc:
+                    try:
+                        fc = get_or_build_forecast(
+                            db,
+                            sym,
+                            force_refresh=False,
+                            interval=settings.forecast_interval,
+                            horizon_days=settings.forecast_horizon_days,
+                        )
+                    except Exception as e:
+                        fc = {
+                            "symbol": sym,
+                            "expected_move_pct": 0.0,
+                            "confidence_pct": 40.0,
+                            "bias": "neutral",
+                            "volatility_level": "unknown",
+                            "direction": "flat",
+                            "arrow": "-",
+                            "tooltip": f"Forecast unavailable now for {sym}: {e}",
+                            "cached": False,
+                            "fallback": True,
+                        }
+                r["forecast"] = fc
+
+            if symbol_query:
+                qsym = symbol_query if symbol_query.endswith("USDT") else f"{symbol_query}USDT"
+                try:
+                    forecast_card = get_or_build_forecast(
+                        db,
+                        qsym,
+                        force_refresh=bool(int(refresh_forecast)),
+                        interval=settings.forecast_interval,
+                        horizon_days=settings.forecast_horizon_days,
+                    )
+                except Exception as e:
+                    forecast_card = {"symbol": qsym, "error": str(e)}
+        except Exception as e:
+            error = str(e)
+        logs = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.event_type.like("LIVE2_ALLCOIN_%"))
+            .order_by(desc(ActivityLog.id))
+            .limit(60)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "live_all_coins_binance_2.html",
+            _context(
+                "live_all_coins_binance_2",
+                request=request,
+                data=data,
+                logs=logs,
+                all_coins_error=error,
+                forecast_symbol=symbol_query,
+                forecast_card=forecast_card,
+                forecast_build_per_request=max(1, int(settings.forecast_build_per_request)),
+            ),
+        )
+    finally:
+        db.close()
+
+
+@app.get("/live/all-coins-binance-2/api/prices")
+async def live_all_coins_binance_2_prices_api() -> JSONResponse:
+    try:
+        data = list_spot_coin_positions_2(cache_ttl_seconds=10)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    tp_map: dict[str, dict] = {}
+    try:
+        tp_map = _build_tp_map_from_orders(get_open_orders_2())
+    except Exception:
+        tp_map = {}
+
+    rows = []
+    for r in data.get("rows", []):
+        sym = str(r.get("symbol", "")).upper()
+        tp = tp_map.get(sym)
+        rows.append(
+            {
+                "symbol": sym,
+                "price": float(r.get("price", 0.0)),
+                "qty_total": float(r.get("qty_total", 0.0)),
+                "qty_free": float(r.get("qty_free", 0.0)),
+                "market_value": float(r.get("market_value", 0.0)),
+                "pnl": float(r.get("pnl", 0.0)),
+                "pnl_pct": float(r.get("pnl_pct", 0.0)),
+                "status": str(r.get("status", "flat")),
+                "tp_price": float(tp["price"]) if tp else None,
+                "tp_qty": float(tp["qty"]) if tp else None,
+                "tp_count": int(tp["count"]) if tp else 0,
+            }
+        )
+
+    summary = data.get("summary", {})
+    return JSONResponse(
+        {
+            "rows": rows,
+            "summary": {
+                "coins_count": int(summary.get("coins_count", 0)),
+                "invested_total": float(summary.get("invested_total", 0.0)),
+                "market_total": float(summary.get("market_total", 0.0)),
+                "pnl_total": float(summary.get("pnl_total", 0.0)),
+                "pnl_pct": float(summary.get("pnl_pct", 0.0)),
+            },
+        }
+    )
+
+
+@app.post("/live/all-coins-binance-2/{symbol}/tp")
+async def live_all_coins_binance_2_set_tp(symbol: str, tp_price: str = Form(...)) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        target = float(_safe_float(tp_price, 0.0) or 0.0)
+        if not sym.endswith("USDT") or len(sym) < 7 or target <= 0:
+            add_live_log(db, "LIVE2_ALLCOIN_TP_FAIL", sym or "-", "invalid_symbol_or_tp")
+            db.commit()
+            return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+
+        open_orders = get_open_orders_2(sym)
+        canceled = 0
+        for o in open_orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            if side == "SELL" and otype == "LIMIT" and status in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+                oid = int(o.get("orderId", 0) or 0)
+                if oid > 0:
+                    try:
+                        cancel_order_2(sym, oid)
+                        canceled += 1
+                    except Exception:
+                        continue
+
+        tradable_qty, min_qty, _ = normalize_qty_for_sell_2(sym, 1e18, cap_to_free_balance=True)
+        if tradable_qty <= 0 or tradable_qty < min_qty:
+            add_live_log(
+                db,
+                "LIVE2_ALLCOIN_TP_SKIP",
+                sym,
+                (
+                    f"skip_set_tp | reason=below_min_lot | tradable={tradable_qty:.8f} | "
+                    f"min_qty={min_qty:.8f} | canceled_old={canceled}"
+                ),
+            )
+            db.commit()
+            return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+
+        order = place_limit_sell_qty_2(sym, tradable_qty, target)
+        add_live_log(
+            db,
+            "LIVE2_ALLCOIN_TP_SET",
+            sym,
+            (
+                f"Set TP from All Coins Binance 2 | TP={target:.8f} | Qty={tradable_qty:.8f} | "
+                f"OrderId={int(order.get('order_id', 0) or 0)} | canceled_old={canceled}"
+            ),
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+    except Exception as e:
+        add_live_log(db, "LIVE2_ALLCOIN_TP_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/all-coins-binance-2/{symbol}/cancel-sell-orders")
+async def live_all_coins_binance_2_cancel_symbol_sell_orders(symbol: str) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        if not sym.endswith("USDT") or len(sym) < 7:
+            add_live_log(db, "LIVE2_ALLCOIN_CANCEL_SELL_FAIL", sym or "-", "invalid_symbol")
+            db.commit()
+            return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+
+        canceled = 0
+        failed = 0
+        open_orders = get_open_orders_2(sym)
+        for o in open_orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+                continue
+            oid = int(o.get("orderId", 0) or 0)
+            if oid <= 0:
+                continue
+            try:
+                cancel_order_2(sym, oid)
+                canceled += 1
+            except Exception:
+                failed += 1
+
+        add_live_log(
+            db,
+            "LIVE2_ALLCOIN_CANCEL_SELL",
+            sym,
+            f"Canceled SELL LIMIT orders for symbol={sym} | canceled={canceled} | failed={failed}",
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+    except Exception as e:
+        add_live_log(db, "LIVE2_ALLCOIN_CANCEL_SELL_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/all-coins-binance-2/cancel-all-sell-orders")
+async def live_all_coins_binance_2_cancel_all_sell_orders() -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        canceled = 0
+        failed = 0
+        try:
+            orders = get_open_orders_2()
+        except Exception as e:
+            add_live_log(db, "LIVE2_ALLCOIN_CANCEL_SELLS_FAIL", "-", f"error={e}")
+            db.commit()
+            return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+
+        for o in orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+                continue
+            sym = str(o.get("symbol", "")).upper()
+            oid = int(o.get("orderId", 0) or 0)
+            if oid <= 0 or not sym:
+                continue
+            try:
+                cancel_order_2(sym, oid)
+                canceled += 1
+            except Exception:
+                failed += 1
+
+        add_live_log(
+            db,
+            "LIVE2_ALLCOIN_CANCEL_SELLS",
+            "-",
+            f"Canceled SELL LIMIT orders={canceled} | failed={failed}",
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/all-coins-binance-2/{symbol}/close")
+async def live_all_coins_binance_2_close(symbol: str) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        if not sym.endswith("USDT") or len(sym) < 7:
+            add_live_log(db, "LIVE2_ALLCOIN_CLOSE_FAIL", sym or "-", "invalid_symbol")
+            db.commit()
+            return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+
+        try:
+            open_orders = get_open_orders_2(sym)
+            for o in open_orders:
+                side = str(o.get("side", "")).upper()
+                status = str(o.get("status", "")).upper()
+                oid = int(o.get("orderId", 0) or 0)
+                if side == "SELL" and status in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"} and oid > 0:
+                    try:
+                        cancel_order_2(sym, oid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        tradable_qty, min_qty, _ = normalize_qty_for_sell_2(sym, 1e18, cap_to_free_balance=True)
+        if tradable_qty <= 0 or tradable_qty < min_qty:
+            add_live_log(
+                db,
+                "LIVE2_ALLCOIN_CLOSE_SKIP",
+                sym,
+                (
+                    f"skip_manual_close | reason=below_min_lot | tradable={tradable_qty:.8f} | "
+                    f"min_qty={min_qty:.8f}"
+                ),
+            )
+            db.commit()
+            return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+
+        sell = place_market_sell_qty_2(sym, tradable_qty)
+        exec_qty = float(sell.get("executed_qty", 0.0) or 0.0)
+        proceeds = float(sell.get("quote_qty", 0.0) or 0.0)
+        avg_price = float(sell.get("avg_price", 0.0) or 0.0)
+        add_live_log(
+            db,
+            "LIVE2_ALLCOIN_CLOSE",
+            sym,
+            (
+                f"Manual close from All Coins Binance 2 | ExecQty={exec_qty:.8f} | "
+                f"Proceeds={proceeds:.2f} | AvgPrice={avg_price:.8f}"
+            ),
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-binance-2", status_code=303)
+    except Exception as e:
+        add_live_log(db, "LIVE2_ALLCOIN_CLOSE_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins-binance-2", status_code=303)
     finally:
         db.close()
 

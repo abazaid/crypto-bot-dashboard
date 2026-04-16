@@ -6,8 +6,8 @@
     <a class="side-link" href="/live">Campaigns Home</a>
     <a class="side-link" href="/live/create">Create Campaign</a>
     <a class="side-link" href="/live/smart-create">Smart DCA</a>
-    <a class="side-link active" href="/live/all-coins">All Coins</a>
-    <a class="side-link" href="/live/all-coins-binance-2">ALL coin Binance 2</a>
+    <a class="side-link" href="/live/all-coins">All Coins</a>
+    <a class="side-link active" href="/live/all-coins-binance-2">ALL coin Binance 2</a>
     <a class="side-link" href="/live/accumulation">Accumulation Bot</a>
     <a class="side-link" href="/live/backtest">Smart Backtest</a>
     <a class="side-link" href="/live/history">Live History</a>
@@ -15,8 +15,8 @@
 
   <div class="paper-main">
     <section class="hero">
-      <h1>All Coins (Live Account)</h1>
-      <p>All spot coins in Binance with average cost, current price, PnL, and manual close.</p>
+      <h1>ALL coin Binance 2</h1>
+      <p>All spot coins in Binance account 2 with average cost, current price, PnL, and manual close.</p>
       {% if all_coins_error %}
       <p class="pnl-neg">Binance API error: {{ all_coins_error }}</p>
       {% endif %}
@@ -46,7 +46,7 @@
     <section class="card">
       <h2>Forecast Search</h2>
       <p class="muted-line">Forecast is cached and built in batches (current build per request: {{ forecast_build_per_request }}). Not all rows appear immediately on first refresh.</p>
-      <form method="get" action="/live/all-coins" class="inline-form" style="margin-bottom: 10px;">
+      <form method="get" action="/live/all-coins-binance-2" class="inline-form" style="margin-bottom: 10px;">
         <input type="text" name="symbol" value="{{ forecast_symbol }}" placeholder="BTC or BTCUSDT" required>
         <button type="submit">Analyze</button>
         {% if forecast_symbol %}
@@ -86,7 +86,7 @@
 
     <section class="card">
       <h2>Account Coins</h2>
-      <form method="post" action="/live/all-coins/cancel-all-sell-orders" style="margin-bottom: 12px;" onsubmit="return confirm('Cancel ALL open SELL LIMIT orders now?');">
+      <form method="post" action="/live/all-coins-binance-2/cancel-all-sell-orders" style="margin-bottom: 12px;" onsubmit="return confirm('Cancel ALL open SELL LIMIT orders now?');">
         <button type="submit" class="sell-btn">Cancel All Sell Orders</button>
       </form>
       {% if data.rows %}
@@ -142,11 +142,11 @@
                 {% endif %}
               </td>
               <td>
-                <form method="post" action="/live/all-coins/{{ r.symbol }}/tp" class="inline-form" onsubmit="return confirm('Replace TP for {{ r.symbol }} with new target?');">
+                <form method="post" action="/live/all-coins-binance-2/{{ r.symbol }}/tp" class="inline-form" onsubmit="return confirm('Replace TP for {{ r.symbol }} with new target?');">
                   <input type="number" step="0.00000001" min="0" name="tp_price" required value="{{ '%.8f'|format(r.tp_price) if r.tp_price else ('%.8f'|format(r.avg_entry * 1.01 if r.avg_entry else r.price * 1.01)) }}">
                   <button type="submit">Set TP</button>
                 </form>
-                <form method="post" action="/live/all-coins/{{ r.symbol }}/cancel-sell-orders" style="margin-top:6px;" onsubmit="return confirm('Cancel all SELL LIMIT orders for {{ r.symbol }} only?');">
+                <form method="post" action="/live/all-coins-binance-2/{{ r.symbol }}/cancel-sell-orders" style="margin-top:6px;" onsubmit="return confirm('Cancel all SELL LIMIT orders for {{ r.symbol }} only?');">
                   <button type="submit" class="btn-secondary">Cancel Sell Orders</button>
                 </form>
               </td>
@@ -154,7 +154,7 @@
                 <span class="badge">{{ r.status }}</span>
               </td>
               <td>
-                <form method="post" action="/live/all-coins/{{ r.symbol }}/close" onsubmit="return confirm('Close {{ r.symbol }} with market sell now?');">
+                <form method="post" action="/live/all-coins-binance-2/{{ r.symbol }}/close" onsubmit="return confirm('Close {{ r.symbol }} with market sell now?');">
                   <button type="submit" class="sell-btn">Close</button>
                 </form>
               </td>
@@ -257,7 +257,7 @@
   async function refreshAllCoinsPrices() {
     let data;
     try {
-      const res = await fetch("/live/all-coins/api/prices");
+      const res = await fetch("/live/all-coins-binance-2/api/prices");
       if (!res.ok) return;
       data = await res.json();
     } catch (e) {

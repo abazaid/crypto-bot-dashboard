@@ -17,10 +17,11 @@
         <a class="{% if active_page in ['paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'paper_accumulation_calculator'] %}active{% endif %}" href="/paper/accumulation">Accumulation</a>
         <a class="{% if active_page == 'smart_backtest' and mode != 'live' %}active{% endif %}" href="/paper/backtest">Smart Backtest</a>
         <a class="{% if active_page == 'history' %}active{% endif %}" href="/paper/history">Paper History</a>
-        <a class="{% if active_page in ['live_home', 'live_create', 'live_smart_create', 'live_campaign', 'live_history', 'live_all_coins', 'smart_backtest'] and mode == 'live' %}active{% endif %}" href="/live">Live Mode</a>
+        <a class="{% if active_page in ['live_home', 'live_create', 'live_smart_create', 'live_campaign', 'live_history', 'live_all_coins', 'live_all_coins_binance_2', 'smart_backtest'] and mode == 'live' %}active{% endif %}" href="/live">Live Mode</a>
         <a class="{% if active_page == 'live_create' %}active{% endif %}" href="/live/create">Live Create</a>
         <a class="{% if active_page == 'live_smart_create' %}active{% endif %}" href="/live/smart-create">Live Smart DCA</a>
         <a class="{% if active_page == 'live_all_coins' %}active{% endif %}" href="/live/all-coins">All Coins</a>
+        <a class="{% if active_page == 'live_all_coins_binance_2' %}active{% endif %}" href="/live/all-coins-binance-2">ALL coin Binance 2</a>
         <a class="{% if active_page in ['live_accumulation', 'live_accumulation_plan', 'live_accumulation_history', 'live_accumulation_calculator'] %}active{% endif %}" href="/live/accumulation">Live Accumulation</a>
         <a class="{% if active_page == 'smart_backtest' and mode == 'live' %}active{% endif %}" href="/live/backtest">Live Backtest</a>
         <a class="{% if active_page == 'live_history' %}active{% endif %}" href="/live/history">Live History</a>
