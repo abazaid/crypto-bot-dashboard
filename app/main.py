@@ -113,6 +113,8 @@ paper_acc_lock = threading.Lock()
 live_acc_lock = threading.Lock()
 all_coins_cache_lock = threading.Lock()
 _ALL_COINS_PAGE_CACHE: dict[str, dict] = {}
+all_coins_refresh_lock = threading.Lock()
+_ALL_COINS_REFRESH_STATE: dict[str, bool] = {}
 
 
 def _context(active: str, **kwargs) -> dict:
@@ -896,6 +898,15 @@ async def on_startup() -> None:
         id="live_acc_cycle",
         replace_existing=True,
     )
+    scheduler.add_job(
+        _warm_all_coins_caches,
+        "interval",
+        seconds=max(120, min(int(settings.medium_refresh_seconds), 600)),
+        id="all_coins_warm_cache",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
 
     # ── Advisor: auto-run daily at 08:00 UTC ──────────────────────────────
     def _scheduled_advisor() -> None:
@@ -1057,6 +1068,7 @@ async def on_startup() -> None:
     )
 
     scheduler.start()
+    threading.Thread(target=_warm_all_coins_caches, daemon=True, name="warm-all-coins-on-startup").start()
 
 
 @app.on_event("shutdown")
@@ -1804,6 +1816,14 @@ def _get_all_coins_cached_payload(cache_key: str, max_age_seconds: int) -> dict 
         return cached.get("payload")
 
 
+def _get_all_coins_any_cached_payload(cache_key: str) -> dict | None:
+    with all_coins_cache_lock:
+        cached = _ALL_COINS_PAGE_CACHE.get(cache_key)
+        if not cached:
+            return None
+        return cached.get("payload")
+
+
 def _get_all_coins_cached_summary(cache_key: str) -> dict:
     with all_coins_cache_lock:
         cached = _ALL_COINS_PAGE_CACHE.get(cache_key)
@@ -1825,6 +1845,19 @@ def _set_all_coins_cached_payload(cache_key: str, payload: dict) -> None:
 def _clear_all_coins_cached_payload(cache_key: str) -> None:
     with all_coins_cache_lock:
         _ALL_COINS_PAGE_CACHE.pop(cache_key, None)
+
+
+def _is_all_coins_refresh_running(cache_key: str) -> bool:
+    with all_coins_refresh_lock:
+        return bool(_ALL_COINS_REFRESH_STATE.get(cache_key, False))
+
+
+def _set_all_coins_refresh_running(cache_key: str, is_running: bool) -> None:
+    with all_coins_refresh_lock:
+        if is_running:
+            _ALL_COINS_REFRESH_STATE[cache_key] = True
+        else:
+            _ALL_COINS_REFRESH_STATE.pop(cache_key, None)
 
 
 def _serialize_forecast(fc: dict | None) -> dict | None:
@@ -1902,6 +1935,78 @@ def _build_all_coins_page_payload(
             "pnl_pct": float(summary.get("pnl_pct", 0.0) or 0.0),
         },
     }
+
+
+def _refresh_all_coins_cache(
+    *,
+    cache_key: str,
+    list_positions_fn,
+    get_open_orders_fn,
+    include_forecasts: bool,
+    cache_ttl_seconds: int,
+) -> None:
+    if _is_all_coins_refresh_running(cache_key):
+        return
+    _set_all_coins_refresh_running(cache_key, True)
+    db = SessionLocal()
+    try:
+        payload = _build_all_coins_page_payload(
+            db,
+            list_positions_fn=list_positions_fn,
+            get_open_orders_fn=get_open_orders_fn,
+            cache_ttl_seconds=cache_ttl_seconds,
+            include_forecasts=include_forecasts,
+        )
+        _set_all_coins_cached_payload(cache_key, payload)
+    except Exception as e:
+        logger.warning("All coins cache refresh failed for %s: %s", cache_key, e)
+    finally:
+        db.close()
+        _set_all_coins_refresh_running(cache_key, False)
+
+
+def _start_all_coins_cache_refresh(
+    *,
+    cache_key: str,
+    list_positions_fn,
+    get_open_orders_fn,
+    include_forecasts: bool,
+    cache_ttl_seconds: int,
+) -> None:
+    if _is_all_coins_refresh_running(cache_key):
+        return
+
+    worker = threading.Thread(
+        target=_refresh_all_coins_cache,
+        kwargs={
+            "cache_key": cache_key,
+            "list_positions_fn": list_positions_fn,
+            "get_open_orders_fn": get_open_orders_fn,
+            "include_forecasts": include_forecasts,
+            "cache_ttl_seconds": cache_ttl_seconds,
+        },
+        daemon=True,
+        name=f"refresh-{cache_key}",
+    )
+    worker.start()
+
+
+def _warm_all_coins_caches() -> None:
+    ttl = max(60, int(settings.medium_refresh_seconds))
+    _refresh_all_coins_cache(
+        cache_key="live_all_coins_full",
+        list_positions_fn=list_spot_coin_positions,
+        get_open_orders_fn=get_open_orders,
+        include_forecasts=True,
+        cache_ttl_seconds=ttl,
+    )
+    _refresh_all_coins_cache(
+        cache_key="live_all_coins_binance_2_full",
+        list_positions_fn=list_spot_coin_positions_2,
+        get_open_orders_fn=get_open_orders_2,
+        include_forecasts=True,
+        cache_ttl_seconds=ttl,
+    )
 
 
 @app.get("/live/all-coins", response_class=HTMLResponse)
@@ -2038,22 +2143,17 @@ async def live_all_coins_data_api() -> JSONResponse:
     cached = _get_all_coins_cached_payload("live_all_coins_full", max_age_seconds=30)
     if cached is not None:
         return JSONResponse(cached)
-
-    db = SessionLocal()
-    try:
-        payload = _build_all_coins_page_payload(
-            db,
-            list_positions_fn=list_spot_coin_positions,
-            get_open_orders_fn=get_open_orders,
-            cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)),
-            include_forecasts=True,
-        )
-        _set_all_coins_cached_payload("live_all_coins_full", payload)
-        return JSONResponse(payload)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    finally:
-        db.close()
+    stale = _get_all_coins_any_cached_payload("live_all_coins_full")
+    _start_all_coins_cache_refresh(
+        cache_key="live_all_coins_full",
+        list_positions_fn=list_spot_coin_positions,
+        get_open_orders_fn=get_open_orders,
+        include_forecasts=True,
+        cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)),
+    )
+    if stale is not None:
+        return JSONResponse(stale)
+    return JSONResponse({"rows": [], "summary": _empty_all_coins_data()["summary"], "warming": True}, status_code=202)
 
 
 @app.post("/live/all-coins/{symbol}/tp")
@@ -2449,22 +2549,17 @@ async def live_all_coins_binance_2_data_api() -> JSONResponse:
     cached = _get_all_coins_cached_payload("live_all_coins_binance_2_full", max_age_seconds=30)
     if cached is not None:
         return JSONResponse(cached)
-
-    db = SessionLocal()
-    try:
-        payload = _build_all_coins_page_payload(
-            db,
-            list_positions_fn=list_spot_coin_positions_2,
-            get_open_orders_fn=get_open_orders_2,
-            cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)),
-            include_forecasts=True,
-        )
-        _set_all_coins_cached_payload("live_all_coins_binance_2_full", payload)
-        return JSONResponse(payload)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    finally:
-        db.close()
+    stale = _get_all_coins_any_cached_payload("live_all_coins_binance_2_full")
+    _start_all_coins_cache_refresh(
+        cache_key="live_all_coins_binance_2_full",
+        list_positions_fn=list_spot_coin_positions_2,
+        get_open_orders_fn=get_open_orders_2,
+        include_forecasts=True,
+        cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)),
+    )
+    if stale is not None:
+        return JSONResponse(stale)
+    return JSONResponse({"rows": [], "summary": _empty_all_coins_data()["summary"], "warming": True}, status_code=202)
 
 
 @app.post("/live/all-coins-binance-2/{symbol}/tp")

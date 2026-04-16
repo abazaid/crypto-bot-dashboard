@@ -32,6 +32,10 @@ _KNOWN_QUOTES = [
     "TRY",
     "EUR",
 ]
+_MANUAL_AVG_ENTRY_OVERRIDES: dict[str, float] = {
+    # Some positions were acquired outside this Binance account, so we pin the true cost basis manually.
+    "NEIROUSDT": 0.00016,
+}
 
 
 def is_configured() -> bool:
@@ -620,6 +624,10 @@ def list_spot_coin_positions(
     rows: list[dict[str, Any]] = []
     for r, price, market_value in candidate_rows:
         avg_entry, invested, trades_used = cost_basis.get(r["symbol"], (0.0, 0.0, 0))
+        manual_avg_entry = float(_MANUAL_AVG_ENTRY_OVERRIDES.get(str(r["symbol"]).upper(), 0.0) or 0.0)
+        if manual_avg_entry > 0:
+            avg_entry = manual_avg_entry
+            invested = manual_avg_entry * float(r["qty_total"])
         if avg_entry <= 0 and price > 0:
             avg_entry = price
             invested = market_value

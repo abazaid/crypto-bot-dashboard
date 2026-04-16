@@ -300,6 +300,11 @@
       if (!res.ok || data.error) {
         throw new Error(data.error || `Request failed with ${res.status}`);
       }
+      if (data.warming) {
+        if (status) status.textContent = "Preparing Binance cache in background...";
+        window.setTimeout(loadAllCoinsData, 3000);
+        return;
+      }
       renderSummary(data.summary || {});
       renderTableRows(data.rows || []);
     } catch (e) {
