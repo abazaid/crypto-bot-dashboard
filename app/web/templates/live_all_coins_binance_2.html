@@ -349,6 +349,18 @@
         qtyFreeCell.setAttribute("data-value", r.qty_free);
       }
 
+      const avgEntryCell = tr.querySelector('td[data-sort="avg_entry"]');
+      if (avgEntryCell) {
+        avgEntryCell.textContent = fmt8(r.avg_entry);
+        avgEntryCell.setAttribute("data-value", r.avg_entry);
+      }
+
+      const investedCell = tr.querySelector('td[data-sort="invested"]');
+      if (investedCell) {
+        investedCell.textContent = fmt2(r.invested);
+        investedCell.setAttribute("data-value", r.invested);
+      }
+
       const mvCell = tr.querySelector(".ac-market-value");
       if (mvCell) {
         mvCell.textContent = fmt2(r.market_value);

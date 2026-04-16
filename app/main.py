@@ -2110,6 +2110,8 @@ async def live_all_coins_prices_api() -> JSONResponse:
         rows.append(
             {
                 "symbol": sym,
+                "avg_entry": float(r.get("avg_entry", 0.0)),
+                "invested": float(r.get("invested", 0.0)),
                 "price": float(r.get("price", 0.0)),
                 "qty_total": float(r.get("qty_total", 0.0)),
                 "qty_free": float(r.get("qty_free", 0.0)),
@@ -2516,6 +2518,8 @@ async def live_all_coins_binance_2_prices_api() -> JSONResponse:
         rows.append(
             {
                 "symbol": sym,
+                "avg_entry": float(r.get("avg_entry", 0.0)),
+                "invested": float(r.get("invested", 0.0)),
                 "price": float(r.get("price", 0.0)),
                 "qty_total": float(r.get("qty_total", 0.0)),
                 "qty_free": float(r.get("qty_free", 0.0)),

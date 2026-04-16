@@ -14,6 +14,8 @@ from app.services.binance_public import get_book_tickers, get_exchange_info, get
 
 BASE_URL = "https://api.binance.com"
 TIMEOUT = 15
+TRADE_PAGE_LIMIT = 1000
+MAX_TRADE_HISTORY_PAGES = 30
 _SYMBOL_FILTER_CACHE: dict[str, dict[str, float]] = {}
 _CACHE_EXPIRES_AT = 0.0
 _COST_BASIS_CACHE: dict[str, dict[str, Any]] = {}
@@ -392,15 +394,49 @@ def get_order(symbol: str, order_id: int) -> dict:
     )
 
 
-def get_my_trades(symbol: str, limit: int = 1000) -> list[dict]:
-    return _signed_request(
-        "GET",
-        "/api/v3/myTrades",
-        {
-            "symbol": symbol.upper(),
-            "limit": max(1, min(int(limit), 1000)),
-        },
-    )
+def get_my_trades(symbol: str, limit: int = 1000, from_id: int | None = None) -> list[dict]:
+    params: dict[str, Any] = {
+        "symbol": symbol.upper(),
+        "limit": max(1, min(int(limit), TRADE_PAGE_LIMIT)),
+    }
+    if from_id is not None and int(from_id) >= 0:
+        params["fromId"] = int(from_id)
+    out = _signed_request("GET", "/api/v3/myTrades", params)
+    if isinstance(out, list):
+        return out
+    return []
+
+
+def get_my_trades_full_history(symbol: str, max_pages: int = MAX_TRADE_HISTORY_PAGES) -> list[dict]:
+    sym = symbol.upper()
+    trades: list[dict] = []
+    seen_ids: set[int] = set()
+    next_from_id = 0
+
+    for _ in range(max(1, int(max_pages))):
+        batch = get_my_trades(sym, limit=TRADE_PAGE_LIMIT, from_id=next_from_id)
+        if not batch:
+            break
+
+        batch_sorted = sorted(batch, key=lambda t: int(t.get("id", 0) or 0))
+        added = 0
+        last_trade_id = next_from_id
+        for t in batch_sorted:
+            trade_id = int(t.get("id", 0) or 0)
+            last_trade_id = max(last_trade_id, trade_id)
+            if trade_id in seen_ids:
+                continue
+            seen_ids.add(trade_id)
+            trades.append(t)
+            added += 1
+
+        if len(batch_sorted) < TRADE_PAGE_LIMIT:
+            break
+        if added <= 0:
+            break
+        next_from_id = last_trade_id + 1
+
+    return sorted(trades, key=lambda t: (int(t.get("time", 0) or 0), int(t.get("id", 0) or 0)))
 
 
 def cancel_open_orders(symbol: str) -> list[dict]:
@@ -441,16 +477,16 @@ def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000)
     base = _base_asset_from_symbol(symbol)
     quote = _quote_asset_from_symbol(symbol)
     try:
-        trades = get_my_trades(symbol, limit=max_trades)
+        if int(max_trades) > TRADE_PAGE_LIMIT:
+            max_pages = max(1, math.ceil(float(max_trades) / float(TRADE_PAGE_LIMIT)))
+            trades = get_my_trades_full_history(symbol, max_pages=min(max_pages, MAX_TRADE_HISTORY_PAGES))
+        else:
+            trades = get_my_trades(symbol, limit=max_trades)
     except Exception:
         return 0.0, 0.0, 0
     if not trades:
         return 0.0, 0.0, 0
 
-    trades = sorted(
-        trades,
-        key=lambda t: (int(t.get("time", 0) or 0), int(t.get("id", 0) or 0)),
-    )
     inv_qty = 0.0
     inv_cost = 0.0
     used = 0
@@ -497,7 +533,7 @@ def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000)
         return 0.0, 0.0, used
 
     avg_entry = inv_cost / max(inv_qty, 1e-12)
-    # Reconcile to current wallet qty (may differ slightly due to limited history/fees).
+    # Reconcile to current wallet qty after rebuilding from the deepest trade history we fetched.
     invested_now = avg_entry * max(qty_now, 0.0)
     _COST_BASIS_CACHE[symbol.upper()] = {
         "qty_now": float(qty_now),
@@ -566,7 +602,12 @@ def list_spot_coin_positions(
     cost_basis: dict[str, tuple[float, float, int]] = {}
     with ThreadPoolExecutor(max_workers=min(len(candidate_rows), 10)) as ex:
         fut_to_sym = {
-            ex.submit(_cost_basis_from_trades, r["symbol"], float(r["qty_total"])): r["symbol"]
+            ex.submit(
+                _cost_basis_from_trades,
+                r["symbol"],
+                float(r["qty_total"]),
+                TRADE_PAGE_LIMIT * MAX_TRADE_HISTORY_PAGES,
+            ): r["symbol"]
             for r, _, _ in candidate_rows
         }
         for fut in as_completed(fut_to_sym):
