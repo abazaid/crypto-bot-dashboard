@@ -96,23 +96,80 @@
       </p>
 
       <!-- Grid levels preview -->
-      <details style="margin-top:12px;">
-        <summary style="cursor:pointer; font-weight:600;">Grid Levels ({{ row.levels | length }})</summary>
-        <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;">
+      <details open style="margin-top:16px;">
+        <summary style="cursor:pointer; font-weight:600; margin-bottom:10px;">Grid Levels ({{ row.levels | length }})</summary>
+
+        <div style="display:inline-block; min-width:220px;">
           {% for lv in row.levels | reverse %}
-          <span style="
-            background: {{ '#1a3a1a' if (row.bot.last_price or 0) < lv else '#1a2a3a' }};
-            border: 1px solid {{ '#2ecc71' if (row.bot.last_price or 0) < lv else '#3498db' }};
-            padding: 3px 8px; border-radius: 4px; font-size:0.8rem; font-family:monospace;">
-            {{ "%.4f"|format(lv) }}
-          </span>
+          {% set is_sell = (row.bot.last_price or 0) < lv %}
+          <div style="
+            display:flex; align-items:center; gap:10px;
+            padding: 6px 12px;
+            margin-bottom: 3px;
+            border-radius: 6px;
+            background: {{ 'rgba(46,204,113,0.12)' if is_sell else 'rgba(52,152,219,0.12)' }};
+            border-left: 4px solid {{ '#2ecc71' if is_sell else '#3498db' }};
+          ">
+            <span style="font-size:0.75rem; color:{{ '#2ecc71' if is_sell else '#3498db' }}; font-weight:700; width:36px;">
+              {{ 'SELL' if is_sell else 'BUY' }}
+            </span>
+            <span style="font-family:monospace; font-size:0.9rem; color:#e0e0e0; font-weight:600;">
+              {{ "%.4f"|format(lv) }}
+            </span>
+            {% if (row.bot.last_price or 0) and ((lv - (row.bot.last_price or 0)) | abs) < 0.0001 %}
+            <span style="font-size:0.7rem; background:#f39c12; color:#000; padding:1px 5px; border-radius:3px;">current</span>
+            {% endif %}
+          </div>
+          {% if loop.index < (row.levels | length) %}
+          {% set next_lv = (row.levels | reverse | list)[loop.index] %}
+          {% set cur = row.bot.last_price or 0 %}
+          {% if next_lv <= cur and lv > cur %}
+          <div style="
+            display:flex; align-items:center; gap:8px;
+            padding: 5px 12px; margin-bottom:3px;
+            border-radius:6px;
+            background: rgba(243,156,18,0.15);
+            border-left: 4px solid #f39c12;
+          ">
+            <span style="font-size:0.75rem; color:#f39c12; font-weight:700; width:36px;">NOW</span>
+            <span style="font-family:monospace; font-size:0.9rem; color:#f39c12; font-weight:700;">
+              {{ "%.4f"|format(cur) }}
+            </span>
+          </div>
+          {% endif %}
+          {% endif %}
           {% endfor %}
         </div>
-        <small style="margin-top:6px; display:block;">
-          <span style="color:#2ecc71;">■</span> Sell zone (above price)
-          &nbsp;
-          <span style="color:#3498db;">■</span> Buy zone (below price)
-        </small>
+
+        <div style="margin-top:10px; font-size:0.8rem; display:flex; gap:16px;">
+          <span><span style="color:#2ecc71; font-weight:700;">▌ SELL</span> — مستويات فوق السعر الحالي</span>
+          <span><span style="color:#f39c12; font-weight:700;">▌ NOW</span> — السعر الحالي</span>
+          <span><span style="color:#3498db; font-weight:700;">▌ BUY</span> — مستويات تحت السعر الحالي</span>
+        </div>
+      </details>
+
+      <details style="margin-top:16px;">
+        <summary style="cursor:pointer; font-weight:600;">Edit Bot Settings</summary>
+        <form method="post" action="{{ ('/live/grid/' if mode == 'live' else '/paper/grid/') ~ row.bot.id ~ '/edit' }}" class="form-grid" style="margin-top:12px; grid-template-columns: repeat(3, 1fr);">
+          <label>Lower Limit
+            <input name="lower_limit" type="number" step="any" value="{{ '%.4f'|format(row.bot.lower_limit) }}">
+          </label>
+          <label>Upper Limit
+            <input name="upper_limit" type="number" step="any" value="{{ '%.4f'|format(row.bot.upper_limit) }}">
+          </label>
+          <label>Grids (2–500)
+            <input name="grid_count" type="number" step="1" min="2" max="500" value="{{ row.bot.grid_count }}">
+          </label>
+          <label>Take Profit Price (0 = disable)
+            <input name="take_profit_price" type="number" step="any" value="{{ '%.4f'|format(row.bot.take_profit_price) if row.bot.take_profit_price else '' }}" placeholder="Leave empty to disable">
+          </label>
+          <label>Stop Loss Price (0 = disable)
+            <input name="stop_loss_price" type="number" step="any" value="{{ '%.4f'|format(row.bot.stop_loss_price) if row.bot.stop_loss_price else '' }}" placeholder="Leave empty to disable">
+          </label>
+          <div class="form-actions" style="grid-column: 1 / -1;">
+            <button class="btn" type="submit">Save Changes</button>
+          </div>
+        </form>
       </details>
     </section>
 

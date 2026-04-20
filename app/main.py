@@ -1698,6 +1698,32 @@ async def live_grid_toggle(bot_id: int) -> RedirectResponse:
         db.close()
 
 
+@app.post("/live/grid/{bot_id:int}/edit")
+async def live_grid_edit(
+    bot_id: int,
+    lower_limit: str = Form(...),
+    upper_limit: str = Form(...),
+    grid_count: str = Form(...),
+    take_profit_price: str = Form(""),
+    stop_loss_price: str = Form(""),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "live").first()
+        if not bot:
+            return RedirectResponse("/live/grid", status_code=303)
+        bot.lower_limit = _safe_float_or_default(lower_limit, float(bot.lower_limit))
+        bot.upper_limit = _safe_float_or_default(upper_limit, float(bot.upper_limit))
+        bot.grid_count = max(2, min(500, int(_safe_float_or_default(grid_count, float(bot.grid_count)))))
+        bot.take_profit_price = (_safe_float_or_default(take_profit_price, 0.0) or None)
+        bot.stop_loss_price = (_safe_float_or_default(stop_loss_price, 0.0) or None)
+        bot.last_grid_index = None  # reset anchor so bot re-initializes with new levels
+        db.commit()
+        return RedirectResponse(f"/live/grid/{bot_id}", status_code=303)
+    finally:
+        db.close()
+
+
 @app.get("/paper/grid", response_class=HTMLResponse)
 async def paper_grid_home(request: Request) -> HTMLResponse:
     db = SessionLocal()
@@ -1783,6 +1809,32 @@ async def paper_grid_toggle(bot_id: int) -> RedirectResponse:
         if not bot:
             return RedirectResponse("/paper/grid", status_code=303)
         grid_toggle_bot_status(db, bot)
+        db.commit()
+        return RedirectResponse(f"/paper/grid/{bot_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/paper/grid/{bot_id:int}/edit")
+async def paper_grid_edit(
+    bot_id: int,
+    lower_limit: str = Form(...),
+    upper_limit: str = Form(...),
+    grid_count: str = Form(...),
+    take_profit_price: str = Form(""),
+    stop_loss_price: str = Form(""),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "paper").first()
+        if not bot:
+            return RedirectResponse("/paper/grid", status_code=303)
+        bot.lower_limit = _safe_float_or_default(lower_limit, float(bot.lower_limit))
+        bot.upper_limit = _safe_float_or_default(upper_limit, float(bot.upper_limit))
+        bot.grid_count = max(2, min(500, int(_safe_float_or_default(grid_count, float(bot.grid_count)))))
+        bot.take_profit_price = (_safe_float_or_default(take_profit_price, 0.0) or None)
+        bot.stop_loss_price = (_safe_float_or_default(stop_loss_price, 0.0) or None)
+        bot.last_grid_index = None  # reset anchor so bot re-initializes with new levels
         db.commit()
         return RedirectResponse(f"/paper/grid/{bot_id}", status_code=303)
     finally:
