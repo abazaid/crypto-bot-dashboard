@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(du -sh */)",
+      "Bash(wc -l scripts/**/*.js)",
+      "Bash(wc -l /c/xampp/htdocs/crypto-bots/app/services/*.py)",
+      "Bash(grep -E \"\\\\.\\(md|json\\)$\")",
+      "Bash(xargs head:*)",
+      "Edit(/.claude/skills/python-testing/**)",
+      "Edit(/.claude/skills/llm-trading-agent-security/**)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.freqtrade.io)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git push:*)",
+      "Bash(python -c \"from app.services.grid_trading import create_bot, run_grid_cycle, get_grid_levels, profit_per_grid_pct; print\\('service OK'\\)\")",
+      "Bash(python -c \"from app.models.paper_v2 import GridBot, GridTrade; print\\('models OK'\\)\")",
+      "Bash(python -c \"from app.main import app; print\\('main OK'\\)\")",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

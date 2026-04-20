@@ -16,10 +16,13 @@ BASE_URL = "https://api.binance.com"
 TIMEOUT = 15
 TRADE_PAGE_LIMIT = 1000
 MAX_TRADE_HISTORY_PAGES = 30
+ACCOUNT_INFO_TTL_SECONDS = 5.0
+COST_BASIS_TTL_SECONDS = 1800.0
 _SYMBOL_FILTER_CACHE: dict[str, dict[str, float]] = {}
 _CACHE_EXPIRES_AT = 0.0
 _COST_BASIS_CACHE: dict[str, dict[str, Any]] = {}
 _ALL_COINS_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
+_ACCOUNT_INFO_CACHE: dict[str, Any] = {"expires_at": 0.0, "data": None}
 _KNOWN_QUOTES = [
     "USDT",
     "USDC",
@@ -63,8 +66,20 @@ def _signed_request(method: str, path: str, params: dict[str, Any] | None = None
     return resp.json()
 
 
+def invalidate_account_cache() -> None:
+    _ACCOUNT_INFO_CACHE["data"] = None
+    _ACCOUNT_INFO_CACHE["expires_at"] = 0.0
+
+
 def get_account_info() -> dict:
-    return _signed_request("GET", "/api/v3/account")
+    now = time.time()
+    cached = _ACCOUNT_INFO_CACHE.get("data")
+    if cached is not None and float(_ACCOUNT_INFO_CACHE.get("expires_at", 0.0)) > now:
+        return cached
+    data = _signed_request("GET", "/api/v3/account")
+    _ACCOUNT_INFO_CACHE["data"] = data
+    _ACCOUNT_INFO_CACHE["expires_at"] = now + ACCOUNT_INFO_TTL_SECONDS
+    return data
 
 
 def get_balances() -> dict[str, dict[str, float]]:
@@ -248,6 +263,7 @@ def place_market_buy_quote(symbol: str, quote_usdt: float) -> dict[str, float]:
             "quoteOrderQty": f"{quote_usdt:.8f}",
         },
     )
+    invalidate_account_cache()
     return _order_summary(raw)
 
 
@@ -306,6 +322,7 @@ def place_limit_buy_quote(
             "price": px_str,
         },
     )
+    invalidate_account_cache()
     out = _order_summary(raw)
     out["order_id"] = int(raw.get("orderId", 0))
     out["limit_price"] = float(raw.get("price", px) or px)
@@ -330,6 +347,7 @@ def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
             "quantity": qty_str,
         },
     )
+    invalidate_account_cache()
     return _order_summary(raw)
 
 
@@ -364,6 +382,7 @@ def place_limit_sell_qty(symbol: str, quantity: float, price: float) -> dict[str
             "price": px_str,
         },
     )
+    invalidate_account_cache()
     return {
         "order_id": int(raw.get("orderId", 0)),
         "orig_qty": float(raw.get("origQty", 0.0)),
@@ -373,7 +392,7 @@ def place_limit_sell_qty(symbol: str, quantity: float, price: float) -> dict[str
 
 
 def cancel_order(symbol: str, order_id: int) -> dict:
-    return _signed_request(
+    out = _signed_request(
         "DELETE",
         "/api/v3/order",
         {
@@ -381,6 +400,8 @@ def cancel_order(symbol: str, order_id: int) -> dict:
             "orderId": int(order_id),
         },
     )
+    invalidate_account_cache()
+    return out
 
 
 def get_order(symbol: str, order_id: int) -> dict:
@@ -447,6 +468,7 @@ def cancel_open_orders(symbol: str) -> list[dict]:
             "symbol": symbol.upper(),
         },
     )
+    invalidate_account_cache()
     if isinstance(out, list):
         return out
     return []
@@ -528,7 +550,7 @@ def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000)
             "avg_entry": 0.0,
             "invested": 0.0,
             "used": used,
-            "expires_at": time.time() + 180.0,
+            "expires_at": time.time() + COST_BASIS_TTL_SECONDS,
         }
         return 0.0, 0.0, used
 
@@ -540,7 +562,7 @@ def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000)
         "avg_entry": float(max(avg_entry, 0.0)),
         "invested": float(max(invested_now, 0.0)),
         "used": int(used),
-        "expires_at": time.time() + 180.0,
+        "expires_at": time.time() + COST_BASIS_TTL_SECONDS,
     }
     return max(avg_entry, 0.0), max(invested_now, 0.0), used
 
