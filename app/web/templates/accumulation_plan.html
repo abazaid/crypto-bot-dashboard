@@ -139,6 +139,27 @@
       {% if row.hidden_dust_count is defined and row.hidden_dust_count > 0 %}
       <p class="muted-line">Hidden legacy dust rows from ledger view: {{ row.hidden_dust_count }}</p>
       {% endif %}
+
+      <details style="margin-top:16px;">
+        <summary style="cursor:pointer; font-weight:600;">Edit Plan Settings</summary>
+        <form method="post" action="{{ ('/live/accumulation/' if mode == 'live' else '/paper/accumulation/') ~ row.plan.id ~ '/edit' }}" class="form-grid" style="margin-top:12px; grid-template-columns: repeat(4, 1fr);">
+          <label>DCA Drop %
+            <input name="dca_drop_pct" type="number" step="0.01" min="0.2" value="{{ '%.2f'|format(row.plan.dca_drop_pct or 0) }}">
+          </label>
+          <label>DCA Allocation % of Entry
+            <input name="dca_allocation_pct" type="number" step="1" min="1" value="{{ '%.0f'|format(row.plan.dca_allocation_pct or 100) }}">
+          </label>
+          <label>Partial TP % (0 = disable sell)
+            <input name="partial_tp_pct" type="number" step="0.1" min="0" value="{{ '%.2f'|format(row.plan.partial_tp_pct or 0) }}">
+          </label>
+          <label>Partial Sell % of Qty
+            <input name="partial_sell_pct" type="number" step="1" min="0" max="95" value="{{ '%.0f'|format(row.plan.partial_sell_pct or 0) }}">
+          </label>
+          <div class="form-actions" style="grid-column: 1 / -1;">
+            <button class="btn" type="submit">Save Changes</button>
+          </div>
+        </form>
+      </details>
     </section>
 
     <section class="card">

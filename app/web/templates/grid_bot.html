@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link active" href="{{ '/live/grid' if mode == 'live' else '/paper/grid' }}">Grid Bot</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>{{ row.bot.name }}</h1>
+      <p>{{ row.bot.symbol }} grid bot — {{ row.bot.grid_count }} grids | {{ row.bot.grid_mode }} | {{ row.bot.investment_mode }}</p>
+    </section>
+
+    <!-- Stats row 1 -->
+    <section class="cards three">
+      <article class="card stat">
+        <h3>Status</h3>
+        <p>{{ row.bot.status }}</p>
+        {% if row.bot.triggered_at %}
+        <small>Triggered: {{ row.bot.triggered_at.strftime("%Y-%m-%d %H:%M") }}</small>
+        {% endif %}
+      </article>
+      <article class="card stat">
+        <h3>Last Price</h3>
+        <p>{{ "%.6f"|format(row.bot.last_price or 0) }}</p>
+        <small>Range: {{ "%.4f"|format(row.bot.lower_limit) }} – {{ "%.4f"|format(row.bot.upper_limit) }}</small>
+      </article>
+      <article class="card stat">
+        <h3>Profit / Grid</h3>
+        <p class="pnl-pos">{{ "%.4f"|format(row.profit_per_grid_pct) }}%</p>
+        <small>After fees (estimated)</small>
+      </article>
+    </section>
+
+    <!-- Stats row 2 -->
+    <section class="cards three">
+      <article class="card stat">
+        <h3>Total Investment</h3>
+        <p>{{ "%.2f"|format(row.bot.total_investment_usdt) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Equity Now</h3>
+        <p>{{ "%.2f"|format(row.equity_now) }} USDT</p>
+        <small class="{{ 'pnl-pos' if row.unrealized_pnl >= 0 else 'pnl-neg' }}">
+          Floating {{ "%+.2f"|format(row.unrealized_pnl) }} USDT
+        </small>
+      </article>
+      <article class="card stat">
+        <h3>Realized PnL</h3>
+        <p class="{{ 'pnl-pos' if (row.bot.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">
+          {{ "%+.2f"|format(row.bot.realized_pnl_usdt or 0) }} USDT
+        </p>
+        <small>Fees: {{ "%.4f"|format(row.bot.realized_fees_usdt or 0) }} USDT</small>
+      </article>
+    </section>
+
+    <!-- Stats row 3 -->
+    <section class="cards three">
+      <article class="card stat">
+        <h3>Buys / Sells</h3>
+        <p>{{ row.bot.buy_count }} / {{ row.bot.sell_count }}</p>
+      </article>
+      <article class="card stat">
+        <h3>USDT Reserved</h3>
+        <p>{{ "%.2f"|format(row.bot.usdt_reserved) }} USDT</p>
+      </article>
+      <article class="card stat">
+        <h3>Coin Holdings</h3>
+        <p>{{ "%.8f"|format(row.bot.coin_qty) }} {{ row.bot.symbol | replace("USDT","") }}</p>
+        <small>≈ {{ "%.2f"|format(row.coin_value) }} USDT</small>
+      </article>
+    </section>
+
+    <!-- Config & Controls -->
+    <section class="card">
+      <h2>Config & Controls</h2>
+
+      <form method="post" action="{{ ('/live/grid/' if mode == 'live' else '/paper/grid/') ~ row.bot.id ~ '/toggle' }}" style="margin-bottom:12px;">
+        {% if row.bot.status == 'stopped' %}
+        <button class="btn" type="submit" disabled>Stopped</button>
+        {% elif row.bot.status == 'active' %}
+        <button class="btn" type="submit">Pause Bot</button>
+        {% else %}
+        <button class="btn" type="submit">Resume Bot</button>
+        {% endif %}
+      </form>
+
+      <p>Grid mode: <strong>{{ row.bot.grid_mode }}</strong> | Investment mode: <strong>{{ row.bot.investment_mode }}</strong></p>
+      <p>
+        Trigger: <strong>{{ "%.4f"|format(row.bot.trigger_price) if row.bot.trigger_price else "—" }}</strong>
+        | TP: <strong>{{ "%.4f"|format(row.bot.take_profit_price) if row.bot.take_profit_price else "—" }}</strong>
+        | SL: <strong>{{ "%.4f"|format(row.bot.stop_loss_price) if row.bot.stop_loss_price else "—" }}</strong>
+      </p>
+
+      <!-- Grid levels preview -->
+      <details style="margin-top:12px;">
+        <summary style="cursor:pointer; font-weight:600;">Grid Levels ({{ row.levels | length }})</summary>
+        <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;">
+          {% for lv in row.levels | reverse %}
+          <span style="
+            background: {{ '#1a3a1a' if (row.bot.last_price or 0) < lv else '#1a2a3a' }};
+            border: 1px solid {{ '#2ecc71' if (row.bot.last_price or 0) < lv else '#3498db' }};
+            padding: 3px 8px; border-radius: 4px; font-size:0.8rem; font-family:monospace;">
+            {{ "%.4f"|format(lv) }}
+          </span>
+          {% endfor %}
+        </div>
+        <small style="margin-top:6px; display:block;">
+          <span style="color:#2ecc71;">■</span> Sell zone (above price)
+          &nbsp;
+          <span style="color:#3498db;">■</span> Buy zone (below price)
+        </small>
+      </details>
+    </section>
+
+    <!-- Trade Ledger -->
+    <section class="card">
+      <h2>Trade Ledger</h2>
+      {% if trades %}
+      <div class="table-scroll">
+      <table class="campaigns-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Time</th>
+            <th>Side</th>
+            <th>Grid #</th>
+            <th>Price</th>
+            <th>Qty</th>
+            <th>Quote (USDT)</th>
+            <th>Fee</th>
+            <th>PnL</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in trades %}
+          <tr>
+            <td>#{{ t.id }}</td>
+            <td>{{ t.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+            <td class="{{ 'pnl-pos' if t.side == 'SELL' else '' }}">{{ t.side }}</td>
+            <td>{{ t.grid_index }}</td>
+            <td>{{ "%.6f"|format(t.price or 0) }}</td>
+            <td>{{ "%.8f"|format(t.qty or 0) }}</td>
+            <td>{{ "%.2f"|format(t.quote_usdt or 0) }}</td>
+            <td>{{ "%.4f"|format(t.fee_usdt or 0) }}</td>
+            <td class="{{ 'pnl-pos' if (t.pnl_usdt or 0) >= 0 else 'pnl-neg' }}">
+              {{ "%+.4f"|format(t.pnl_usdt) if t.pnl_usdt is not none else "—" }}
+            </td>
+            <td>{{ t.reason or "—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p>No trades yet. Bot is waiting for price to cross a grid level.</p>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endblock %}

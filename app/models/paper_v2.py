@@ -200,6 +200,60 @@ class AccumulationTrade(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
+class GridBot(Base):
+    __tablename__ = "grid_bots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="waiting", nullable=False)
+
+    lower_limit: Mapped[float] = mapped_column(Float, nullable=False)
+    upper_limit: Mapped[float] = mapped_column(Float, nullable=False)
+    grid_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    grid_mode: Mapped[str] = mapped_column(String(20), default="arithmetic", nullable=False)
+    investment_mode: Mapped[str] = mapped_column(String(20), default="usdt_only", nullable=False)
+    total_investment_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    trigger_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_loss_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    coin_qty: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    usdt_reserved: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_grid_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    realized_pnl_usdt: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    realized_fees_usdt: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    buy_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sell_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_action_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    trades: Mapped[list["GridTrade"]] = relationship("GridTrade", back_populates="bot", cascade="all, delete-orphan")
+
+
+class GridTrade(Base):
+    __tablename__ = "grid_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("grid_bots.id"), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    grid_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    qty: Mapped[float] = mapped_column(Float, nullable=False)
+    quote_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    fee_usdt: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    bot: Mapped["GridBot"] = relationship("GridBot", back_populates="trades")
+
+
 class AIForecastCache(Base):
     __tablename__ = "ai_forecast_cache"
 

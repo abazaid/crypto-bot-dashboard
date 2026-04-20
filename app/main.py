@@ -77,6 +77,14 @@ from app.services.accumulation import (
     run_accumulation_cycle,
     toggle_plan_status as accumulation_toggle_plan_status,
 )
+from app.services.grid_trading import (
+    create_bot as create_grid_bot,
+    get_grid_levels,
+    profit_per_grid_pct,
+    run_grid_cycle,
+    toggle_bot_status as grid_toggle_bot_status,
+)
+from app.models.paper_v2 import GridBot, GridTrade
 from app.services.forecasting import get_forecasts_for_symbols, get_or_build_forecast
 from advisor import runner as advisor_runner
 from app.models.smart_campaign import SmartCampaign, SmartPosition
@@ -111,6 +119,8 @@ medium_lock = threading.Lock()
 slow_lock = threading.Lock()
 paper_acc_lock = threading.Lock()
 live_acc_lock = threading.Lock()
+paper_grid_lock = threading.Lock()
+live_grid_lock = threading.Lock()
 all_coins_cache_lock = threading.Lock()
 _ALL_COINS_PAGE_CACHE: dict[str, dict] = {}
 all_coins_refresh_lock = threading.Lock()
@@ -830,6 +840,30 @@ def _scheduled_live_acc_cycle() -> None:
         live_acc_lock.release()
 
 
+def _scheduled_paper_grid_cycle() -> None:
+    if not paper_grid_lock.acquire(blocking=False):
+        logger.warning("Paper grid cycle skipped: previous cycle still running")
+        return
+    db = SessionLocal()
+    try:
+        run_grid_cycle(db, "paper")
+    finally:
+        db.close()
+        paper_grid_lock.release()
+
+
+def _scheduled_live_grid_cycle() -> None:
+    if not live_grid_lock.acquire(blocking=False):
+        logger.warning("Live grid cycle skipped: previous cycle still running")
+        return
+    db = SessionLocal()
+    try:
+        run_grid_cycle(db, "live")
+    finally:
+        db.close()
+        live_grid_lock.release()
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -896,6 +930,20 @@ async def on_startup() -> None:
         "interval",
         seconds=max(settings.fast_loop_seconds, 3),
         id="live_acc_cycle",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _scheduled_paper_grid_cycle,
+        "interval",
+        seconds=max(settings.fast_loop_seconds, 3),
+        id="paper_grid_cycle",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _scheduled_live_grid_cycle,
+        "interval",
+        seconds=max(settings.fast_loop_seconds, 3),
+        id="live_grid_cycle",
         replace_existing=True,
     )
     scheduler.add_job(
@@ -1284,6 +1332,29 @@ async def paper_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20"
         db.close()
 
 
+@app.post("/paper/accumulation/{plan_id:int}/edit")
+async def paper_accumulation_edit(
+    plan_id: int,
+    dca_drop_pct: str = Form(...),
+    dca_allocation_pct: str = Form(...),
+    partial_tp_pct: str = Form(...),
+    partial_sell_pct: str = Form(...),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
+        if not plan:
+            return RedirectResponse("/paper/accumulation", status_code=303)
+        plan.dca_drop_pct = max(0.2, _safe_float_or_default(dca_drop_pct, float(plan.dca_drop_pct)))
+        plan.dca_allocation_pct = max(1.0, _safe_float_or_default(dca_allocation_pct, float(plan.dca_allocation_pct)))
+        plan.partial_tp_pct = max(0.0, _safe_float_or_default(partial_tp_pct, float(plan.partial_tp_pct or 0)))
+        plan.partial_sell_pct = max(0.0, min(95.0, _safe_float_or_default(partial_sell_pct, float(plan.partial_sell_pct or 0))))
+        db.commit()
+        return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
+    finally:
+        db.close()
+
+
 @app.get("/paper/accumulation/history", response_class=HTMLResponse)
 async def paper_accumulation_history(
     request: Request,
@@ -1520,6 +1591,204 @@ async def live_smart_create_campaign_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("live_smart_create.html", _context("live_smart_create", request=request))
 
 
+def _grid_bot_view_row(bot: GridBot) -> dict:
+    levels = get_grid_levels(float(bot.lower_limit), float(bot.upper_limit), int(bot.grid_count), str(bot.grid_mode))
+    last_px = float(bot.last_price or 0.0)
+    coin_value = float(bot.coin_qty) * last_px
+    equity_now = float(bot.usdt_reserved) + coin_value
+    unrealized_pnl = equity_now - float(bot.total_investment_usdt)
+    profit_pct = profit_per_grid_pct(levels, 0.001)
+    return {
+        "bot": bot,
+        "levels": levels,
+        "coin_value": coin_value,
+        "equity_now": equity_now,
+        "unrealized_pnl": unrealized_pnl,
+        "profit_per_grid_pct": profit_pct,
+    }
+
+
+@app.get("/live/grid", response_class=HTMLResponse)
+async def live_grid_home(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        bots = db.query(GridBot).filter(GridBot.mode == "live").order_by(GridBot.id.desc()).all()
+        rows = [_grid_bot_view_row(b) for b in bots]
+        logs = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.event_type.like("LIVE_GRID_%"))
+            .order_by(ActivityLog.id.desc())
+            .limit(60)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "grid_home.html",
+            _context("live_grid", request=request, mode="live", rows=rows, logs=logs),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/live/grid/create")
+async def live_grid_create(
+    request: Request,
+    name: str = Form(...),
+    symbol: str = Form(...),
+    lower_limit: str = Form(...),
+    upper_limit: str = Form(...),
+    grid_count: str = Form(...),
+    grid_mode: str = Form("arithmetic"),
+    investment_mode: str = Form("usdt_only"),
+    total_investment_usdt: str = Form(...),
+    trigger_price: str = Form(""),
+    take_profit_price: str = Form(""),
+    stop_loss_price: str = Form(""),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        bot = create_grid_bot(
+            db,
+            mode="live",
+            name=name,
+            symbol=symbol,
+            lower_limit=_safe_float_or_default(lower_limit, 0.0),
+            upper_limit=_safe_float_or_default(upper_limit, 0.0),
+            grid_count=max(2, int(_safe_float_or_default(grid_count, 10))),
+            grid_mode=grid_mode,
+            investment_mode=investment_mode,
+            total_investment_usdt=_safe_float_or_default(total_investment_usdt, 100.0),
+            trigger_price=(_safe_float_or_default(trigger_price, 0.0) or None),
+            take_profit_price=(_safe_float_or_default(take_profit_price, 0.0) or None),
+            stop_loss_price=(_safe_float_or_default(stop_loss_price, 0.0) or None),
+        )
+        db.commit()
+        return RedirectResponse(f"/live/grid/{bot.id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/live/grid/{bot_id:int}", response_class=HTMLResponse)
+async def live_grid_bot_detail(request: Request, bot_id: int) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "live").first()
+        if not bot:
+            return RedirectResponse("/live/grid", status_code=303)
+        row = _grid_bot_view_row(bot)
+        trades = db.query(GridTrade).filter(GridTrade.bot_id == bot_id).order_by(GridTrade.id.desc()).limit(100).all()
+        return templates.TemplateResponse(
+            "grid_bot.html",
+            _context("live_grid", request=request, mode="live", row=row, trades=trades),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/live/grid/{bot_id:int}/toggle")
+async def live_grid_toggle(bot_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "live").first()
+        if not bot:
+            return RedirectResponse("/live/grid", status_code=303)
+        grid_toggle_bot_status(db, bot)
+        db.commit()
+        return RedirectResponse(f"/live/grid/{bot_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/paper/grid", response_class=HTMLResponse)
+async def paper_grid_home(request: Request) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        bots = db.query(GridBot).filter(GridBot.mode == "paper").order_by(GridBot.id.desc()).all()
+        rows = [_grid_bot_view_row(b) for b in bots]
+        logs = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.event_type.like("GRID_%"))
+            .filter(~ActivityLog.event_type.like("LIVE_GRID_%"))
+            .order_by(ActivityLog.id.desc())
+            .limit(60)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "grid_home.html",
+            _context("paper_grid", request=request, mode="paper", rows=rows, logs=logs),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/paper/grid/create")
+async def paper_grid_create(
+    request: Request,
+    name: str = Form(...),
+    symbol: str = Form(...),
+    lower_limit: str = Form(...),
+    upper_limit: str = Form(...),
+    grid_count: str = Form(...),
+    grid_mode: str = Form("arithmetic"),
+    investment_mode: str = Form("usdt_only"),
+    total_investment_usdt: str = Form(...),
+    trigger_price: str = Form(""),
+    take_profit_price: str = Form(""),
+    stop_loss_price: str = Form(""),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        bot = create_grid_bot(
+            db,
+            mode="paper",
+            name=name,
+            symbol=symbol,
+            lower_limit=_safe_float_or_default(lower_limit, 0.0),
+            upper_limit=_safe_float_or_default(upper_limit, 0.0),
+            grid_count=max(2, int(_safe_float_or_default(grid_count, 10))),
+            grid_mode=grid_mode,
+            investment_mode=investment_mode,
+            total_investment_usdt=_safe_float_or_default(total_investment_usdt, 100.0),
+            trigger_price=(_safe_float_or_default(trigger_price, 0.0) or None),
+            take_profit_price=(_safe_float_or_default(take_profit_price, 0.0) or None),
+            stop_loss_price=(_safe_float_or_default(stop_loss_price, 0.0) or None),
+        )
+        db.commit()
+        return RedirectResponse(f"/paper/grid/{bot.id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/paper/grid/{bot_id:int}", response_class=HTMLResponse)
+async def paper_grid_bot_detail(request: Request, bot_id: int) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "paper").first()
+        if not bot:
+            return RedirectResponse("/paper/grid", status_code=303)
+        row = _grid_bot_view_row(bot)
+        trades = db.query(GridTrade).filter(GridTrade.bot_id == bot_id).order_by(GridTrade.id.desc()).limit(100).all()
+        return templates.TemplateResponse(
+            "grid_bot.html",
+            _context("paper_grid", request=request, mode="paper", row=row, trades=trades),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/paper/grid/{bot_id:int}/toggle")
+async def paper_grid_toggle(bot_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "paper").first()
+        if not bot:
+            return RedirectResponse("/paper/grid", status_code=303)
+        grid_toggle_bot_status(db, bot)
+        db.commit()
+        return RedirectResponse(f"/paper/grid/{bot_id}", status_code=303)
+    finally:
+        db.close()
+
+
 @app.get("/live/accumulation", response_class=HTMLResponse)
 async def live_accumulation_page(request: Request) -> HTMLResponse:
     db = SessionLocal()
@@ -1628,6 +1897,29 @@ async def live_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20")
             return RedirectResponse("/live/accumulation", status_code=303)
         pct = _safe_float_or_default(sell_pct, 20.0)
         accumulation_manual_partial_sell(db, plan, pct)
+        db.commit()
+        return RedirectResponse(f"/live/accumulation/{plan_id}", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/live/accumulation/{plan_id:int}/edit")
+async def live_accumulation_edit(
+    plan_id: int,
+    dca_drop_pct: str = Form(...),
+    dca_allocation_pct: str = Form(...),
+    partial_tp_pct: str = Form(...),
+    partial_sell_pct: str = Form(...),
+) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "live").first()
+        if not plan:
+            return RedirectResponse("/live/accumulation", status_code=303)
+        plan.dca_drop_pct = max(0.2, _safe_float_or_default(dca_drop_pct, float(plan.dca_drop_pct)))
+        plan.dca_allocation_pct = max(1.0, _safe_float_or_default(dca_allocation_pct, float(plan.dca_allocation_pct)))
+        plan.partial_tp_pct = max(0.0, _safe_float_or_default(partial_tp_pct, float(plan.partial_tp_pct or 0)))
+        plan.partial_sell_pct = max(0.0, min(95.0, _safe_float_or_default(partial_sell_pct, float(plan.partial_sell_pct or 0))))
         db.commit()
         return RedirectResponse(f"/live/accumulation/{plan_id}", status_code=303)
     finally:
@@ -1945,6 +2237,8 @@ def _refresh_all_coins_cache(
     include_forecasts: bool,
     cache_ttl_seconds: int,
 ) -> None:
+    if _get_all_coins_cached_payload(cache_key, max(1, int(cache_ttl_seconds) - 5)) is not None:
+        return
     if _is_all_coins_refresh_running(cache_key):
         return
     _set_all_coins_refresh_running(cache_key, True)

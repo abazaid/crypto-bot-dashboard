@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="paper-layout">
+  <aside class="paper-sidebar card">
+    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link active" href="{{ '/live/grid' if mode == 'live' else '/paper/grid' }}">Grid Bot</a>
+  </aside>
+
+  <div class="paper-main">
+    <section class="hero">
+      <h1>{{ "Live" if mode == "live" else "Paper" }} Grid Bot</h1>
+      <p>Buy low, sell high automatically within a price range — 24/7 automated grid trading.</p>
+    </section>
+
+    <section class="card">
+      <h2>New Grid Bot</h2>
+      <form method="post" action="{{ '/live/grid/create' if mode == 'live' else '/paper/grid/create' }}" class="form-grid">
+        <label>Bot Name
+          <input name="name" placeholder="e.g. ETH Grid" required>
+        </label>
+        <label>Symbol
+          <input name="symbol" placeholder="ETHUSDT" required>
+        </label>
+        <label>Total Investment (USDT)
+          <input name="total_investment_usdt" type="number" step="1" min="10" value="100" required>
+        </label>
+        <label>Lower Limit (USDT)
+          <input name="lower_limit" type="number" step="any" placeholder="e.g. 2000" required>
+        </label>
+        <label>Upper Limit (USDT)
+          <input name="upper_limit" type="number" step="any" placeholder="e.g. 3000" required>
+        </label>
+        <label>Grids (2–500)
+          <input name="grid_count" type="number" step="1" min="2" max="500" value="10" required>
+        </label>
+        <label>Grid Mode
+          <select name="grid_mode">
+            <option value="arithmetic">Arithmetic (equal spacing)</option>
+            <option value="geometric">Geometric (equal %)</option>
+          </select>
+        </label>
+        <label>Investment Mode
+          <select name="investment_mode">
+            <option value="usdt_only">USDT Only</option>
+            <option value="both">Both (buy coins for upper grids on start)</option>
+          </select>
+        </label>
+        <label>Trigger Price (optional — bot waits until price reaches this)
+          <input name="trigger_price" type="number" step="any" placeholder="Leave empty to start immediately">
+        </label>
+        <label>Take Profit Price (optional)
+          <input name="take_profit_price" type="number" step="any" placeholder="Sell all and stop when reached">
+        </label>
+        <label>Stop Loss Price (optional)
+          <input name="stop_loss_price" type="number" step="any" placeholder="Sell all and stop when reached">
+        </label>
+        <div class="form-actions">
+          <button class="btn" type="submit">Create Grid Bot</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Active Bots</h2>
+      {% if rows %}
+      <div class="table-scroll">
+      <table class="campaigns-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Symbol</th>
+            <th>Status</th>
+            <th>Range</th>
+            <th>Grids</th>
+            <th>Investment</th>
+            <th>Equity Now</th>
+            <th>Unrealized PnL</th>
+            <th>Realized PnL</th>
+            <th>Profit/Grid</th>
+            <th>Buys / Sells</th>
+            <th>Last Price</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>{{ r.bot.name }}</td>
+            <td>{{ r.bot.symbol }}</td>
+            <td>{{ r.bot.status }}</td>
+            <td>{{ "%.4f"|format(r.bot.lower_limit) }} – {{ "%.4f"|format(r.bot.upper_limit) }}</td>
+            <td>{{ r.bot.grid_count }}</td>
+            <td>{{ "%.2f"|format(r.bot.total_investment_usdt) }} USDT</td>
+            <td>{{ "%.2f"|format(r.equity_now) }} USDT</td>
+            <td class="{{ 'pnl-pos' if r.unrealized_pnl >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.unrealized_pnl) }}</td>
+            <td class="{{ 'pnl-pos' if (r.bot.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.bot.realized_pnl_usdt or 0) }}</td>
+            <td>{{ "%.4f"|format(r.profit_per_grid_pct) }}%</td>
+            <td>{{ r.bot.buy_count }} / {{ r.bot.sell_count }}</td>
+            <td>{{ "%.4f"|format(r.bot.last_price or 0) }}</td>
+            <td><a href="{{ ('/live/grid/' if mode == 'live' else '/paper/grid/') ~ r.bot.id }}">Open</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p>No grid bots yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Grid Log</h2>
+      <div class="log-list">
+        {% for log in logs %}
+        <div class="log-item">
+          <span>{{ log.created_at.strftime("%H:%M:%S") }}</span>
+          <strong>{{ log.event_type }}</strong>
+          <span>{{ log.symbol }}</span>
+          <p>{{ log.message }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
