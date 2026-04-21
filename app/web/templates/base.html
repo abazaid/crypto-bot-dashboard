@@ -29,7 +29,7 @@
         <a class="{% if active_page == 'live_history' %}active{% endif %}" href="/live/history">Live History</a>
         <a class="{% if active_page == 'live_binance_completed_trades' %}active{% endif %}" href="/live/binance-completed-trades">Binance Completed Trades</a>
       </nav>
-      {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_history', 'live_binance_completed_trades', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history'] %}
+      {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_history', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history'] %}
       <div class="refresh-tools">
         <button id="refresh-now-btn" type="button" class="mini-btn">Refresh Now</button>
         <span id="refresh-countdown" class="refresh-text">Auto refresh in 15s</span>
@@ -45,7 +45,7 @@
   <footer class="wrap footer">
     <small>Last update: {{ now }} | Engine checks prices every {{ cycle_seconds }}s</small>
   </footer>
-  {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_history', 'live_binance_completed_trades', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history'] %}
+  {% if active_page in ['paper_home', 'paper_campaign', 'history', 'live_history', 'paper_accumulation', 'paper_accumulation_plan', 'paper_accumulation_history', 'live_accumulation', 'live_accumulation_plan', 'live_accumulation_history'] %}
   <script>
     const REFRESH_SECONDS = 15;
     let countdown = REFRESH_SECONDS;

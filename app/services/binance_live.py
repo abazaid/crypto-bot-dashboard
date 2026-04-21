@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import math
+import re
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,6 +26,7 @@ _COST_BASIS_CACHE: dict[str, dict[str, Any]] = {}
 _ALL_COINS_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
 _ACCOUNT_INFO_CACHE: dict[str, Any] = {"expires_at": 0.0, "data": None}
 _COMPLETED_TRADES_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
+_BINANCE_BAN_UNTIL_TS: float = 0.0
 _KNOWN_QUOTES = [
     "USDT",
     "USDC",
@@ -47,6 +49,19 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _extract_ban_until_ts(error_text: str) -> float | None:
+    m = re.search(r"until\s+(\d+)", str(error_text or ""))
+    if not m:
+        return None
+    try:
+        ms = int(m.group(1))
+        if ms <= 0:
+            return None
+        return ms / 1000.0
+    except Exception:
+        return None
+
+
 def is_configured() -> bool:
     return bool(settings.binance_api_key and settings.binance_api_secret)
 
@@ -57,6 +72,12 @@ def _ensure_keys() -> None:
 
 
 def _signed_request(method: str, path: str, params: dict[str, Any] | None = None) -> dict:
+    global _BINANCE_BAN_UNTIL_TS
+    now_ts = time.time()
+    if _BINANCE_BAN_UNTIL_TS > now_ts:
+        raise RuntimeError(
+            f"Binance API temporarily banned until {int(_BINANCE_BAN_UNTIL_TS)} (unix)."
+        )
     _ensure_keys()
     q = dict(params or {})
     q["timestamp"] = int(time.time() * 1000)
@@ -72,6 +93,11 @@ def _signed_request(method: str, path: str, params: dict[str, Any] | None = None
     url = f"{BASE_URL}{path}?{query}"
     resp = requests.request(method.upper(), url, headers=headers, timeout=TIMEOUT)
     if resp.status_code >= 400:
+        if resp.status_code == 418:
+            ban_until = _extract_ban_until_ts(resp.text)
+            _BINANCE_BAN_UNTIL_TS = float(ban_until or (time.time() + 120))
+        elif resp.status_code == 429:
+            _BINANCE_BAN_UNTIL_TS = max(_BINANCE_BAN_UNTIL_TS, time.time() + 10)
         raise RuntimeError(f"Binance API error {resp.status_code}: {resp.text}")
     return resp.json()
 
@@ -86,14 +112,23 @@ def get_account_info() -> dict:
     cached = _ACCOUNT_INFO_CACHE.get("data")
     if cached is not None and float(_ACCOUNT_INFO_CACHE.get("expires_at", 0.0)) > now:
         return cached
-    data = _signed_request("GET", "/api/v3/account")
-    _ACCOUNT_INFO_CACHE["data"] = data
-    _ACCOUNT_INFO_CACHE["expires_at"] = now + ACCOUNT_INFO_TTL_SECONDS
-    return data
+    try:
+        data = _signed_request("GET", "/api/v3/account")
+        _ACCOUNT_INFO_CACHE["data"] = data
+        _ACCOUNT_INFO_CACHE["expires_at"] = now + ACCOUNT_INFO_TTL_SECONDS
+        return data
+    except Exception:
+        # Fall back to stale cache during temporary Binance bans/rate limits.
+        if cached is not None:
+            return cached
+        raise
 
 
 def get_balances() -> dict[str, dict[str, float]]:
-    data = get_account_info()
+    try:
+        data = get_account_info()
+    except Exception:
+        return {}
     out: dict[str, dict[str, float]] = {}
     for b in data.get("balances", []):
         asset = str(b.get("asset", "")).upper()
@@ -494,9 +529,10 @@ def get_open_orders(symbol: str | None = None) -> list[dict]:
     return []
 
 
-def _collect_candidate_trade_symbols(extra_symbols: list[str] | None = None) -> list[str]:
+def _collect_candidate_trade_symbols(extra_symbols: list[str] | None = None, max_symbols: int = 12) -> list[str]:
     _load_symbol_filters()
-    candidates: set[str] = set()
+    weighted_candidates: list[tuple[str, float]] = []
+    dedupe: set[str] = set()
 
     for asset, amounts in get_balances().items():
         total = _to_float(amounts.get("free", 0.0)) + _to_float(amounts.get("locked", 0.0))
@@ -506,24 +542,33 @@ def _collect_candidate_trade_symbols(extra_symbols: list[str] | None = None) -> 
             continue
         pair = f"{str(asset).upper()}USDT"
         if pair in _SYMBOL_FILTER_CACHE:
-            candidates.add(pair)
+            if pair not in dedupe:
+                dedupe.add(pair)
+                weighted_candidates.append((pair, total))
 
     try:
         for order in get_open_orders():
             sym = str(order.get("symbol", "")).upper()
-            if sym:
-                candidates.add(sym)
+            if sym and sym not in dedupe:
+                dedupe.add(sym)
+                weighted_candidates.append((sym, 0.0))
     except Exception:
         pass
+
+    weighted_candidates.sort(key=lambda x: (float(x[1]), x[0]), reverse=True)
+    selected = [sym for sym, _ in weighted_candidates[: max(1, int(max_symbols))]]
+    selected_set = set(selected)
 
     for sym in extra_symbols or []:
         normalized = str(sym or "").strip().upper()
         if not normalized:
             continue
         if normalized in _SYMBOL_FILTER_CACHE:
-            candidates.add(normalized)
+            if normalized not in selected_set:
+                selected.append(normalized)
+                selected_set.add(normalized)
 
-    return sorted(candidates)
+    return sorted(set(selected))
 
 
 def _fmt_hold_duration(seconds: float) -> str:
@@ -540,10 +585,11 @@ def _fmt_hold_duration(seconds: float) -> str:
 
 def get_completed_trades_from_binance(
     extra_symbols: list[str] | None = None,
-    max_pages_per_symbol: int = 8,
+    max_pages_per_symbol: int = 2,
     max_rows: int = 400,
+    max_symbols: int = 12,
 ) -> dict[str, Any]:
-    symbols = _collect_candidate_trade_symbols(extra_symbols=extra_symbols)
+    symbols = _collect_candidate_trade_symbols(extra_symbols=extra_symbols, max_symbols=max_symbols)
     cache_key = "|".join(symbols)
     now_ts = time.time()
     if (

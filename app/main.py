@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,10 @@ def _parse_symbols_csv(raw: str | None) -> list[str]:
 
 
 def _match_binance_window(sell_time: datetime | None, window_key: str, now_dt: datetime) -> bool:
+    if isinstance(now_dt, datetime) and now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+    if isinstance(sell_time, datetime) and sell_time.tzinfo is None:
+        sell_time = sell_time.replace(tzinfo=timezone.utc)
     for key, _, hours in _BINANCE_WINDOWS:
         if window_key != key:
             continue
@@ -2170,11 +2174,17 @@ async def live_binance_completed_trades(request: Request) -> HTMLResponse:
     symbols_with_trades: list[str] = []
 
     try:
-        completed = get_completed_trades_from_binance(extra_symbols=extra_symbols, max_pages_per_symbol=8, max_rows=1200)
+        max_pages = 1 if window == "24h" else (2 if window == "7d" else 3)
+        completed = get_completed_trades_from_binance(
+            extra_symbols=extra_symbols,
+            max_pages_per_symbol=max_pages,
+            max_rows=1200,
+            max_symbols=12,
+        )
         scanned_symbols = completed.get("scanned_symbols", []) or []
         symbols_with_trades = completed.get("symbols_with_trades", []) or []
         all_rows = completed.get("rows", []) or []
-        now_dt = datetime.utcnow()
+        now_dt = datetime.now(timezone.utc)
         rows = [r for r in all_rows if _match_binance_window(r.get("sell_time"), window, now_dt)]
 
         total_buy = sum(float(r.get("buy_amount_usdt", 0.0) or 0.0) for r in rows)
