@@ -607,6 +607,10 @@ def get_completed_trades_from_binance(
             sell_time = trade_dt
             sell_price = price
             qty_to_match = sell_qty
+            matched_qty_total = 0.0
+            matched_cost_total = 0.0
+            hold_weighted_sum = 0.0
+            earliest_buy_time: datetime | None = None
 
             while qty_to_match > 1e-12 and buy_lots:
                 lot = buy_lots[0]
@@ -618,30 +622,17 @@ def get_completed_trades_from_binance(
 
                 matched_qty = min(lot_qty_left, qty_to_match)
                 cost_share = lot_cost_left * (matched_qty / lot_qty_left) if lot_qty_left > 0 else 0.0
-                proceeds_share = sell_proceeds_net * (matched_qty / sell_qty) if sell_qty > 0 else 0.0
-                pnl = proceeds_share - cost_share
-                pnl_pct = (pnl / cost_share * 100.0) if cost_share > 0 else 0.0
 
                 buy_time = lot.get("buy_time")
                 hold_seconds = 0.0
                 if isinstance(buy_time, datetime) and isinstance(sell_time, datetime):
                     hold_seconds = max(0.0, (sell_time - buy_time).total_seconds())
-
-                rows.append(
-                    {
-                        "symbol": symbol,
-                        "buy_time": buy_time,
-                        "sell_time": sell_time,
-                        "hold_seconds": hold_seconds,
-                        "hold_text": _fmt_hold_duration(hold_seconds),
-                        "buy_amount_usdt": cost_share,
-                        "sell_amount_usdt": proceeds_share,
-                        "buy_price": _to_float(lot.get("buy_price", 0.0)),
-                        "sell_price": sell_price,
-                        "pnl_usdt": pnl,
-                        "pnl_pct": pnl_pct,
-                    }
-                )
+                matched_qty_total += matched_qty
+                matched_cost_total += cost_share
+                hold_weighted_sum += hold_seconds * matched_qty
+                if isinstance(buy_time, datetime):
+                    if earliest_buy_time is None or buy_time < earliest_buy_time:
+                        earliest_buy_time = buy_time
 
                 lot["qty_left"] = max(0.0, lot_qty_left - matched_qty)
                 lot["cost_left"] = max(0.0, lot_cost_left - cost_share)
@@ -649,6 +640,40 @@ def get_completed_trades_from_binance(
 
                 if lot["qty_left"] <= 1e-12:
                     buy_lots.popleft()
+
+            if matched_qty_total <= 1e-12:
+                continue
+
+            proceeds_share_total = sell_proceeds_net * (matched_qty_total / sell_qty) if sell_qty > 0 else 0.0
+            pnl_total = proceeds_share_total - matched_cost_total
+            pnl_pct_total = (pnl_total / matched_cost_total * 100.0) if matched_cost_total > 0 else 0.0
+            avg_buy_price = (matched_cost_total / matched_qty_total) if matched_qty_total > 0 else 0.0
+            hold_seconds_weighted = (hold_weighted_sum / matched_qty_total) if matched_qty_total > 0 else 0.0
+
+            # Hide dust-level rows that only produce visual noise (e.g. 0.00 / -0.00).
+            if (
+                matched_cost_total < 0.005
+                and proceeds_share_total < 0.005
+                and abs(pnl_total) < 0.005
+            ):
+                continue
+
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "qty": matched_qty_total,
+                    "buy_time": earliest_buy_time,
+                    "sell_time": sell_time,
+                    "hold_seconds": hold_seconds_weighted,
+                    "hold_text": _fmt_hold_duration(hold_seconds_weighted),
+                    "buy_amount_usdt": matched_cost_total,
+                    "sell_amount_usdt": proceeds_share_total,
+                    "buy_price": avg_buy_price,
+                    "sell_price": sell_price,
+                    "pnl_usdt": pnl_total,
+                    "pnl_pct": pnl_pct_total,
+                }
+            )
 
     rows.sort(
         key=lambda r: (

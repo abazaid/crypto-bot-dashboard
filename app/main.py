@@ -201,6 +201,13 @@ _STRATEGY_FILTERS = [
     ("manual", "Manual"),
 ]
 
+_BINANCE_WINDOWS = [
+    ("24h", "Last 24 hours", 24),
+    ("7d", "Last 7 days", 24 * 7),
+    ("30d", "Last 30 days", 24 * 30),
+    ("all", "All", None),
+]
+
 
 def _strategy_key(campaign: Campaign) -> str:
     if bool(campaign.loop_enabled):
@@ -235,6 +242,18 @@ def _parse_symbols_csv(raw: str | None) -> list[str]:
         seen.add(sym)
         out.append(sym)
     return out
+
+
+def _match_binance_window(sell_time: datetime | None, window_key: str, now_dt: datetime) -> bool:
+    for key, _, hours in _BINANCE_WINDOWS:
+        if window_key != key:
+            continue
+        if hours is None:
+            return True
+        if not isinstance(sell_time, datetime):
+            return False
+        return sell_time >= (now_dt - timedelta(hours=hours))
+    return True
 
 
 def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> dict:
@@ -2110,8 +2129,6 @@ async def live_trading_history(request: Request) -> HTMLResponse:
     try:
         date_filter = str(request.query_params.get("date_range", "all")).strip().lower()
         strategy_filter = str(request.query_params.get("strategy", "all")).strip().lower()
-        extra_symbols_raw = str(request.query_params.get("binance_symbols", "") or "").strip().upper()
-        extra_symbols = _parse_symbols_csv(extra_symbols_raw)
         valid_date = {x[0] for x in _DATE_FILTERS}
         valid_strategy = {x[0] for x in _STRATEGY_FILTERS}
         if date_filter not in valid_date:
@@ -2119,68 +2136,90 @@ async def live_trading_history(request: Request) -> HTMLResponse:
         if strategy_filter not in valid_strategy:
             strategy_filter = "all"
         ctx = _history_context(db, "live", date_filter, strategy_filter)
-        binance_rows: list[dict] = []
-        binance_summary = {
-            "total_trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "win_rate": 0.0,
-            "total_buy_usdt": 0.0,
-            "total_sell_usdt": 0.0,
-            "net_pnl_usdt": 0.0,
-            "net_pnl_pct": 0.0,
-            "avg_hold_text": "0m",
-        }
-        binance_error = None
-        scanned_symbols: list[str] = []
-        symbols_with_trades: list[str] = []
-        try:
-            completed = get_completed_trades_from_binance(extra_symbols=extra_symbols, max_pages_per_symbol=8, max_rows=600)
-            scanned_symbols = completed.get("scanned_symbols", []) or []
-            symbols_with_trades = completed.get("symbols_with_trades", []) or []
-            now_dt = datetime.utcnow()
-            all_rows = completed.get("rows", []) or []
-            binance_rows = [r for r in all_rows if _match_date_filter({"closed_at": r.get("sell_time")}, date_filter, now_dt)]
-            total_buy = sum(float(r.get("buy_amount_usdt", 0.0) or 0.0) for r in binance_rows)
-            total_sell = sum(float(r.get("sell_amount_usdt", 0.0) or 0.0) for r in binance_rows)
-            total_pnl = sum(float(r.get("pnl_usdt", 0.0) or 0.0) for r in binance_rows)
-            wins = sum(1 for r in binance_rows if float(r.get("pnl_usdt", 0.0) or 0.0) > 0)
-            losses = sum(1 for r in binance_rows if float(r.get("pnl_usdt", 0.0) or 0.0) < 0)
-            avg_hold_seconds = (
-                sum(float(r.get("hold_seconds", 0.0) or 0.0) for r in binance_rows) / len(binance_rows)
-                if binance_rows
-                else 0.0
-            )
-            avg_minutes = max(0, int(round(avg_hold_seconds / 60.0)))
-            days, rem_m = divmod(avg_minutes, 60 * 24)
-            hours, mins = divmod(rem_m, 60)
-            avg_hold_text = f"{days}d {hours}h {mins}m" if days > 0 else (f"{hours}h {mins}m" if hours > 0 else f"{mins}m")
-            binance_summary = {
-                "total_trades": len(binance_rows),
-                "wins": wins,
-                "losses": losses,
-                "win_rate": ((wins / len(binance_rows)) * 100.0) if binance_rows else 0.0,
-                "total_buy_usdt": total_buy,
-                "total_sell_usdt": total_sell,
-                "net_pnl_usdt": total_pnl,
-                "net_pnl_pct": ((total_pnl / total_buy) * 100.0) if total_buy > 0 else 0.0,
-                "avg_hold_text": avg_hold_text,
-            }
-            binance_rows = binance_rows[:300]
-        except Exception as e:
-            binance_error = str(e)
-        ctx["binance_rows"] = binance_rows
-        ctx["binance_summary"] = binance_summary
-        ctx["binance_error"] = binance_error
-        ctx["binance_symbols_input"] = extra_symbols_raw
-        ctx["binance_scanned_symbols"] = scanned_symbols
-        ctx["binance_symbols_with_trades"] = symbols_with_trades
         return templates.TemplateResponse(
             "live_history.html",
             _context("live_history", request=request, **ctx),
         )
     finally:
         db.close()
+
+
+@app.get("/live/binance-completed-trades", response_class=HTMLResponse)
+async def live_binance_completed_trades(request: Request) -> HTMLResponse:
+    window = str(request.query_params.get("window", "7d")).strip().lower()
+    symbols_raw = str(request.query_params.get("symbols", "") or "").strip().upper()
+    extra_symbols = _parse_symbols_csv(symbols_raw)
+    valid_windows = {x[0] for x in _BINANCE_WINDOWS}
+    if window not in valid_windows:
+        window = "7d"
+
+    error = None
+    rows: list[dict] = []
+    summary = {
+        "total_trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "win_rate": 0.0,
+        "total_buy_usdt": 0.0,
+        "total_sell_usdt": 0.0,
+        "net_pnl_usdt": 0.0,
+        "net_pnl_pct": 0.0,
+        "avg_hold_text": "0m",
+    }
+    scanned_symbols: list[str] = []
+    symbols_with_trades: list[str] = []
+
+    try:
+        completed = get_completed_trades_from_binance(extra_symbols=extra_symbols, max_pages_per_symbol=8, max_rows=1200)
+        scanned_symbols = completed.get("scanned_symbols", []) or []
+        symbols_with_trades = completed.get("symbols_with_trades", []) or []
+        all_rows = completed.get("rows", []) or []
+        now_dt = datetime.utcnow()
+        rows = [r for r in all_rows if _match_binance_window(r.get("sell_time"), window, now_dt)]
+
+        total_buy = sum(float(r.get("buy_amount_usdt", 0.0) or 0.0) for r in rows)
+        total_sell = sum(float(r.get("sell_amount_usdt", 0.0) or 0.0) for r in rows)
+        total_pnl = sum(float(r.get("pnl_usdt", 0.0) or 0.0) for r in rows)
+        wins = sum(1 for r in rows if float(r.get("pnl_usdt", 0.0) or 0.0) > 0)
+        losses = sum(1 for r in rows if float(r.get("pnl_usdt", 0.0) or 0.0) < 0)
+        avg_hold_seconds = (sum(float(r.get("hold_seconds", 0.0) or 0.0) for r in rows) / len(rows)) if rows else 0.0
+        avg_minutes = max(0, int(round(avg_hold_seconds / 60.0)))
+        days, rem_m = divmod(avg_minutes, 60 * 24)
+        hours, mins = divmod(rem_m, 60)
+        avg_hold_text = f"{days}d {hours}h {mins}m" if days > 0 else (f"{hours}h {mins}m" if hours > 0 else f"{mins}m")
+
+        summary = {
+            "total_trades": len(rows),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": ((wins / len(rows)) * 100.0) if rows else 0.0,
+            "total_buy_usdt": total_buy,
+            "total_sell_usdt": total_sell,
+            "net_pnl_usdt": total_pnl,
+            "net_pnl_pct": ((total_pnl / total_buy) * 100.0) if total_buy > 0 else 0.0,
+            "avg_hold_text": avg_hold_text,
+        }
+        rows = rows[:400]
+    except Exception as e:
+        error = str(e)
+
+    window_filters = [{"key": key, "label": label} for key, label, _ in _BINANCE_WINDOWS]
+    return templates.TemplateResponse(
+        "binance_completed_trades.html",
+        _context(
+            "live_binance_completed_trades",
+            request=request,
+            mode="live",
+            window_filters=window_filters,
+            selected_window=window,
+            symbols_input=symbols_raw,
+            rows=rows,
+            summary=summary,
+            error=error,
+            scanned_symbols=scanned_symbols,
+            symbols_with_trades=symbols_with_trades,
+        ),
+    )
 
 
 def _build_tp_map_from_orders(open_orders: list[dict]) -> dict[str, dict]:
