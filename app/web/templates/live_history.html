@@ -60,6 +60,10 @@
         {% endfor %}
       </select>
     </label>
+    <label>Extra Binance Symbols (optional)
+      <input type="text" name="binance_symbols" value="{{ binance_symbols_input or '' }}" placeholder="مثال: BTCUSDT,ETHUSDT" />
+    </label>
+    <button type="submit">Apply</button>
   </form>
 </section>
 
@@ -107,6 +111,72 @@
   </div>
   {% else %}
   <p>No closed trades yet.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Binance Completed Trades (Live only - independent from bot)</h2>
+  <p class="muted-line">Source: Binance Spot trade history (`myTrades`) and matched Buy/Sell FIFO.</p>
+  {% if binance_error %}
+  <p class="pnl-neg">{{ binance_error }}</p>
+  {% else %}
+  <div class="cards four deals-cards">
+    <article class="card stat glow deals-card">
+      <h3>Total Completed</h3>
+      <p>{{ binance_summary.total_trades }}</p>
+    </article>
+    <article class="card stat glow deals-card">
+      <h3>Win Rate</h3>
+      <p class="{{ 'pnl-pos' if binance_summary.win_rate >= 50 else 'pnl-neg' }}">{{ "%.2f"|format(binance_summary.win_rate) }}%</p>
+    </article>
+    <article class="card stat glow deals-card">
+      <h3>Net PnL</h3>
+      <p class="{{ 'pnl-pos' if binance_summary.net_pnl_usdt >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(binance_summary.net_pnl_usdt) }} USDT</p>
+    </article>
+    <article class="card stat glow deals-card">
+      <h3>Avg Hold</h3>
+      <p>{{ binance_summary.avg_hold_text }}</p>
+    </article>
+  </div>
+  <p class="muted-line">Scanned symbols: {{ binance_scanned_symbols|length }} | Symbols with trades: {{ binance_symbols_with_trades|length }}</p>
+  {% if binance_rows %}
+  <div class="table-scroll">
+    <table class="deals-table">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Buy Time</th>
+          <th>Sell Time</th>
+          <th>Hold</th>
+          <th>Buy Amount (USDT)</th>
+          <th>Sell Amount (USDT)</th>
+          <th>Buy Price</th>
+          <th>Sell Price</th>
+          <th>PnL %</th>
+          <th>PnL USDT</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in binance_rows %}
+        <tr>
+          <td>{{ row.symbol }}</td>
+          <td>{{ row.buy_time.strftime("%Y-%m-%d %H:%M") if row.buy_time else "-" }} UTC</td>
+          <td>{{ row.sell_time.strftime("%Y-%m-%d %H:%M") if row.sell_time else "-" }} UTC</td>
+          <td>{{ row.hold_text }}</td>
+          <td>{{ "%.2f"|format(row.buy_amount_usdt) }}</td>
+          <td>{{ "%.2f"|format(row.sell_amount_usdt) }}</td>
+          <td>{{ "%.8f"|format(row.buy_price) }}</td>
+          <td>{{ "%.8f"|format(row.sell_price) }}</td>
+          <td><span class="{{ 'pnl-pos' if row.pnl_pct >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl_pct) }}%</span></td>
+          <td><span class="{{ 'pnl-pos' if row.pnl_usdt >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(row.pnl_usdt) }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p>No completed Binance trades found for scanned symbols.</p>
+  {% endif %}
   {% endif %}
 </section>
 {% endblock %}

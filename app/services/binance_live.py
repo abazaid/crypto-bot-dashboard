@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import math
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
@@ -23,6 +24,7 @@ _CACHE_EXPIRES_AT = 0.0
 _COST_BASIS_CACHE: dict[str, dict[str, Any]] = {}
 _ALL_COINS_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
 _ACCOUNT_INFO_CACHE: dict[str, Any] = {"expires_at": 0.0, "data": None}
+_COMPLETED_TRADES_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
 _KNOWN_QUOTES = [
     "USDT",
     "USDC",
@@ -35,6 +37,14 @@ _KNOWN_QUOTES = [
     "TRY",
     "EUR",
 ]
+COMPLETED_TRADES_TTL_SECONDS = 120
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or default)
+    except Exception:
+        return float(default)
 
 
 def is_configured() -> bool:
@@ -482,6 +492,201 @@ def get_open_orders(symbol: str | None = None) -> list[dict]:
     if isinstance(out, list):
         return out
     return []
+
+
+def _collect_candidate_trade_symbols(extra_symbols: list[str] | None = None) -> list[str]:
+    _load_symbol_filters()
+    candidates: set[str] = set()
+
+    for asset, amounts in get_balances().items():
+        total = _to_float(amounts.get("free", 0.0)) + _to_float(amounts.get("locked", 0.0))
+        if total <= 0:
+            continue
+        if asset in {"USDT", "FDUSD", "USDC", "BUSD", "TUSD"}:
+            continue
+        pair = f"{str(asset).upper()}USDT"
+        if pair in _SYMBOL_FILTER_CACHE:
+            candidates.add(pair)
+
+    try:
+        for order in get_open_orders():
+            sym = str(order.get("symbol", "")).upper()
+            if sym:
+                candidates.add(sym)
+    except Exception:
+        pass
+
+    for sym in extra_symbols or []:
+        normalized = str(sym or "").strip().upper()
+        if not normalized:
+            continue
+        if normalized in _SYMBOL_FILTER_CACHE:
+            candidates.add(normalized)
+
+    return sorted(candidates)
+
+
+def _fmt_hold_duration(seconds: float) -> str:
+    sec = int(max(0, round(seconds)))
+    days, rem = divmod(sec, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, _ = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hours}h {mins}m"
+    if hours > 0:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def get_completed_trades_from_binance(
+    extra_symbols: list[str] | None = None,
+    max_pages_per_symbol: int = 8,
+    max_rows: int = 400,
+) -> dict[str, Any]:
+    symbols = _collect_candidate_trade_symbols(extra_symbols=extra_symbols)
+    cache_key = "|".join(symbols)
+    now_ts = time.time()
+    if (
+        _COMPLETED_TRADES_CACHE.get("data") is not None
+        and _COMPLETED_TRADES_CACHE.get("key") == cache_key
+        and float(_COMPLETED_TRADES_CACHE.get("expires_at", 0.0)) > now_ts
+    ):
+        return _COMPLETED_TRADES_CACHE["data"]
+
+    rows: list[dict[str, Any]] = []
+    symbols_with_trades: list[str] = []
+
+    for symbol in symbols:
+        try:
+            trades = get_my_trades_full_history(symbol, max_pages=max_pages_per_symbol)
+        except Exception:
+            continue
+        if not trades:
+            continue
+
+        symbols_with_trades.append(symbol)
+        buy_lots: deque[dict[str, Any]] = deque()
+        base_asset = _base_asset_from_symbol(symbol)
+
+        for trade in trades:
+            qty = _to_float(trade.get("qty", 0.0))
+            quote_qty = _to_float(trade.get("quoteQty", 0.0))
+            price = _to_float(trade.get("price", 0.0))
+            trade_time_ms = int(trade.get("time", 0) or 0)
+            trade_dt = datetime.fromtimestamp(trade_time_ms / 1000.0, tz=timezone.utc) if trade_time_ms > 0 else None
+            is_buyer = bool(trade.get("isBuyer", False))
+
+            commission = _to_float(trade.get("commission", 0.0))
+            commission_asset = str(trade.get("commissionAsset", "")).upper()
+            fee_usdt = _asset_to_usdt(commission_asset, commission, symbol, price)
+            base_fee = commission if commission_asset == base_asset else 0.0
+
+            if qty <= 0:
+                continue
+
+            if is_buyer:
+                lot_qty = max(0.0, qty - base_fee)
+                lot_cost = quote_qty + fee_usdt
+                if lot_qty <= 0 or lot_cost <= 0:
+                    continue
+                buy_lots.append(
+                    {
+                        "qty_left": lot_qty,
+                        "cost_left": lot_cost,
+                        "buy_time": trade_dt,
+                        "buy_price": price,
+                    }
+                )
+                continue
+
+            sell_qty = qty
+            if sell_qty <= 0:
+                continue
+
+            sell_proceeds_net = max(0.0, quote_qty - fee_usdt)
+            sell_time = trade_dt
+            sell_price = price
+            qty_to_match = sell_qty
+
+            while qty_to_match > 1e-12 and buy_lots:
+                lot = buy_lots[0]
+                lot_qty_left = _to_float(lot.get("qty_left", 0.0))
+                lot_cost_left = _to_float(lot.get("cost_left", 0.0))
+                if lot_qty_left <= 1e-12:
+                    buy_lots.popleft()
+                    continue
+
+                matched_qty = min(lot_qty_left, qty_to_match)
+                cost_share = lot_cost_left * (matched_qty / lot_qty_left) if lot_qty_left > 0 else 0.0
+                proceeds_share = sell_proceeds_net * (matched_qty / sell_qty) if sell_qty > 0 else 0.0
+                pnl = proceeds_share - cost_share
+                pnl_pct = (pnl / cost_share * 100.0) if cost_share > 0 else 0.0
+
+                buy_time = lot.get("buy_time")
+                hold_seconds = 0.0
+                if isinstance(buy_time, datetime) and isinstance(sell_time, datetime):
+                    hold_seconds = max(0.0, (sell_time - buy_time).total_seconds())
+
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "buy_time": buy_time,
+                        "sell_time": sell_time,
+                        "hold_seconds": hold_seconds,
+                        "hold_text": _fmt_hold_duration(hold_seconds),
+                        "buy_amount_usdt": cost_share,
+                        "sell_amount_usdt": proceeds_share,
+                        "buy_price": _to_float(lot.get("buy_price", 0.0)),
+                        "sell_price": sell_price,
+                        "pnl_usdt": pnl,
+                        "pnl_pct": pnl_pct,
+                    }
+                )
+
+                lot["qty_left"] = max(0.0, lot_qty_left - matched_qty)
+                lot["cost_left"] = max(0.0, lot_cost_left - cost_share)
+                qty_to_match = max(0.0, qty_to_match - matched_qty)
+
+                if lot["qty_left"] <= 1e-12:
+                    buy_lots.popleft()
+
+    rows.sort(
+        key=lambda r: (
+            int(r["sell_time"].timestamp()) if isinstance(r.get("sell_time"), datetime) else 0,
+            str(r.get("symbol", "")),
+        ),
+        reverse=True,
+    )
+    if max_rows > 0:
+        rows = rows[: max(1, int(max_rows))]
+
+    total_buy = sum(_to_float(r.get("buy_amount_usdt", 0.0)) for r in rows)
+    total_sell = sum(_to_float(r.get("sell_amount_usdt", 0.0)) for r in rows)
+    total_pnl = sum(_to_float(r.get("pnl_usdt", 0.0)) for r in rows)
+    wins = sum(1 for r in rows if _to_float(r.get("pnl_usdt", 0.0)) > 0)
+    losses = sum(1 for r in rows if _to_float(r.get("pnl_usdt", 0.0)) < 0)
+    avg_hold_seconds = (sum(_to_float(r.get("hold_seconds", 0.0)) for r in rows) / len(rows)) if rows else 0.0
+
+    out = {
+        "rows": rows,
+        "summary": {
+            "total_trades": len(rows),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": ((wins / len(rows)) * 100.0) if rows else 0.0,
+            "total_buy_usdt": total_buy,
+            "total_sell_usdt": total_sell,
+            "net_pnl_usdt": total_pnl,
+            "net_pnl_pct": ((total_pnl / total_buy) * 100.0) if total_buy > 0 else 0.0,
+            "avg_hold_text": _fmt_hold_duration(avg_hold_seconds),
+        },
+        "scanned_symbols": symbols,
+        "symbols_with_trades": symbols_with_trades,
+    }
+    _COMPLETED_TRADES_CACHE["key"] = cache_key
+    _COMPLETED_TRADES_CACHE["data"] = out
+    _COMPLETED_TRADES_CACHE["expires_at"] = now_ts + float(COMPLETED_TRADES_TTL_SECONDS)
+    return out
 
 
 def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000) -> tuple[float, float, int]:
