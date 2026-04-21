@@ -1,6 +1,8 @@
 import hashlib
 import hmac
+import json
 import math
+from pathlib import Path
 import re
 import time
 from collections import deque
@@ -40,6 +42,8 @@ _KNOWN_QUOTES = [
     "EUR",
 ]
 COMPLETED_TRADES_TTL_SECONDS = 120
+COMPLETED_TRADES_REFRESH_BUCKET_SECONDS = 3600
+_COMPLETED_TRADES_CACHE_FILE = Path(__file__).resolve().parents[1] / "storage" / "binance_completed_trades_cache.json"
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -60,6 +64,120 @@ def _extract_ban_until_ts(error_text: str) -> float | None:
         return ms / 1000.0
     except Exception:
         return None
+
+
+def _serialize_completed_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        for key in ("buy_time", "sell_time"):
+            dt = item.get(key)
+            if isinstance(dt, datetime):
+                item[key] = dt.isoformat()
+        out.append(item)
+    return out
+
+
+def _deserialize_completed_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        for key in ("buy_time", "sell_time"):
+            raw = item.get(key)
+            if isinstance(raw, str) and raw:
+                try:
+                    parsed = datetime.fromisoformat(raw)
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    item[key] = parsed
+                except Exception:
+                    item[key] = None
+        out.append(item)
+    return out
+
+
+def _load_completed_trades_disk_cache(cache_key: str, refresh_bucket: int) -> dict[str, Any] | None:
+    try:
+        if not _COMPLETED_TRADES_CACHE_FILE.exists():
+            return None
+        raw = json.loads(_COMPLETED_TRADES_CACHE_FILE.read_text(encoding="utf-8"))
+        if str(raw.get("key", "")) != str(cache_key):
+            return None
+        if int(raw.get("refresh_bucket", -1)) != int(refresh_bucket):
+            return None
+        payload = raw.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        payload = dict(payload)
+        payload["rows"] = _deserialize_completed_rows(payload.get("rows", []) or [])
+        cache_meta = dict(payload.get("cache", {}) or {})
+        cache_meta["source"] = "disk"
+        payload["cache"] = cache_meta
+        return payload
+    except Exception:
+        return None
+
+
+def _load_completed_trades_disk_cache_any(cache_key: str) -> dict[str, Any] | None:
+    try:
+        if not _COMPLETED_TRADES_CACHE_FILE.exists():
+            return None
+        raw = json.loads(_COMPLETED_TRADES_CACHE_FILE.read_text(encoding="utf-8"))
+        key_match = str(raw.get("key", "")) == str(cache_key)
+        payload = raw.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        payload = dict(payload)
+        payload["rows"] = _deserialize_completed_rows(payload.get("rows", []) or [])
+        cache_meta = dict(payload.get("cache", {}) or {})
+        cache_meta["source"] = "stale-disk" if key_match else "stale-disk-previous-config"
+        payload["cache"] = cache_meta
+        return payload
+    except Exception:
+        return None
+
+
+def _save_completed_trades_disk_cache(cache_key: str, refresh_bucket: int, payload: dict[str, Any]) -> None:
+    try:
+        _COMPLETED_TRADES_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        serializable = dict(payload)
+        serializable["rows"] = _serialize_completed_rows(payload.get("rows", []) or [])
+        wrapped = {
+            "key": cache_key,
+            "refresh_bucket": int(refresh_bucket),
+            "payload": serializable,
+        }
+        _COMPLETED_TRADES_CACHE_FILE.write_text(json.dumps(wrapped, ensure_ascii=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _get_recent_cached_symbols(limit: int = 40) -> list[str]:
+    try:
+        if not _COMPLETED_TRADES_CACHE_FILE.exists():
+            return []
+        raw = json.loads(_COMPLETED_TRADES_CACHE_FILE.read_text(encoding="utf-8"))
+        payload = raw.get("payload")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("rows", [])
+        if not isinstance(rows, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol", "")).upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            out.append(sym)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+    except Exception:
+        return []
 
 
 def is_configured() -> bool:
@@ -529,10 +647,18 @@ def get_open_orders(symbol: str | None = None) -> list[dict]:
     return []
 
 
-def _collect_candidate_trade_symbols(extra_symbols: list[str] | None = None, max_symbols: int = 12) -> list[str]:
+def _collect_candidate_trade_symbols(extra_symbols: list[str] | None = None, max_symbols: int = 30) -> list[str]:
     _load_symbol_filters()
     weighted_candidates: list[tuple[str, float]] = []
     dedupe: set[str] = set()
+
+    # Prefer symbols that appeared recently in cached completed trades.
+    recent_symbols = _get_recent_cached_symbols(limit=max(10, int(max_symbols)))
+    boost_weight = 1_000_000_000.0
+    for idx, sym in enumerate(recent_symbols):
+        if sym in _SYMBOL_FILTER_CACHE and sym not in dedupe:
+            dedupe.add(sym)
+            weighted_candidates.append((sym, boost_weight - float(idx)))
 
     for asset, amounts in get_balances().items():
         total = _to_float(amounts.get("free", 0.0)) + _to_float(amounts.get("locked", 0.0))
@@ -587,17 +713,42 @@ def get_completed_trades_from_binance(
     extra_symbols: list[str] | None = None,
     max_pages_per_symbol: int = 2,
     max_rows: int = 400,
-    max_symbols: int = 12,
+    max_symbols: int = 30,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     symbols = _collect_candidate_trade_symbols(extra_symbols=extra_symbols, max_symbols=max_symbols)
-    cache_key = "|".join(symbols)
+    cache_key = f"{'|'.join(symbols)}|pages={int(max_pages_per_symbol)}|symbols={int(max_symbols)}"
     now_ts = time.time()
+    refresh_bucket = int(now_ts // max(60, int(COMPLETED_TRADES_REFRESH_BUCKET_SECONDS)))
+
+    # Fast in-memory cache path.
     if (
+        not force_refresh
+        and
         _COMPLETED_TRADES_CACHE.get("data") is not None
         and _COMPLETED_TRADES_CACHE.get("key") == cache_key
+        and int(_COMPLETED_TRADES_CACHE.get("refresh_bucket", -1)) == refresh_bucket
         and float(_COMPLETED_TRADES_CACHE.get("expires_at", 0.0)) > now_ts
     ):
         return _COMPLETED_TRADES_CACHE["data"]
+
+    # Disk cache path (survives process restarts).
+    if not force_refresh:
+        disk_cached = _load_completed_trades_disk_cache(cache_key=cache_key, refresh_bucket=refresh_bucket)
+        if disk_cached is not None:
+            _COMPLETED_TRADES_CACHE["key"] = cache_key
+            _COMPLETED_TRADES_CACHE["data"] = disk_cached
+            _COMPLETED_TRADES_CACHE["refresh_bucket"] = refresh_bucket
+            _COMPLETED_TRADES_CACHE["expires_at"] = now_ts + 600.0
+            return disk_cached
+        if _BINANCE_BAN_UNTIL_TS > now_ts:
+            stale_disk = _load_completed_trades_disk_cache_any(cache_key=cache_key)
+            if stale_disk is not None:
+                _COMPLETED_TRADES_CACHE["key"] = cache_key
+                _COMPLETED_TRADES_CACHE["data"] = stale_disk
+                _COMPLETED_TRADES_CACHE["refresh_bucket"] = refresh_bucket
+                _COMPLETED_TRADES_CACHE["expires_at"] = now_ts + 600.0
+                return stale_disk
 
     rows: list[dict[str, Any]] = []
     symbols_with_trades: list[str] = []
@@ -721,6 +872,15 @@ def get_completed_trades_from_binance(
                 }
             )
 
+    if not rows:
+        stale_disk = _load_completed_trades_disk_cache_any(cache_key=cache_key)
+        if stale_disk is not None:
+            _COMPLETED_TRADES_CACHE["key"] = cache_key
+            _COMPLETED_TRADES_CACHE["data"] = stale_disk
+            _COMPLETED_TRADES_CACHE["refresh_bucket"] = refresh_bucket
+            _COMPLETED_TRADES_CACHE["expires_at"] = now_ts + 600.0
+            return stale_disk
+
     rows.sort(
         key=lambda r: (
             int(r["sell_time"].timestamp()) if isinstance(r.get("sell_time"), datetime) else 0,
@@ -738,6 +898,7 @@ def get_completed_trades_from_binance(
     losses = sum(1 for r in rows if _to_float(r.get("pnl_usdt", 0.0)) < 0)
     avg_hold_seconds = (sum(_to_float(r.get("hold_seconds", 0.0)) for r in rows) / len(rows)) if rows else 0.0
 
+    refreshed_at = datetime.now(timezone.utc)
     out = {
         "rows": rows,
         "summary": {
@@ -753,10 +914,17 @@ def get_completed_trades_from_binance(
         },
         "scanned_symbols": symbols,
         "symbols_with_trades": symbols_with_trades,
+        "cache": {
+            "refreshed_at": refreshed_at.isoformat(),
+            "refresh_bucket": refresh_bucket,
+            "source": "live",
+        },
     }
     _COMPLETED_TRADES_CACHE["key"] = cache_key
     _COMPLETED_TRADES_CACHE["data"] = out
-    _COMPLETED_TRADES_CACHE["expires_at"] = now_ts + float(COMPLETED_TRADES_TTL_SECONDS)
+    _COMPLETED_TRADES_CACHE["refresh_bucket"] = refresh_bucket
+    _COMPLETED_TRADES_CACHE["expires_at"] = now_ts + float(max(600, COMPLETED_TRADES_TTL_SECONDS))
+    _save_completed_trades_disk_cache(cache_key=cache_key, refresh_bucket=refresh_bucket, payload=out)
     return out
 
 

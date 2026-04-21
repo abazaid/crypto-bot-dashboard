@@ -11,6 +11,7 @@
 
 <section class="card deals-filter-card">
   <form method="get" action="/live/binance-completed-trades" class="deals-filters">
+    <input type="hidden" name="refresh" value="0" />
     <label>Performance Window
       <select name="window" onchange="this.form.submit()">
         {% for f in window_filters %}
@@ -22,13 +23,19 @@
       <input type="text" name="symbols" value="{{ symbols_input or '' }}" placeholder="Example: AMPUSDT,BTCUSDT" />
     </label>
     <button type="submit">Apply</button>
+    <button type="submit" onclick="this.form.refresh.value='1'">Refresh from Binance</button>
   </form>
+  <p class="muted-line">Cache source: {{ cache_info.source or '-' }} | Last refresh: {{ cache_info.refreshed_at or '-' }}</p>
 </section>
 
-<section class="cards four deals-cards">
+<section class="cards deals-cards">
   <article class="card stat glow deals-card good">
     <h3>Total Completed</h3>
     <p>{{ summary.total_trades }}</p>
+  </article>
+  <article class="card stat glow deals-card">
+    <h3>Invested Amount</h3>
+    <p>{{ "%.2f"|format(summary.total_buy_usdt) }} USDT</p>
   </article>
   <article class="card stat glow deals-card">
     <h3>Win Rate</h3>

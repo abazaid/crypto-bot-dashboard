@@ -2152,6 +2152,8 @@ async def live_trading_history(request: Request) -> HTMLResponse:
 async def live_binance_completed_trades(request: Request) -> HTMLResponse:
     window = str(request.query_params.get("window", "7d")).strip().lower()
     symbols_raw = str(request.query_params.get("symbols", "") or "").strip().upper()
+    refresh_flag = str(request.query_params.get("refresh", "0")).strip().lower()
+    force_refresh = refresh_flag in {"1", "true", "yes", "y"}
     extra_symbols = _parse_symbols_csv(symbols_raw)
     valid_windows = {x[0] for x in _BINANCE_WINDOWS}
     if window not in valid_windows:
@@ -2172,6 +2174,7 @@ async def live_binance_completed_trades(request: Request) -> HTMLResponse:
     }
     scanned_symbols: list[str] = []
     symbols_with_trades: list[str] = []
+    cache_info = {"source": "-", "refreshed_at": "-"}
 
     try:
         max_pages = 1 if window == "24h" else (2 if window == "7d" else 3)
@@ -2179,13 +2182,19 @@ async def live_binance_completed_trades(request: Request) -> HTMLResponse:
             extra_symbols=extra_symbols,
             max_pages_per_symbol=max_pages,
             max_rows=1200,
-            max_symbols=12,
+            max_symbols=30,
+            force_refresh=force_refresh,
         )
         scanned_symbols = completed.get("scanned_symbols", []) or []
         symbols_with_trades = completed.get("symbols_with_trades", []) or []
+        cache_info = completed.get("cache", {}) or cache_info
         all_rows = completed.get("rows", []) or []
         now_dt = datetime.now(timezone.utc)
         rows = [r for r in all_rows if _match_binance_window(r.get("sell_time"), window, now_dt)]
+        rows.sort(
+            key=lambda r: int(r["sell_time"].timestamp()) if isinstance(r.get("sell_time"), datetime) else 0,
+            reverse=True,
+        )
 
         total_buy = sum(float(r.get("buy_amount_usdt", 0.0) or 0.0) for r in rows)
         total_sell = sum(float(r.get("sell_amount_usdt", 0.0) or 0.0) for r in rows)
@@ -2228,6 +2237,7 @@ async def live_binance_completed_trades(request: Request) -> HTMLResponse:
             error=error,
             scanned_symbols=scanned_symbols,
             symbols_with_trades=symbols_with_trades,
+            cache_info=cache_info,
         ),
     )
 
