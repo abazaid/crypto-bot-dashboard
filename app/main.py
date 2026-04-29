@@ -1377,6 +1377,7 @@ async def paper_accumulation_edit(
     dca_allocation_pct: str = Form(...),
     partial_tp_pct: str = Form(...),
     partial_sell_pct: str = Form(...),
+    total_capital_usdt: str = Form(None),
 ) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -1387,6 +1388,13 @@ async def paper_accumulation_edit(
         plan.dca_allocation_pct = max(1.0, _safe_float_or_default(dca_allocation_pct, float(plan.dca_allocation_pct)))
         plan.partial_tp_pct = max(0.0, _safe_float_or_default(partial_tp_pct, float(plan.partial_tp_pct or 0)))
         plan.partial_sell_pct = max(0.0, min(95.0, _safe_float_or_default(partial_sell_pct, float(plan.partial_sell_pct or 0))))
+        if total_capital_usdt is not None and total_capital_usdt.strip():
+            new_total = _safe_float_or_default(total_capital_usdt, float(plan.total_capital_usdt or 0))
+            old_total = float(plan.total_capital_usdt or 0)
+            diff = new_total - old_total
+            plan.total_capital_usdt = new_total
+            new_reserved = float(plan.reserved_cash_usdt or 0) + diff
+            plan.reserved_cash_usdt = max(0.0, new_reserved)
         db.commit()
         return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
     finally:
@@ -2000,6 +2008,7 @@ async def live_accumulation_edit(
     dca_allocation_pct: str = Form(...),
     partial_tp_pct: str = Form(...),
     partial_sell_pct: str = Form(...),
+    total_capital_usdt: str = Form(None),
 ) -> RedirectResponse:
     db = SessionLocal()
     try:
@@ -2010,6 +2019,13 @@ async def live_accumulation_edit(
         plan.dca_allocation_pct = max(1.0, _safe_float_or_default(dca_allocation_pct, float(plan.dca_allocation_pct)))
         plan.partial_tp_pct = max(0.0, _safe_float_or_default(partial_tp_pct, float(plan.partial_tp_pct or 0)))
         plan.partial_sell_pct = max(0.0, min(95.0, _safe_float_or_default(partial_sell_pct, float(plan.partial_sell_pct or 0))))
+        if total_capital_usdt is not None and total_capital_usdt.strip():
+            new_total = _safe_float_or_default(total_capital_usdt, float(plan.total_capital_usdt or 0))
+            old_total = float(plan.total_capital_usdt or 0)
+            diff = new_total - old_total
+            plan.total_capital_usdt = new_total
+            new_reserved = float(plan.reserved_cash_usdt or 0) + diff
+            plan.reserved_cash_usdt = max(0.0, new_reserved)
         db.commit()
         return RedirectResponse(f"/live/accumulation/{plan_id}", status_code=303)
     finally:

@@ -155,6 +155,9 @@
           <label>Partial Sell % of Qty
             <input name="partial_sell_pct" type="number" step="1" min="0" max="95" value="{{ '%.0f'|format(row.plan.partial_sell_pct or 0) }}">
           </label>
+          <label>Total Capital (USDT)
+            <input name="total_capital_usdt" type="number" step="0.01" min="0" value="{{ '%.2f'|format(row.plan.total_capital_usdt or 0) }}">
+          </label>
           <div class="form-actions" style="grid-column: 1 / -1;">
             <button class="btn" type="submit">Save Changes</button>
           </div>
