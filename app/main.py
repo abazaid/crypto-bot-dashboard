@@ -170,6 +170,12 @@ def _pnl_pct(invested: float, pnl: float) -> float:
     return (pnl / invested) * 100.0
 
 
+def _position_reconstructed_invested(pos: Position, dca_usdt: float = 0.0) -> float:
+    initial_cost = float(pos.initial_price or 0.0) * float(pos.initial_qty or 0.0)
+    fees = float(pos.open_fee_usdt or 0.0)
+    return max(0.0, initial_cost + float(dca_usdt or 0.0) + fees)
+
+
 def _safe_float(value: str | None, default: float | None = None) -> float | None:
     if value is None or str(value).strip() == "":
         return default
@@ -273,6 +279,7 @@ def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> d
     position_ids = [p.id for p in closed_positions]
     dca_total: dict[int, int] = {}
     dca_done: dict[int, int] = {}
+    dca_usdt: dict[int, float] = {}
     if position_ids:
         states = db.query(PositionDcaState).filter(PositionDcaState.position_id.in_(position_ids)).all()
         for st in states:
@@ -280,6 +287,7 @@ def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> d
             dca_total[pid] = int(dca_total.get(pid, 0)) + 1
             if bool(st.executed):
                 dca_done[pid] = int(dca_done.get(pid, 0)) + 1
+                dca_usdt[pid] = float(dca_usdt.get(pid, 0.0)) + float(st.executed_usdt or 0.0)
 
     base_rows = []
     now_dt = datetime.utcnow()
@@ -287,6 +295,8 @@ def _history_context(db, mode: str, date_filter: str, strategy_filter: str) -> d
         invested = float(p.total_invested_usdt or 0.0)
         pnl = float(p.realized_pnl_usdt or 0.0)
         fees = float(p.open_fee_usdt or 0.0) + float(p.close_fee_usdt or 0.0)
+        if invested <= 0 and p.realized_pnl_usdt is not None:
+            invested = _position_reconstructed_invested(p, dca_usdt.get(p.id, 0.0))
         exit_value = float((p.close_price or 0.0) * (p.total_qty or 0.0))
         if p.status == "closed" and p.realized_pnl_usdt is not None:
             # Keep history consistent with realized PnL accounting.
