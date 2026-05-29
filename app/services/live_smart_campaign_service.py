@@ -11,10 +11,7 @@ Safety rules:
 """
 from __future__ import annotations
 
-import json
-import logging
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -36,8 +33,6 @@ logger = logging.getLogger(__name__)
 
 # Debounce: only log SKIP_BALANCE once per 5 minutes per campaign
 _last_balance_warn: dict[int, datetime] = {}
-# Debounce: only warn about invalid symbols once per hour
-_warned_invalid_symbols: set[str] = set()
 
 
 # ── Logging helper ────────────────────────────────────────────────────────────
@@ -74,32 +69,11 @@ def _log(
     logger.info("[LiveSmart] %s | %s", event, message)
 
 
-# ── Advisor data ───────────────────────────────────────────────────────────────
+# ── Advisor data (deprecated: advisor module removed) ─────────────────────────
 
 def get_advisor_recommendations(feature_version: str = "v1") -> list[dict]:
-    try:
-        from advisor.config import REPORT_DIR
-        # Try version-specific file first, fall back to latest.json
-        versioned = Path(REPORT_DIR) / f"latest_{feature_version}.json"
-        latest = versioned if versioned.exists() else Path(REPORT_DIR) / "latest.json"
-        if not latest.exists():
-            return []
-        with open(latest) as f:
-            data = json.load(f)
-        recs = data.get("recommendations", [])
-        # Filter out invalid symbols (non-ASCII / garbage like 币安人生USDT)
-        valid = []
-        for r in recs:
-            sym = r.get("symbol", "")
-            if sym and sym.isascii() and sym.isalnum() and sym.endswith("USDT"):
-                valid.append(r)
-            elif sym not in _warned_invalid_symbols:
-                _warned_invalid_symbols.add(sym)
-                logger.warning("LiveSmart: skipping invalid symbol %r (suppressing future warnings)", sym)
-        return valid
-    except Exception as e:
-        logger.warning("LiveSmart: could not load advisor recs: %s", e)
-        return []
+    """Advisor module removed — returns empty list."""
+    return []
 
 
 # ── Open position ─────────────────────────────────────────────────────────────

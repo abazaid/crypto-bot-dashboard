@@ -92,7 +92,6 @@ from app.services.smart_campaign_service import (
     calculate_required_capital,
     campaign_summary,
     create_campaign,
-    get_advisor_recommendations,
     manual_sell as smart_manual_sell,
     resume_campaign,
     run_smart_cycle,
@@ -4549,8 +4548,7 @@ async def api_position_dca(position_id: int) -> JSONResponse:
 @app.get("/api/smart-campaign/capital")
 async def api_smart_capital(n: int = 5, entry: float = 100.0) -> JSONResponse:
     """Calculate required capital for N symbols with given entry amount."""
-    recs = get_advisor_recommendations()
-    data = calculate_required_capital(entry, n, recs)
+    data = calculate_required_capital(entry, n, [])
     return JSONResponse(data)
 
 
@@ -4921,6 +4919,4 @@ async def api_live_smart_delete(campaign_id: int) -> JSONResponse:
 @app.get("/api/live-smart/capital")
 async def api_live_capital(n: int = 5, entry: float = 50.0):
     from app.services.smart_campaign_service import calculate_required_capital
-    from app.services.live_smart_campaign_service import get_advisor_recommendations
-    recs = get_advisor_recommendations()
-    return JSONResponse(calculate_required_capital(entry, n, recs))
+    return JSONResponse(calculate_required_capital(entry, n, []))

@@ -9,10 +9,7 @@ Logic:
 """
 from __future__ import annotations
 
-import json
-import logging
 from datetime import datetime
-from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -22,23 +19,11 @@ from app.services.binance_public import get_prices
 logger = logging.getLogger(__name__)
 
 
-# ── Advisor data ───────────────────────────────────────────────────────────────
+# ── Advisor data (deprecated: advisor module removed) ─────────────────────────
 
 def get_advisor_recommendations(feature_version: str = "v1") -> list[dict]:
-    """Load latest combined recommendations from advisor latest_{version}.json."""
-    try:
-        from advisor.config import REPORT_DIR
-        # Try version-specific file first, fall back to latest.json
-        versioned = Path(REPORT_DIR) / f"latest_{feature_version}.json"
-        latest = versioned if versioned.exists() else Path(REPORT_DIR) / "latest.json"
-        if not latest.exists():
-            return []
-        with open(latest) as f:
-            data = json.load(f)
-        return data.get("recommendations", [])
-    except Exception as e:
-        logger.warning("SmartCampaign: could not load advisor recs: %s", e)
-        return []
+    """Advisor module removed — returns empty list."""
+    return []
 
 
 # ── Capital calculator ────────────────────────────────────────────────────────
