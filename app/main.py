@@ -87,7 +87,6 @@ from app.services.grid_trading import (
 )
 from app.models.paper_v2 import GridBot, GridTrade
 from app.services.forecasting import get_forecasts_for_symbols, get_or_build_forecast
-from advisor import runner as advisor_runner
 from app.models.smart_campaign import SmartCampaign, SmartPosition
 from app.services.smart_campaign_service import (
     calculate_required_capital,
@@ -1004,95 +1003,6 @@ async def on_startup() -> None:
         max_instances=1,
     )
 
-    # ── Advisor: auto-run daily at 08:00 UTC ──────────────────────────────
-    def _scheduled_advisor() -> None:
-        state = advisor_runner.get_state()
-        if state["status"] == "running":
-            logger.info("Advisor: skipping scheduled run — already running")
-            return
-        logger.info("Advisor: starting scheduled daily run")
-        advisor_runner.start(n_symbols=50, n_trials=300)
-
-    scheduler.add_job(
-        _scheduled_advisor,
-        "cron",
-        hour=8,
-        minute=0,
-        timezone="UTC",
-        id="advisor_daily",
-        replace_existing=True,
-    )
-
-    # ── Advisor: market volatility watcher (every 30 min) ─────────────────
-    _btc_price_history: list[tuple[datetime, float]] = []  # (timestamp, price)
-
-    def _advisor_market_watcher() -> None:
-        """
-        Checks BTC price every 30 min. Triggers an emergency advisor re-run if:
-          1. BTC drops >4% in 4 hours  (market crash protection)
-          2. BTC spikes >5% in 4 hours (euphoria/pump detection)
-          3. 4h ATR (volatility) doubles vs the previous 24h baseline
-        """
-        try:
-            from app.services.binance_public import get_prices
-            prices = get_prices(["BTCUSDT"])
-            btc_price = prices.get("BTCUSDT")
-            if not btc_price:
-                return
-
-            now = datetime.utcnow()
-            _btc_price_history.append((now, btc_price))
-
-            # Keep only last 25 readings (~12.5 hours at 30-min intervals)
-            cutoff = now - timedelta(hours=13)
-            while _btc_price_history and _btc_price_history[0][0] < cutoff:
-                _btc_price_history.pop(0)
-
-            if len(_btc_price_history) < 8:  # Need at least 4h of data
-                return
-
-            # 4-hour window (8 readings × 30 min)
-            price_4h_ago = _btc_price_history[-8][1]
-            change_4h = (btc_price - price_4h_ago) / price_4h_ago * 100
-
-            # 24h ATR approximation: std of last 24 readings vs last 8
-            if len(_btc_price_history) >= 24:
-                prices_24h = [p for _, p in _btc_price_history[-24:]]
-                prices_4h  = [p for _, p in _btc_price_history[-8:]]
-                import statistics
-                vol_24h = statistics.stdev(prices_24h) / (sum(prices_24h) / len(prices_24h)) * 100
-                vol_4h  = statistics.stdev(prices_4h)  / (sum(prices_4h)  / len(prices_4h))  * 100
-                volatility_spike = vol_4h > vol_24h * 2.0
-            else:
-                volatility_spike = False
-
-            state = advisor_runner.get_state()
-            if state["status"] == "running":
-                return
-
-            reason = None
-            if change_4h <= -4.0:
-                reason = f"BTC crashed {change_4h:.1f}% in 4h — emergency re-analysis"
-            elif change_4h >= 5.0:
-                reason = f"BTC pumped +{change_4h:.1f}% in 4h — re-analyzing opportunities"
-            elif volatility_spike:
-                reason = f"Volatility spike detected (4h vol {vol_4h:.2f}% vs 24h {vol_24h:.2f}%) — re-analyzing"
-
-            if reason:
-                logger.warning("Advisor market watcher triggered: %s", reason)
-                advisor_runner.start(n_symbols=50, n_trials=50)
-
-        except Exception as e:
-            logger.warning("Advisor market watcher error: %s", e)
-
-    scheduler.add_job(
-        _advisor_market_watcher,
-        "interval",
-        minutes=30,
-        id="advisor_market_watcher",
-        replace_existing=True,
-    )
-
     # ── Smart Campaign cycle (every 10s) ─────────────────────────────────
     def _scheduled_smart_campaign() -> None:
         db = SessionLocal()
@@ -1126,40 +1036,6 @@ async def on_startup() -> None:
         "interval",
         seconds=10,
         id="live_smart_campaign_cycle",
-        replace_existing=True,
-    )
-
-    # ── Advisor: hourly quick ML refresh (V1) ────────────────────────────
-    def _scheduled_advisor_refresh() -> None:
-        state = advisor_runner.get_state()
-        if state["status"] == "running" or state["refresh_status"] == "running":
-            return
-        if state["status"] == "done":
-            logger.info("Advisor V1: starting hourly quick ML refresh")
-            advisor_runner.start_refresh()
-
-    scheduler.add_job(
-        _scheduled_advisor_refresh,
-        "interval",
-        hours=1,
-        id="advisor_hourly_refresh",
-        replace_existing=True,
-    )
-
-    # ── Advisor: hourly quick ML refresh (V2) ────────────────────────────
-    def _scheduled_advisor_refresh_v2() -> None:
-        state = advisor_runner.get_state_v2()
-        if state["status"] == "running" or state["refresh_status"] == "running":
-            return
-        if state["status"] == "done":
-            logger.info("Advisor V2: starting hourly quick ML refresh")
-            advisor_runner.start_refresh_v2()
-
-    scheduler.add_job(
-        _scheduled_advisor_refresh_v2,
-        "interval",
-        hours=1,
-        id="advisor_hourly_refresh_v2",
         replace_existing=True,
     )
 
@@ -4668,33 +4544,6 @@ async def api_position_dca(position_id: int) -> JSONResponse:
         db.close()
 
 
-# ── Advisor routes ────────────────────────────────────────────────────────────
-
-@app.get("/advisor", response_class=HTMLResponse)
-async def advisor_page(request: Request):
-    """Advisor dashboard — ML predictions + Hyperopt results."""
-    state = advisor_runner.get_state()
-    return templates.TemplateResponse("advisor.html", {
-        "request": request,
-        "state":   state,
-    })
-
-
-@app.post("/advisor/run")
-async def advisor_run(
-    request: Request,
-    symbols:         int = Form(50),
-    trials:          int = Form(100),
-    feature_version: str = Form("v1"),
-):
-    """Trigger advisor run in background."""
-    version = feature_version if feature_version in ("v1", "v2") else "v1"
-    started = advisor_runner.start(n_symbols=symbols, n_trials=trials, feature_version=version)
-    if not started:
-        return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
-    return JSONResponse({"ok": True, "msg": f"Started: {symbols} symbols, {trials} trials, features={version.upper()}"})
-
-
 # ── Smart Campaign routes ──────────────────────────────────────────────────────
 
 @app.get("/api/smart-campaign/capital")
@@ -4883,67 +4732,9 @@ async def api_smart_sell(position_id: int) -> JSONResponse:
         db.close()
 
 
-@app.post("/advisor/refresh")
-async def advisor_refresh():
-    """Trigger a quick ML-only refresh (no Hyperopt, ~1-2 min)."""
-    started = advisor_runner.start_refresh()
-    if not started:
-        return JSONResponse({"ok": False, "msg": "Already running"}, status_code=409)
-    return JSONResponse({"ok": True, "msg": "Quick ML refresh started"})
-
-
-@app.post("/advisor/refresh-v2")
-async def advisor_refresh_v2():
-    """Trigger a quick ML-only V2 refresh."""
-    started = advisor_runner.start_refresh_v2()
-    if not started:
-        return JSONResponse({"ok": False, "msg": "V2 refresh already running"}, status_code=409)
-    return JSONResponse({"ok": True, "msg": "V2 Quick ML refresh started"})
-
-
-@app.get("/advisor/status")
-async def advisor_status():
-    """Polling endpoint — returns current advisor state as JSON."""
-    return JSONResponse(advisor_runner.get_state())
-
-
-@app.post("/advisor/run-v2")
-async def advisor_run_v2(
-    symbols: int = Form(50),
-    trials:  int = Form(100),
-):
-    """Trigger V2 advisor run in background (separate from V1)."""
-    started = advisor_runner.start_v2(n_symbols=symbols, n_trials=trials)
-    if not started:
-        return JSONResponse({"ok": False, "msg": "V2 analysis already running"}, status_code=409)
-    return JSONResponse({"ok": True, "msg": f"V2 started: {symbols} symbols, {trials} trials"})
-
-
-@app.get("/advisor/status-v2")
-async def advisor_status_v2():
-    """Polling endpoint for V2 advisor state."""
-    return JSONResponse(advisor_runner.get_state_v2())
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # LIVE SMART CAMPAIGN ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
-
-@app.get("/live-advisor", response_class=HTMLResponse)
-async def live_advisor_page(request: Request):
-    from app.services.binance_live import is_configured, get_usdt_free
-    configured = is_configured()
-    balance = 0.0
-    if configured:
-        try:
-            balance = get_usdt_free()
-        except Exception:
-            pass
-    return templates.TemplateResponse(
-        "live_advisor.html",
-        {"request": request, "configured": configured, "usdt_balance": round(balance, 2)},
-    )
-
 
 @app.get("/api/live-smart/balance")
 def api_live_balance():
