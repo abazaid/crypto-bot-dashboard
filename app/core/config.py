@@ -24,6 +24,10 @@ class Settings:
     binance_api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
     binance_api_key_2 = os.getenv("BINANCE_API_KEY_2", "").strip()
     binance_api_secret_2 = os.getenv("BINANCE_API_SECRET_2", "").strip()
+    kucoin_api_key_1 = os.getenv("KUCOIN_API_KEY_1", "").strip()
+    kucoin_api_secret_1 = os.getenv("KUCOIN_API_SECRET_1", "").strip()
+    kucoin_api_passphrase_1 = os.getenv("KUCOIN_API_PASSPHRASE_1", "").strip()
+    kucoin_api_base_1 = os.getenv("KUCOIN_API_BASE_1", "https://api.kucoin.com").strip().rstrip("/")
     live_entry_limit_buffer_pct = float(os.getenv("LIVE_ENTRY_LIMIT_BUFFER_PCT", "0.03"))
     live_entry_limit_fallback_market = os.getenv("LIVE_ENTRY_LIMIT_FALLBACK_MARKET", "true").lower() == "true"
     forecast_interval = os.getenv("FORECAST_INTERVAL", "4h")

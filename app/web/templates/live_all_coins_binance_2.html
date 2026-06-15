@@ -7,7 +7,8 @@
     <a class="side-link" href="/live/create">Create Campaign</a>
     <a class="side-link" href="/live/smart-create">Smart DCA</a>
     <a class="side-link" href="/live/all-coins">All Coins</a>
-    <a class="side-link active" href="/live/all-coins-binance-2">ALL coin Binance 2</a>
+    <a class="side-link {{ 'active' if active_page == 'live_all_coins_binance_2' else '' }}" href="/live/all-coins-binance-2">ALL coin Binance 2</a>
+    <a class="side-link {{ 'active' if active_page == 'live_all_coins_kucoin_1' else '' }}" href="/live/all-coins-kucoin-1">ALL coin KuCoin 1</a>
     <a class="side-link" href="/live/accumulation">Accumulation Bot</a>
     <a class="side-link" href="/live/backtest">Smart Backtest</a>
     <a class="side-link" href="/live/history">Live History</a>
@@ -15,10 +16,10 @@
 
   <div class="paper-main">
     <section class="hero">
-      <h1>ALL coin Binance 2</h1>
-      <p>All spot coins in Binance account 2 with average cost, current price, PnL, and manual close.</p>
+      <h1>{{ all_coins_title|default("ALL coin Binance 2") }}</h1>
+      <p>{{ all_coins_description|default("All spot coins in Binance account 2 with average cost, current price, PnL, and manual close.") }}</p>
       {% if all_coins_error %}
-      <p class="pnl-neg">Binance API error: {{ all_coins_error }}</p>
+      <p class="pnl-neg">{{ all_coins_error_label|default("Binance API error") }}: {{ all_coins_error }}</p>
       {% endif %}
     </section>
 
@@ -46,7 +47,7 @@
     <section class="card">
       <h2>Forecast Search</h2>
       <p class="muted-line">Forecast is cached and built in batches (current build per request: {{ forecast_build_per_request }}). Not all rows appear immediately on first refresh.</p>
-      <form method="get" action="/live/all-coins-binance-2" class="inline-form" style="margin-bottom: 10px;">
+      <form method="get" action="{{ actions_prefix|default('/live/all-coins-binance-2') }}" class="inline-form" style="margin-bottom: 10px;">
         <input type="text" name="symbol" value="{{ forecast_symbol }}" placeholder="BTC or BTCUSDT" required>
         <button type="submit">Analyze</button>
         {% if forecast_symbol %}
@@ -103,7 +104,7 @@
               <th class="sortable" data-sort-key="market_value" data-sort-type="number">Market Value</th>
               <th class="sortable" data-sort-key="pnl" data-sort-type="number">PnL</th>
               <th class="sortable" data-sort-key="forecast_move" data-sort-type="number">Forecast</th>
-              <th class="sortable" data-sort-key="tp_price" data-sort-type="number">TP (Binance)</th>
+              <th class="sortable" data-sort-key="tp_price" data-sort-type="number">{{ all_coins_tp_label|default("TP (Binance)") }}</th>
               <th>Sell Orders</th>
               <th class="sortable" data-sort-key="status" data-sort-type="text">Status</th>
               <th>Close</th>
@@ -301,7 +302,7 @@
         throw new Error(data.error || `Request failed with ${res.status}`);
       }
       if (data.warming) {
-        if (status) status.textContent = "Preparing Binance cache in background...";
+        if (status) status.textContent = {{ all_coins_warming_label|default("Preparing Binance cache in background...")|tojson }};
         window.setTimeout(loadAllCoinsData, 3000);
         return;
       }

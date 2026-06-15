@@ -49,6 +49,14 @@ from app.services.binance_live_2 import (
     place_limit_sell_qty as place_limit_sell_qty_2,
     place_market_sell_qty as place_market_sell_qty_2,
 )
+from app.services.kucoin_live_1 import (
+    cancel_order as cancel_order_kucoin_1,
+    get_open_orders as get_open_orders_kucoin_1,
+    list_spot_coin_positions as list_spot_coin_positions_kucoin_1,
+    normalize_qty_for_sell as normalize_qty_for_sell_kucoin_1,
+    place_limit_sell_qty as place_limit_sell_qty_kucoin_1,
+    place_market_sell_qty as place_market_sell_qty_kucoin_1,
+)
 from app.services.paper_trading import (
     add_log,
     build_smart_dca_plan,
@@ -2386,6 +2394,13 @@ def _warm_all_coins_caches() -> None:
         include_forecasts=True,
         cache_ttl_seconds=ttl,
     )
+    _refresh_all_coins_cache(
+        cache_key="live_all_coins_kucoin_1_full",
+        list_positions_fn=list_spot_coin_positions_kucoin_1,
+        get_open_orders_fn=get_open_orders_kucoin_1,
+        include_forecasts=True,
+        cache_ttl_seconds=ttl,
+    )
 
 
 @app.get("/live/all-coins", response_class=HTMLResponse)
@@ -3152,6 +3167,336 @@ async def live_all_coins_binance_2_close(symbol: str) -> RedirectResponse:
         return RedirectResponse("/live/all-coins-binance-2", status_code=303)
     finally:
         _clear_all_coins_cached_payload("live_all_coins_binance_2_full")
+        db.close()
+
+
+@app.get("/live/all-coins-kucoin-1", response_class=HTMLResponse)
+async def live_all_coins_kucoin_1_page(
+    request: Request,
+    symbol: str = "",
+    refresh_forecast: int = 0,
+) -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        error = None
+        symbol_query = str(symbol or "").upper().strip()
+        forecast_card = None
+        data = _empty_all_coins_data()
+        data["summary"] = _get_all_coins_cached_summary("live_all_coins_kucoin_1_full")
+        try:
+            if symbol_query:
+                qsym = symbol_query if symbol_query.endswith("USDT") else f"{symbol_query}USDT"
+                try:
+                    forecast_card = get_or_build_forecast(
+                        db,
+                        qsym,
+                        force_refresh=bool(int(refresh_forecast)),
+                        interval=settings.forecast_interval,
+                        horizon_days=settings.forecast_horizon_days,
+                    )
+                except Exception as e:
+                    forecast_card = {"symbol": qsym, "error": str(e)}
+        except Exception as e:
+            error = str(e)
+        logs = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.event_type.like("KUCOIN1_ALLCOIN_%"))
+            .order_by(desc(ActivityLog.id))
+            .limit(60)
+            .all()
+        )
+        return templates.TemplateResponse(
+            "live_all_coins_binance_2.html",
+            _context(
+                "live_all_coins_kucoin_1",
+                request=request,
+                data=data,
+                logs=logs,
+                all_coins_error=error,
+                all_coins_title="ALL coin KuCoin 1",
+                all_coins_description="All spot coins in KuCoin account 1 with average cost, current price, PnL, and manual close.",
+                all_coins_error_label="KuCoin API error",
+                all_coins_tp_label="TP (KuCoin)",
+                all_coins_warming_label="Preparing KuCoin cache in background...",
+                forecast_symbol=symbol_query,
+                forecast_card=forecast_card,
+                forecast_build_per_request=max(1, int(settings.forecast_build_per_request)),
+                data_api_url="/live/all-coins-kucoin-1/api/data",
+                actions_prefix="/live/all-coins-kucoin-1",
+            ),
+        )
+    finally:
+        db.close()
+
+
+@app.get("/live/all-coins-kucoin-1/api/prices")
+async def live_all_coins_kucoin_1_prices_api() -> JSONResponse:
+    try:
+        data = list_spot_coin_positions_kucoin_1(cache_ttl_seconds=10)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    tp_map: dict[str, dict] = {}
+    try:
+        tp_map = _build_tp_map_from_orders(get_open_orders_kucoin_1())
+    except Exception:
+        tp_map = {}
+
+    rows = []
+    for r in data.get("rows", []):
+        sym = str(r.get("symbol", "")).upper()
+        tp = tp_map.get(sym)
+        rows.append(
+            {
+                "symbol": sym,
+                "avg_entry": float(r.get("avg_entry", 0.0)),
+                "invested": float(r.get("invested", 0.0)),
+                "price": float(r.get("price", 0.0)),
+                "qty_total": float(r.get("qty_total", 0.0)),
+                "qty_free": float(r.get("qty_free", 0.0)),
+                "market_value": float(r.get("market_value", 0.0)),
+                "pnl": float(r.get("pnl", 0.0)),
+                "pnl_pct": float(r.get("pnl_pct", 0.0)),
+                "status": str(r.get("status", "flat")),
+                "tp_price": float(tp["price"]) if tp else None,
+                "tp_qty": float(tp["qty"]) if tp else None,
+                "tp_count": int(tp["count"]) if tp else 0,
+            }
+        )
+
+    summary = data.get("summary", {})
+    return JSONResponse(
+        {
+            "rows": rows,
+            "summary": {
+                "coins_count": int(summary.get("coins_count", 0)),
+                "invested_total": float(summary.get("invested_total", 0.0)),
+                "market_total": float(summary.get("market_total", 0.0)),
+                "pnl_total": float(summary.get("pnl_total", 0.0)),
+                "pnl_pct": float(summary.get("pnl_pct", 0.0)),
+            },
+        }
+    )
+
+
+@app.get("/live/all-coins-kucoin-1/api/data")
+async def live_all_coins_kucoin_1_data_api() -> JSONResponse:
+    cached = _get_all_coins_cached_payload("live_all_coins_kucoin_1_full", max_age_seconds=30)
+    if cached is not None:
+        return JSONResponse(cached)
+    stale = _get_all_coins_any_cached_payload("live_all_coins_kucoin_1_full")
+    _start_all_coins_cache_refresh(
+        cache_key="live_all_coins_kucoin_1_full",
+        list_positions_fn=list_spot_coin_positions_kucoin_1,
+        get_open_orders_fn=get_open_orders_kucoin_1,
+        include_forecasts=True,
+        cache_ttl_seconds=max(60, int(settings.medium_refresh_seconds)),
+    )
+    if stale is not None:
+        return JSONResponse(stale)
+    return JSONResponse({"rows": [], "summary": _empty_all_coins_data()["summary"], "warming": True}, status_code=202)
+
+
+@app.post("/live/all-coins-kucoin-1/{symbol}/tp")
+async def live_all_coins_kucoin_1_set_tp(symbol: str, tp_price: str = Form(...)) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        target = float(_safe_float(tp_price, 0.0) or 0.0)
+        if not sym.endswith("USDT") or len(sym) < 7 or target <= 0:
+            add_live_log(db, "KUCOIN1_ALLCOIN_TP_FAIL", sym or "-", "invalid_symbol_or_tp")
+            db.commit()
+            return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+
+        open_orders = get_open_orders_kucoin_1(sym)
+        canceled = 0
+        for o in open_orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            oid = str(o.get("orderId", "") or "")
+            if side == "SELL" and otype == "LIMIT" and status in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"} and oid:
+                try:
+                    cancel_order_kucoin_1(sym, oid)
+                    canceled += 1
+                except Exception:
+                    continue
+
+        tradable_qty, min_qty, _ = normalize_qty_for_sell_kucoin_1(sym, 1e18, cap_to_free_balance=True)
+        if tradable_qty <= 0 or tradable_qty < min_qty:
+            add_live_log(
+                db,
+                "KUCOIN1_ALLCOIN_TP_SKIP",
+                sym,
+                (
+                    f"skip_set_tp | reason=below_min_lot | tradable={tradable_qty:.8f} | "
+                    f"min_qty={min_qty:.8f} | canceled_old={canceled}"
+                ),
+            )
+            db.commit()
+            return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+
+        order = place_limit_sell_qty_kucoin_1(sym, tradable_qty, target)
+        add_live_log(
+            db,
+            "KUCOIN1_ALLCOIN_TP_SET",
+            sym,
+            (
+                f"Set TP from All Coins KuCoin 1 | TP={target:.8f} | Qty={tradable_qty:.8f} | "
+                f"OrderId={order.get('order_id', '')} | canceled_old={canceled}"
+            ),
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+    except Exception as e:
+        add_live_log(db, "KUCOIN1_ALLCOIN_TP_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+    finally:
+        _clear_all_coins_cached_payload("live_all_coins_kucoin_1_full")
+        db.close()
+
+
+@app.post("/live/all-coins-kucoin-1/{symbol}/cancel-sell-orders")
+async def live_all_coins_kucoin_1_cancel_symbol_sell_orders(symbol: str) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        if not sym.endswith("USDT") or len(sym) < 7:
+            add_live_log(db, "KUCOIN1_ALLCOIN_CANCEL_SELL_FAIL", sym or "-", "invalid_symbol")
+            db.commit()
+            return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+
+        canceled = 0
+        failed = 0
+        for o in get_open_orders_kucoin_1(sym):
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            oid = str(o.get("orderId", "") or "")
+            if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"} or not oid:
+                continue
+            try:
+                cancel_order_kucoin_1(sym, oid)
+                canceled += 1
+            except Exception:
+                failed += 1
+
+        add_live_log(
+            db,
+            "KUCOIN1_ALLCOIN_CANCEL_SELL",
+            sym,
+            f"Canceled SELL LIMIT orders for symbol={sym} | canceled={canceled} | failed={failed}",
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+    except Exception as e:
+        add_live_log(db, "KUCOIN1_ALLCOIN_CANCEL_SELL_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+    finally:
+        _clear_all_coins_cached_payload("live_all_coins_kucoin_1_full")
+        db.close()
+
+
+@app.post("/live/all-coins-kucoin-1/cancel-all-sell-orders")
+async def live_all_coins_kucoin_1_cancel_all_sell_orders() -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        canceled = 0
+        failed = 0
+        try:
+            orders = get_open_orders_kucoin_1()
+        except Exception as e:
+            add_live_log(db, "KUCOIN1_ALLCOIN_CANCEL_SELLS_FAIL", "-", f"error={e}")
+            db.commit()
+            return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+
+        for o in orders:
+            side = str(o.get("side", "")).upper()
+            otype = str(o.get("type", "")).upper()
+            status = str(o.get("status", "")).upper()
+            sym = str(o.get("symbol", "")).upper()
+            oid = str(o.get("orderId", "") or "")
+            if side != "SELL" or otype != "LIMIT" or status not in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"} or not oid:
+                continue
+            try:
+                cancel_order_kucoin_1(sym, oid)
+                canceled += 1
+            except Exception:
+                failed += 1
+
+        add_live_log(
+            db,
+            "KUCOIN1_ALLCOIN_CANCEL_SELLS",
+            "-",
+            f"Canceled SELL LIMIT orders={canceled} | failed={failed}",
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+    finally:
+        _clear_all_coins_cached_payload("live_all_coins_kucoin_1_full")
+        db.close()
+
+
+@app.post("/live/all-coins-kucoin-1/{symbol}/close")
+async def live_all_coins_kucoin_1_close(symbol: str) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        sym = str(symbol or "").strip().upper()
+        if not sym.endswith("USDT") or len(sym) < 7:
+            add_live_log(db, "KUCOIN1_ALLCOIN_CLOSE_FAIL", sym or "-", "invalid_symbol")
+            db.commit()
+            return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+
+        try:
+            for o in get_open_orders_kucoin_1(sym):
+                side = str(o.get("side", "")).upper()
+                status = str(o.get("status", "")).upper()
+                oid = str(o.get("orderId", "") or "")
+                if side == "SELL" and status in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"} and oid:
+                    try:
+                        cancel_order_kucoin_1(sym, oid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        tradable_qty, min_qty, _ = normalize_qty_for_sell_kucoin_1(sym, 1e18, cap_to_free_balance=True)
+        if tradable_qty <= 0 or tradable_qty < min_qty:
+            add_live_log(
+                db,
+                "KUCOIN1_ALLCOIN_CLOSE_SKIP",
+                sym,
+                (
+                    f"skip_manual_close | reason=below_min_lot | tradable={tradable_qty:.8f} | "
+                    f"min_qty={min_qty:.8f}"
+                ),
+            )
+            db.commit()
+            return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+
+        sell = place_market_sell_qty_kucoin_1(sym, tradable_qty)
+        exec_qty = float(sell.get("executed_qty", 0.0) or 0.0)
+        proceeds = float(sell.get("quote_qty", 0.0) or 0.0)
+        avg_price = float(sell.get("avg_price", 0.0) or 0.0)
+        add_live_log(
+            db,
+            "KUCOIN1_ALLCOIN_CLOSE",
+            sym,
+            (
+                f"Manual close from All Coins KuCoin 1 | ExecQty={exec_qty:.8f} | "
+                f"Proceeds={proceeds:.2f} | AvgPrice={avg_price:.8f}"
+            ),
+        )
+        db.commit()
+        return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+    except Exception as e:
+        add_live_log(db, "KUCOIN1_ALLCOIN_CLOSE_FAIL", str(symbol or "-").upper(), f"error={e}")
+        db.commit()
+        return RedirectResponse("/live/all-coins-kucoin-1", status_code=303)
+    finally:
+        _clear_all_coins_cached_payload("live_all_coins_kucoin_1_full")
         db.close()
 
 
