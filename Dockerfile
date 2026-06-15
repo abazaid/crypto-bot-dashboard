@@ -12,7 +12,6 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
-COPY advisor /app/advisor
 
 # Persistent data directory — mount this as a volume in Coolify
 RUN mkdir -p /data/advisor/data/cache \
