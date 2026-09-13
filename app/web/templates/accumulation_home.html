@@ -1,24 +1,24 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="paper-layout">
-  <aside class="paper-sidebar card">
-    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
-    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
-    <a class="side-link" href="{{ '/live/create' if mode == 'live' else '/paper/create' }}">Create Campaign</a>
-    <a class="side-link active" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
-    <a class="side-link" href="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}">Accumulation Calculator</a>
-    <a class="side-link" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
+<section class="layout-split">
+  <aside class="layout-side card">
+    <h3>{{ "Live" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/create' }}">Create Campaign</a>
+    <a class="side-link active" href="{{ '/live/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link" href="{{ '/live/accumulation/calculator' }}">Accumulation Calculator</a>
+    <a class="side-link" href="{{ '/live/accumulation/history' }}">Accumulation History</a>
   </aside>
 
-  <div class="paper-main">
+  <div class="layout-main">
     <section class="hero">
-      <h1>{{ "Live" if mode == "live" else "Paper" }} Accumulation Bot</h1>
+      <h1>{{ "Live" }} Accumulation Bot</h1>
       <p>Buy dips, partial-sell above average, and recycle capital to accumulate more coins.</p>
     </section>
 
     <section class="card">
       <h2>New Accumulation Plan</h2>
-      <form method="post" action="{{ '/live/accumulation/create' if mode == 'live' else '/paper/accumulation/create' }}" class="form-grid">
+      <form method="post" action="{{ '/live/accumulation/create' }}" class="form-grid">
         <label>Plan Name<input name="name" placeholder="Example: ADA Accumulator" required></label>
         <label>Symbol<input name="symbol" placeholder="ADAUSDT" required></label>
         <label>Total Capital (USDT)<input name="total_capital_usdt" type="number" step="0.01" value="100" required></label>
@@ -72,7 +72,7 @@
             </td>
             <td class="{{ 'pnl-pos' if (r.plan.realized_pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.plan.realized_pnl_usdt or 0) }}</td>
             <td class="{{ 'pnl-pos' if (r.unrealized_pnl or 0) >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(r.unrealized_pnl or 0) }}</td>
-            <td><a href="{{ ('/live/accumulation/' if mode == 'live' else '/paper/accumulation/') ~ r.plan.id }}">Open</a></td>
+            <td><a href="{{ '/live/accumulation/' ~ r.plan.id }}">Open</a></td>
           </tr>
           {% endfor %}
         </tbody>

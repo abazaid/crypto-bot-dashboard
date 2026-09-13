@@ -279,7 +279,7 @@
 </section>
 
 <script>
-  window.initPaperCampaignPage = function initPaperCampaignPage() {
+  window.initLiveCampaignPage = function initLiveCampaignPage() {
     const dcaPanel = document.getElementById("dca-position-panel");
     const dcaPanelBody = document.getElementById("dca-panel-body");
     const dcaPanelTitle = document.getElementById("dca-panel-title");
@@ -329,7 +329,7 @@
     }
   };
 
-  window.initPaperCampaignPage();
+  window.initLiveCampaignPage();
 
   // ── In-place price polling (every 10 s) ─────────────────────────────────────
   const CAMPAIGN_ID = {{ campaign.id }};

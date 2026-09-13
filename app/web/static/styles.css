@@ -139,20 +139,20 @@ body {
   margin: 16px 0;
 }
 
-.paper-layout {
+.layout-split {
   display: grid;
   grid-template-columns: 260px 1fr;
   gap: 14px;
   margin-top: 16px;
 }
 
-.paper-sidebar {
+.layout-side {
   align-self: start;
   position: sticky;
   top: 84px;
 }
 
-.paper-sidebar h3 {
+.layout-side h3 {
   margin-top: 0;
 }
 
@@ -172,7 +172,7 @@ body {
   background: var(--accent-soft);
 }
 
-.paper-main {
+.layout-main {
   min-width: 0;
 }
 
@@ -608,10 +608,10 @@ tbody tr:hover {
     flex-wrap: wrap;
     gap: 8px;
   }
-  .paper-layout {
+  .layout-split {
     grid-template-columns: 1fr;
   }
-  .paper-sidebar {
+  .layout-side {
     position: static;
   }
   .refresh-tools {

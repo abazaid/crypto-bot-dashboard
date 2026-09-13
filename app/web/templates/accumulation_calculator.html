@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="paper-layout">
-  <aside class="paper-sidebar card">
-    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
-    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
-    <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
-    <a class="side-link active" href="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}">Accumulation Calculator</a>
-    <a class="side-link" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
+<section class="layout-split">
+  <aside class="layout-side card">
+    <h3>{{ "Live" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link active" href="{{ '/live/accumulation/calculator' }}">Accumulation Calculator</a>
+    <a class="side-link" href="{{ '/live/accumulation/history' }}">Accumulation History</a>
   </aside>
 
-  <div class="paper-main">
+  <div class="layout-main">
     <section class="hero">
       <h1>Accumulation Calculator</h1>
       <p>Simulate your strategy for a down-to-low then up-to-high scenario.</p>
@@ -17,7 +17,7 @@
 
     <section class="card">
       <h2>Scenario Inputs</h2>
-      <form method="post" action="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}" class="form-grid">
+      <form method="post" action="{{ '/live/accumulation/calculator' }}" class="form-grid">
         <label>Symbol<input name="symbol" value="{{ form_data.symbol }}" required></label>
         <label>Total Capital (USDT)<input name="total_capital_usdt" type="number" step="0.01" value="{{ form_data.total_capital_usdt }}" required></label>
         <label>Initial Entry (USDT)<input name="initial_entry_usdt" type="number" step="0.01" value="{{ form_data.initial_entry_usdt }}" required></label>

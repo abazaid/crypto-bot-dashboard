@@ -1,24 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="paper-layout">
-  <aside class="paper-sidebar card">
-    <h3>{{ "Live Menu" if mode == "live" else "Paper Menu" }}</h3>
-    {% if mode == "live" %}
+<section class="layout-split">
+  <aside class="layout-side card">
+    <h3>Live Menu</h3>
     <a class="side-link" href="/live">Campaigns Home</a>
     <a class="side-link" href="/live/create">Create Campaign</a>
     <a class="side-link" href="/live/smart-create">Smart DCA</a>
     <a class="side-link active" href="/live/backtest">Smart Backtest</a>
     <a class="side-link" href="/live/history">Live History</a>
-    {% else %}
-    <a class="side-link" href="/paper">Campaigns Home</a>
-    <a class="side-link" href="/paper/create">Create Campaign</a>
-    <a class="side-link" href="/paper/smart-create">Smart DCA</a>
-    <a class="side-link active" href="/paper/backtest">Smart Backtest</a>
-    <a class="side-link" href="/paper/history">Paper History</a>
-    {% endif %}
   </aside>
 
-  <div class="paper-main">
+  <div class="layout-main">
     <section class="hero">
       <h1>SMART DCA Backtesting</h1>
       <p>Standalone module for ROI, Max Drawdown (MDD), and Recovery metrics per strategy profile.</p>

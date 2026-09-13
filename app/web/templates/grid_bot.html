@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="paper-layout">
-  <aside class="paper-sidebar card">
-    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
-    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
-    <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
-    <a class="side-link active" href="{{ '/live/grid' if mode == 'live' else '/paper/grid' }}">Grid Bot</a>
+<section class="layout-split">
+  <aside class="layout-side card">
+    <h3>{{ "Live" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link active" href="{{ '/live/grid' }}">Grid Bot</a>
   </aside>
 
-  <div class="paper-main">
+  <div class="layout-main">
     <section class="hero">
       <h1>{{ row.bot.name }}</h1>
       <p>{{ row.bot.symbol }} grid bot — {{ row.bot.grid_count }} grids | {{ row.bot.grid_mode }} | {{ row.bot.investment_mode }}</p>
@@ -78,7 +78,7 @@
     <section class="card">
       <h2>Config & Controls</h2>
 
-      <form method="post" action="{{ ('/live/grid/' if mode == 'live' else '/paper/grid/') ~ row.bot.id ~ '/toggle' }}" style="margin-bottom:12px;">
+      <form method="post" action="{{ '/live/grid/' ~ row.bot.id ~ '/toggle' }}" style="margin-bottom:12px;">
         {% if row.bot.status == 'stopped' %}
         <button class="btn" type="submit" disabled>Stopped</button>
         {% elif row.bot.status == 'active' %}
@@ -150,7 +150,7 @@
 
       <details style="margin-top:16px;">
         <summary style="cursor:pointer; font-weight:600;">Edit Bot Settings</summary>
-        <form method="post" action="{{ ('/live/grid/' if mode == 'live' else '/paper/grid/') ~ row.bot.id ~ '/edit' }}" class="form-grid" style="margin-top:12px; grid-template-columns: repeat(3, 1fr);">
+        <form method="post" action="{{ '/live/grid/' ~ row.bot.id ~ '/edit' }}" class="form-grid" style="margin-top:12px; grid-template-columns: repeat(3, 1fr);">
           <label>Lower Limit
             <input name="lower_limit" type="number" step="any" value="{{ '%.4f'|format(row.bot.lower_limit) }}">
           </label>

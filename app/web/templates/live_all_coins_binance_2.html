@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="paper-layout">
-  <aside class="paper-sidebar card">
+<section class="layout-split">
+  <aside class="layout-side card">
     <h3>Live Menu</h3>
     <a class="side-link" href="/live">Campaigns Home</a>
     <a class="side-link" href="/live/create">Create Campaign</a>
@@ -14,7 +14,7 @@
     <a class="side-link" href="/live/history">Live History</a>
   </aside>
 
-  <div class="paper-main">
+  <div class="layout-main">
     <section class="hero">
       <h1>{{ all_coins_title|default("ALL coin Binance 2") }}</h1>
       <p>{{ all_coins_description|default("All spot coins in Binance account 2 with average cost, current price, PnL, and manual close.") }}</p>

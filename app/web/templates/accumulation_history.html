@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="paper-layout">
-  <aside class="paper-sidebar card">
-    <h3>{{ "Live" if mode == "live" else "Paper" }} Menu</h3>
-    <a class="side-link" href="{{ '/live' if mode == 'live' else '/paper' }}">Campaigns Home</a>
-    <a class="side-link" href="{{ '/live/accumulation' if mode == 'live' else '/paper/accumulation' }}">Accumulation Bot</a>
-    <a class="side-link" href="{{ '/live/accumulation/calculator' if mode == 'live' else '/paper/accumulation/calculator' }}">Accumulation Calculator</a>
-    <a class="side-link active" href="{{ '/live/accumulation/history' if mode == 'live' else '/paper/accumulation/history' }}">Accumulation History</a>
+<section class="layout-split">
+  <aside class="layout-side card">
+    <h3>{{ "Live" }} Menu</h3>
+    <a class="side-link" href="{{ '/live' }}">Campaigns Home</a>
+    <a class="side-link" href="{{ '/live/accumulation' }}">Accumulation Bot</a>
+    <a class="side-link" href="{{ '/live/accumulation/calculator' }}">Accumulation Calculator</a>
+    <a class="side-link active" href="{{ '/live/accumulation/history' }}">Accumulation History</a>
   </aside>
 
-  <div class="paper-main">
+  <div class="layout-main">
     <section class="hero">
-      <h1>{{ "Live" if mode == "live" else "Paper" }} Accumulation History</h1>
+      <h1>{{ "Live" }} Accumulation History</h1>
       <p>Ledger of accumulation buys/sells with filters.</p>
     </section>
 
