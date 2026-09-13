@@ -25,6 +25,8 @@ from app.models.paper_v2 import (
     AppSetting,
     Campaign,
     DcaRule,
+    GridBot,
+    GridTrade,
     Position,
     PositionDcaState,
 )
@@ -57,18 +59,10 @@ from app.services.kucoin_live_1 import (
     place_limit_sell_qty as place_limit_sell_qty_kucoin_1,
     place_market_sell_qty as place_market_sell_qty_kucoin_1,
 )
-from app.services.paper_trading import (
-    add_log,
-    build_smart_dca_plan,
+from app.services.analytics import (
     build_ai_dca_rules,
-    create_campaign_positions,
-    ensure_defaults,
-    get_setting,
-    recalculate_campaign_dca,
-    run_cycle,
-    set_setting,
+    build_smart_dca_plan,
     suggest_top_symbols,
-    wallet_snapshot,
 )
 from app.services.live_trading import (
     _arm_or_rearm_tp_order,
@@ -93,19 +87,9 @@ from app.services.grid_trading import (
     run_grid_cycle,
     toggle_bot_status as grid_toggle_bot_status,
 )
-from app.models.paper_v2 import GridBot, GridTrade
 from app.services.forecasting import get_forecasts_for_symbols, get_or_build_forecast
-from app.models.smart_campaign import SmartCampaign, SmartPosition
-from app.services.smart_campaign_service import (
-    calculate_required_capital,
-    campaign_summary,
-    create_campaign,
-    manual_sell as smart_manual_sell,
-    resume_campaign,
-    run_smart_cycle,
-    stop_campaign,
-)
 from app.services.live_smart_campaign_service import (
+    calculate_required_capital,
     create_live_campaign,
     get_recent_logs,
     live_campaign_summary,
@@ -120,13 +104,10 @@ app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
 templates = Jinja2Templates(directory="app/web/templates")
 
 scheduler = BackgroundScheduler(timezone="UTC")
-cycle_lock = threading.Lock()
 live_cycle_lock = threading.Lock()
 medium_lock = threading.Lock()
 slow_lock = threading.Lock()
-paper_acc_lock = threading.Lock()
 live_acc_lock = threading.Lock()
-paper_grid_lock = threading.Lock()
 live_grid_lock = threading.Lock()
 all_coins_cache_lock = threading.Lock()
 _ALL_COINS_PAGE_CACHE: dict[str, dict] = {}
@@ -135,10 +116,9 @@ _ALL_COINS_REFRESH_STATE: dict[str, bool] = {}
 
 
 def _context(active: str, **kwargs) -> dict:
-    inferred_mode = "live" if str(active).startswith("live") else "paper"
     base = {
         "active_page": active,
-        "mode": inferred_mode,
+        "mode": "live",
         "now": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         "cycle_seconds": max(settings.fast_loop_seconds, 3),
     }
@@ -443,8 +423,7 @@ def _acc_attach_efficiency(row: dict, trades: list[AccumulationTrade]) -> dict:
     row["acc_efficiency_qty_per_100"] = efficiency_qty_per_100
     row["acc_cycle_count"] = cycle_count
     row["acc_ledger_fees_usdt"] = ledger_fees_usdt
-    fee_rate = max(0.0, float(getattr(settings, "paper_fee_pct", 0.1)) / 100.0)
-    row["acc_estimated_fees_usdt"] = (turnover_usdt * fee_rate) if str(row["plan"].mode) == "paper" else ledger_fees_usdt
+    row["acc_estimated_fees_usdt"] = ledger_fees_usdt
     return row
 
 
@@ -792,7 +771,6 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE positions ADD COLUMN tp_order_qty FLOAT",
         "ALTER TABLE positions ADD COLUMN open_fee_usdt FLOAT NOT NULL DEFAULT 0",
         "ALTER TABLE positions ADD COLUMN close_fee_usdt FLOAT NOT NULL DEFAULT 0",
-        "ALTER TABLE smart_campaigns ADD COLUMN feature_version VARCHAR DEFAULT 'v1'",
         "ALTER TABLE live_smart_campaigns ADD COLUMN feature_version VARCHAR DEFAULT 'v1'",
     ]
     for stmt in stmts:
@@ -812,22 +790,6 @@ def _apply_schema_updates() -> None:
             )
         except Exception:
             pass
-
-
-def _scheduled_cycle() -> None:
-    if not cycle_lock.acquire(blocking=False):
-        logger.warning("Paper cycle skipped: previous cycle still running")
-        return
-    db = SessionLocal()
-    t0 = time.monotonic()
-    try:
-        run_cycle(db)
-    finally:
-        elapsed = time.monotonic() - t0
-        if elapsed > settings.fast_loop_seconds * 0.8:
-            logger.warning("Paper cycle took %.2fs (interval=%ss)", elapsed, settings.fast_loop_seconds)
-        db.close()
-        cycle_lock.release()
 
 
 def _scheduled_live_cycle() -> None:
@@ -870,18 +832,6 @@ def _scheduled_slow_recalc() -> None:
         slow_lock.release()
 
 
-def _scheduled_paper_acc_cycle() -> None:
-    if not paper_acc_lock.acquire(blocking=False):
-        logger.warning("Paper accumulation cycle skipped: previous cycle still running")
-        return
-    db = SessionLocal()
-    try:
-        run_accumulation_cycle(db, "paper")
-    finally:
-        db.close()
-        paper_acc_lock.release()
-
-
 def _scheduled_live_acc_cycle() -> None:
     if not live_acc_lock.acquire(blocking=False):
         logger.warning("Live accumulation cycle skipped: previous cycle still running")
@@ -892,18 +842,6 @@ def _scheduled_live_acc_cycle() -> None:
     finally:
         db.close()
         live_acc_lock.release()
-
-
-def _scheduled_paper_grid_cycle() -> None:
-    if not paper_grid_lock.acquire(blocking=False):
-        logger.warning("Paper grid cycle skipped: previous cycle still running")
-        return
-    db = SessionLocal()
-    try:
-        run_grid_cycle(db, "paper")
-    finally:
-        db.close()
-        paper_grid_lock.release()
 
 
 def _scheduled_live_grid_cycle() -> None:
@@ -921,10 +859,6 @@ def _scheduled_live_grid_cycle() -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
-    # Create smart campaign tables
-    from app.models.smart_campaign import SmartCampaign as _SC, SmartPosition as _SP
-    _SC.__table__.create(bind=engine, checkfirst=True)
-    _SP.__table__.create(bind=engine, checkfirst=True)
     # Create live smart campaign tables
     from app.models.live_smart_campaign import (
         LiveSmartCampaign as _LSC, LiveSmartPosition as _LSP, LiveSmartCampaignLog as _LSCL
@@ -933,24 +867,12 @@ async def on_startup() -> None:
     _LSP.__table__.create(bind=engine, checkfirst=True)
     _LSCL.__table__.create(bind=engine, checkfirst=True)
     _apply_schema_updates()
-    db = SessionLocal()
-    try:
-        ensure_defaults(db, settings.paper_start_balance)
-    finally:
-        db.close()
 
     # Start real-time price WebSocket (Binance !miniTicker@arr)
     import asyncio
     from app.services.price_ws import run_price_stream
     asyncio.create_task(run_price_stream())
 
-    scheduler.add_job(
-        _scheduled_cycle,
-        "interval",
-        seconds=max(settings.fast_loop_seconds, 3),
-        id="paper_cycle",
-        replace_existing=True,
-    )
     scheduler.add_job(
         _scheduled_live_cycle,
         "interval",
@@ -973,24 +895,10 @@ async def on_startup() -> None:
         replace_existing=True,
     )
     scheduler.add_job(
-        _scheduled_paper_acc_cycle,
-        "interval",
-        seconds=max(settings.fast_loop_seconds, 3),
-        id="paper_acc_cycle",
-        replace_existing=True,
-    )
-    scheduler.add_job(
         _scheduled_live_acc_cycle,
         "interval",
         seconds=max(settings.fast_loop_seconds, 3),
         id="live_acc_cycle",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        _scheduled_paper_grid_cycle,
-        "interval",
-        seconds=max(settings.fast_loop_seconds, 3),
-        id="paper_grid_cycle",
         replace_existing=True,
     )
     scheduler.add_job(
@@ -1008,24 +916,6 @@ async def on_startup() -> None:
         replace_existing=True,
         coalesce=True,
         max_instances=1,
-    )
-
-    # ── Smart Campaign cycle (every 10s) ─────────────────────────────────
-    def _scheduled_smart_campaign() -> None:
-        db = SessionLocal()
-        try:
-            run_smart_cycle(db)
-        except Exception as e:
-            logger.error("Smart campaign cycle error: %s", e)
-        finally:
-            db.close()
-
-    scheduler.add_job(
-        _scheduled_smart_campaign,
-        "interval",
-        seconds=10,
-        id="smart_campaign_cycle",
-        replace_existing=True,
     )
 
     # ── Live Smart Campaign cycle (every 10s) ─────────────────────────────
@@ -1059,350 +949,6 @@ def on_shutdown() -> None:
 @app.get("/", response_class=HTMLResponse)
 async def mode_home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("mode_home.html", _context("home", request=request))
-
-
-@app.get("/paper", response_class=HTMLResponse)
-async def paper_dashboard(request: Request) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        campaigns = db.query(Campaign).filter(Campaign.mode == "paper").order_by(desc(Campaign.created_at)).all()
-        wallet = wallet_snapshot(db)
-        items = []
-        for c in campaigns:
-            stats = _campaign_stats(db, c)
-            items.append({"campaign": c, "stats": stats})
-        realized_rows = sorted(
-            [
-                {"campaign": item["campaign"], "amount": float(item["stats"]["realized_pnl"])}
-                for item in items
-            ],
-            key=lambda x: x["amount"],
-            reverse=True,
-        )
-        unrealized_rows = sorted(
-            [
-                {"campaign": item["campaign"], "amount": float(item["stats"]["unrealized_pnl"])}
-                for item in items
-            ],
-            key=lambda x: x["amount"],
-            reverse=True,
-        )
-        acc_plans = (
-            db.query(AccumulationPlan)
-            .filter(AccumulationPlan.mode == "paper")
-            .order_by(desc(AccumulationPlan.created_at))
-            .all()
-        )
-        acc_rows = [_acc_plan_view_row(p) for p in acc_plans]
-        acc_open_rows = [r for r in acc_rows if float(r["plan"].coin_qty or 0.0) > 0.0]
-        logs = _dashboard_logs(db, "paper")
-        return templates.TemplateResponse(
-            "paper_home.html",
-            _context(
-                "paper_home",
-                request=request,
-                wallet=wallet,
-                campaigns=items,
-                accumulation_rows=acc_open_rows,
-                realized_rows=realized_rows,
-                unrealized_rows=unrealized_rows,
-                logs=logs,
-            ),
-        )
-    finally:
-        db.close()
-
-
-@app.get("/paper/campaigns")
-async def paper_campaigns_alias() -> RedirectResponse:
-    return RedirectResponse("/paper", status_code=303)
-
-
-@app.post("/paper/cash/add")
-async def paper_add_cash(amount_usdt: str = Form(...), note: str = Form("")) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        amount = float(_safe_float(amount_usdt, 0.0) or 0.0)
-        if amount <= 0:
-            return RedirectResponse("/paper", status_code=303)
-        current_cash = float(get_setting(db, "paper_cash", "0"))
-        new_cash = current_cash + amount
-        set_setting(db, "paper_cash", f"{new_cash:.8f}")
-        msg = (
-            f"Paper wallet top-up +{amount:.2f} USDT | cash {current_cash:.2f} -> {new_cash:.2f}"
-            + (f" | note={note.strip()}" if str(note).strip() else "")
-        )
-        add_log(db, "WALLET_TOPUP", "-", msg)
-        db.commit()
-        return RedirectResponse("/paper", status_code=303)
-    finally:
-        db.close()
-
-
-@app.get("/paper/create", response_class=HTMLResponse)
-async def paper_create_campaign_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("paper_create.html", _context("paper_create", request=request))
-
-
-@app.get("/paper/smart-create", response_class=HTMLResponse)
-async def paper_smart_create_campaign_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("paper_smart_create.html", _context("paper_smart_create", request=request))
-
-
-@app.get("/paper/accumulation", response_class=HTMLResponse)
-async def paper_accumulation_page(request: Request) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        plans = (
-            db.query(AccumulationPlan)
-            .filter(AccumulationPlan.mode == "paper")
-            .order_by(desc(AccumulationPlan.created_at))
-            .all()
-        )
-        rows = [_acc_plan_view_row(p) for p in plans]
-        logs = (
-            db.query(ActivityLog)
-            .filter(ActivityLog.event_type.like("ACC_%"))
-            .order_by(desc(ActivityLog.id))
-            .limit(80)
-            .all()
-        )
-        return templates.TemplateResponse(
-            "accumulation_home.html",
-            _context("paper_accumulation", request=request, mode="paper", rows=rows, logs=logs),
-        )
-    finally:
-        db.close()
-
-
-@app.post("/paper/accumulation/create")
-async def paper_accumulation_create(
-    name: str = Form(...),
-    symbol: str = Form(...),
-    total_capital_usdt: str = Form(...),
-    initial_entry_usdt: str = Form(...),
-    dca_drop_pct: str = Form("2.5"),
-    dca_allocation_pct: str = Form("120"),
-    partial_tp_pct: str = Form("1.5"),
-    partial_sell_pct: str = Form("20"),
-) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        plan = create_accumulation_plan(
-            db,
-            mode="paper",
-            name=name,
-            symbol=symbol,
-            total_capital_usdt=_safe_float_or_default(total_capital_usdt, 0.0),
-            initial_entry_usdt=_safe_float_or_default(initial_entry_usdt, 0.0),
-            dca_drop_pct=_safe_float_or_default(dca_drop_pct, 2.5),
-            dca_allocation_pct=_safe_float_or_default(dca_allocation_pct, 120.0),
-            partial_tp_pct=_safe_float_or_default(partial_tp_pct, 1.5),
-            partial_sell_pct=_safe_float_or_default(partial_sell_pct, 20.0),
-        )
-        db.commit()
-        return RedirectResponse(f"/paper/accumulation/{plan.id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.get("/paper/accumulation/{plan_id:int}", response_class=HTMLResponse)
-async def paper_accumulation_details(request: Request, plan_id: int) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
-        if not plan:
-            return RedirectResponse("/paper/accumulation", status_code=303)
-        row = _acc_plan_view_row(plan)
-        trades = (
-            db.query(AccumulationTrade)
-            .filter(AccumulationTrade.plan_id == plan.id)
-            .order_by(desc(AccumulationTrade.id))
-            .limit(200)
-            .all()
-        )
-        display_trades, skipped_trades = _acc_meaningful_trades(trades)
-        row = _acc_attach_efficiency(row, display_trades)
-        row["display_buy_count"] = sum(1 for t in display_trades if str(t.side or "").upper() == "BUY")
-        row["display_sell_count"] = sum(1 for t in display_trades if str(t.side or "").upper() == "SELL")
-        row["hidden_dust_count"] = skipped_trades
-        return templates.TemplateResponse(
-            "accumulation_plan.html",
-            _context("paper_accumulation_plan", request=request, mode="paper", row=row, trades=display_trades),
-        )
-    finally:
-        db.close()
-
-
-@app.post("/paper/accumulation/{plan_id:int}/toggle")
-async def paper_accumulation_toggle(plan_id: int) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
-        if not plan:
-            return RedirectResponse("/paper/accumulation", status_code=303)
-        accumulation_toggle_plan_status(db, plan)
-        db.commit()
-        return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/accumulation/{plan_id:int}/manual-sell")
-async def paper_accumulation_manual_sell(plan_id: int, sell_pct: str = Form("20")) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
-        if not plan:
-            return RedirectResponse("/paper/accumulation", status_code=303)
-        pct = _safe_float_or_default(sell_pct, 20.0)
-        accumulation_manual_partial_sell(db, plan, pct)
-        db.commit()
-        return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/accumulation/{plan_id:int}/edit")
-async def paper_accumulation_edit(
-    plan_id: int,
-    dca_drop_pct: str = Form(...),
-    dca_allocation_pct: str = Form(...),
-    partial_tp_pct: str = Form(...),
-    partial_sell_pct: str = Form(...),
-    total_capital_usdt: str = Form(None),
-) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        plan = db.query(AccumulationPlan).filter(AccumulationPlan.id == plan_id, AccumulationPlan.mode == "paper").first()
-        if not plan:
-            return RedirectResponse("/paper/accumulation", status_code=303)
-        plan.dca_drop_pct = max(0.2, _safe_float_or_default(dca_drop_pct, float(plan.dca_drop_pct)))
-        plan.dca_allocation_pct = max(1.0, _safe_float_or_default(dca_allocation_pct, float(plan.dca_allocation_pct)))
-        plan.partial_tp_pct = max(0.0, _safe_float_or_default(partial_tp_pct, float(plan.partial_tp_pct or 0)))
-        plan.partial_sell_pct = max(0.0, min(95.0, _safe_float_or_default(partial_sell_pct, float(plan.partial_sell_pct or 0))))
-        if total_capital_usdt is not None and total_capital_usdt.strip():
-            new_total = _safe_float_or_default(total_capital_usdt, float(plan.total_capital_usdt or 0))
-            old_total = float(plan.total_capital_usdt or 0)
-            diff = new_total - old_total
-            plan.total_capital_usdt = new_total
-            new_reserved = float(plan.reserved_cash_usdt or 0) + diff
-            plan.reserved_cash_usdt = max(0.0, new_reserved)
-        db.commit()
-        return RedirectResponse(f"/paper/accumulation/{plan_id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.get("/paper/accumulation/history", response_class=HTMLResponse)
-async def paper_accumulation_history(
-    request: Request,
-    date_range: str = "all",
-    symbol: str = "all",
-    reason: str = "all",
-) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        ctx = _acc_history_context(db, "paper", str(date_range).strip().lower(), str(symbol).strip().upper(), str(reason).strip())
-        return templates.TemplateResponse("accumulation_history.html", _context("paper_accumulation_history", request=request, mode="paper", **ctx))
-    finally:
-        db.close()
-
-
-@app.get("/paper/accumulation/calculator", response_class=HTMLResponse)
-async def paper_accumulation_calculator(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(
-        "accumulation_calculator.html",
-        _context(
-            "paper_accumulation_calculator",
-            request=request,
-            mode="paper",
-            result=None,
-            form_data={
-                "symbol": "ETHUSDT",
-                "total_capital_usdt": 1000,
-                "initial_entry_usdt": 100,
-                "entry_price": "",
-                "low_price": 1700,
-                "high_price": 3000,
-                "dca_drop_pct": 2.5,
-                "dca_allocation_pct": 120,
-                "partial_tp_pct": 1.5,
-                "partial_sell_pct": 20,
-                "min_order_usdt": 5,
-                "fee_pct": float(getattr(settings, "paper_fee_pct", 0.1)),
-            },
-        ),
-    )
-
-
-@app.post("/paper/accumulation/calculator", response_class=HTMLResponse)
-async def paper_accumulation_calculator_run(
-    request: Request,
-    symbol: str = Form("ETHUSDT"),
-    total_capital_usdt: str = Form("1000"),
-    initial_entry_usdt: str = Form("100"),
-    entry_price: str = Form(""),
-    low_price: str = Form("1700"),
-    high_price: str = Form("3000"),
-    dca_drop_pct: str = Form("2.5"),
-    dca_allocation_pct: str = Form("120"),
-    partial_tp_pct: str = Form("1.5"),
-    partial_sell_pct: str = Form("20"),
-    min_order_usdt: str = Form("5"),
-    fee_pct: str = Form("0.1"),
-) -> HTMLResponse:
-    sym = str(symbol or "").strip().upper()
-    if sym and not sym.endswith("USDT"):
-        sym = f"{sym}USDT"
-    ep = _safe_float(entry_price, None)
-    if ep is None or ep <= 0:
-        px = get_prices([sym]) if sym else {}
-        ep = float(px.get(sym, 0.0)) if sym else 0.0
-    result = None
-    if sym and float(ep or 0.0) > 0:
-        result = _simulate_accumulation_scenario(
-            symbol=sym,
-            total_capital_usdt=_safe_float_or_default(total_capital_usdt, 1000.0),
-            initial_entry_usdt=_safe_float_or_default(initial_entry_usdt, 100.0),
-            entry_price=float(ep),
-            low_price=_safe_float_or_default(low_price, 1700.0),
-            high_price=_safe_float_or_default(high_price, 3000.0),
-            dca_drop_pct=_safe_float_or_default(dca_drop_pct, 2.5),
-            dca_allocation_pct=_safe_float_or_default(dca_allocation_pct, 120.0),
-            partial_tp_pct=_safe_float_or_default(partial_tp_pct, 1.5),
-            partial_sell_pct=_safe_float_or_default(partial_sell_pct, 20.0),
-            min_order_usdt=_safe_float_or_default(min_order_usdt, 5.0),
-            fee_pct=_safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
-        )
-    return templates.TemplateResponse(
-        "accumulation_calculator.html",
-        _context(
-            "paper_accumulation_calculator",
-            request=request,
-            mode="paper",
-            result=result,
-            form_data={
-                "symbol": sym,
-                "total_capital_usdt": _safe_float_or_default(total_capital_usdt, 1000.0),
-                "initial_entry_usdt": _safe_float_or_default(initial_entry_usdt, 100.0),
-                "entry_price": float(ep or 0.0),
-                "low_price": _safe_float_or_default(low_price, 1700.0),
-                "high_price": _safe_float_or_default(high_price, 3000.0),
-                "dca_drop_pct": _safe_float_or_default(dca_drop_pct, 2.5),
-                "dca_allocation_pct": _safe_float_or_default(dca_allocation_pct, 120.0),
-                "partial_tp_pct": _safe_float_or_default(partial_tp_pct, 1.5),
-                "partial_sell_pct": _safe_float_or_default(partial_sell_pct, 20.0),
-                "min_order_usdt": _safe_float_or_default(min_order_usdt, 5.0),
-                "fee_pct": _safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
-            },
-        ),
-    )
-
-
-@app.get("/paper/backtest", response_class=HTMLResponse)
-async def paper_backtest_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("smart_backtest.html", _context("smart_backtest", request=request, mode="paper"))
 
 
 @app.get("/live", response_class=HTMLResponse)
@@ -1663,123 +1209,6 @@ async def live_grid_edit(
         db.close()
 
 
-@app.get("/paper/grid", response_class=HTMLResponse)
-async def paper_grid_home(request: Request) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        bots = db.query(GridBot).filter(GridBot.mode == "paper").order_by(GridBot.id.desc()).all()
-        rows = [_grid_bot_view_row(b) for b in bots]
-        logs = (
-            db.query(ActivityLog)
-            .filter(ActivityLog.event_type.like("GRID_%"))
-            .filter(~ActivityLog.event_type.like("LIVE_GRID_%"))
-            .order_by(ActivityLog.id.desc())
-            .limit(60)
-            .all()
-        )
-        return templates.TemplateResponse(
-            "grid_home.html",
-            _context("paper_grid", request=request, mode="paper", rows=rows, logs=logs),
-        )
-    finally:
-        db.close()
-
-
-@app.post("/paper/grid/create")
-async def paper_grid_create(
-    request: Request,
-    name: str = Form(...),
-    symbol: str = Form(...),
-    lower_limit: str = Form(...),
-    upper_limit: str = Form(...),
-    grid_count: str = Form(...),
-    grid_mode: str = Form("arithmetic"),
-    investment_mode: str = Form("usdt_only"),
-    total_investment_usdt: str = Form(...),
-    trigger_price: str = Form(""),
-    take_profit_price: str = Form(""),
-    stop_loss_price: str = Form(""),
-) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        bot = create_grid_bot(
-            db,
-            mode="paper",
-            name=name,
-            symbol=symbol,
-            lower_limit=_safe_float_or_default(lower_limit, 0.0),
-            upper_limit=_safe_float_or_default(upper_limit, 0.0),
-            grid_count=max(2, int(_safe_float_or_default(grid_count, 10))),
-            grid_mode=grid_mode,
-            investment_mode=investment_mode,
-            total_investment_usdt=_safe_float_or_default(total_investment_usdt, 100.0),
-            trigger_price=(_safe_float_or_default(trigger_price, 0.0) or None),
-            take_profit_price=(_safe_float_or_default(take_profit_price, 0.0) or None),
-            stop_loss_price=(_safe_float_or_default(stop_loss_price, 0.0) or None),
-        )
-        db.commit()
-        return RedirectResponse(f"/paper/grid/{bot.id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.get("/paper/grid/{bot_id:int}", response_class=HTMLResponse)
-async def paper_grid_bot_detail(request: Request, bot_id: int) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "paper").first()
-        if not bot:
-            return RedirectResponse("/paper/grid", status_code=303)
-        row = _grid_bot_view_row(bot)
-        trades = db.query(GridTrade).filter(GridTrade.bot_id == bot_id).order_by(GridTrade.id.desc()).limit(100).all()
-        return templates.TemplateResponse(
-            "grid_bot.html",
-            _context("paper_grid", request=request, mode="paper", row=row, trades=trades),
-        )
-    finally:
-        db.close()
-
-
-@app.post("/paper/grid/{bot_id:int}/toggle")
-async def paper_grid_toggle(bot_id: int) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "paper").first()
-        if not bot:
-            return RedirectResponse("/paper/grid", status_code=303)
-        grid_toggle_bot_status(db, bot)
-        db.commit()
-        return RedirectResponse(f"/paper/grid/{bot_id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/grid/{bot_id:int}/edit")
-async def paper_grid_edit(
-    bot_id: int,
-    lower_limit: str = Form(...),
-    upper_limit: str = Form(...),
-    grid_count: str = Form(...),
-    take_profit_price: str = Form(""),
-    stop_loss_price: str = Form(""),
-) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        bot = db.query(GridBot).filter(GridBot.id == bot_id, GridBot.mode == "paper").first()
-        if not bot:
-            return RedirectResponse("/paper/grid", status_code=303)
-        bot.lower_limit = _safe_float_or_default(lower_limit, float(bot.lower_limit))
-        bot.upper_limit = _safe_float_or_default(upper_limit, float(bot.upper_limit))
-        bot.grid_count = max(2, min(500, int(_safe_float_or_default(grid_count, float(bot.grid_count)))))
-        bot.take_profit_price = (_safe_float_or_default(take_profit_price, 0.0) or None)
-        bot.stop_loss_price = (_safe_float_or_default(stop_loss_price, 0.0) or None)
-        bot.last_grid_index = None  # reset anchor so bot re-initializes with new levels
-        db.commit()
-        return RedirectResponse(f"/paper/grid/{bot_id}", status_code=303)
-    finally:
-        db.close()
-
-
 @app.get("/live/accumulation", response_class=HTMLResponse)
 async def live_accumulation_page(request: Request) -> HTMLResponse:
     db = SessionLocal()
@@ -1961,7 +1390,7 @@ async def live_accumulation_calculator(request: Request) -> HTMLResponse:
                 "partial_tp_pct": 1.5,
                 "partial_sell_pct": 20,
                 "min_order_usdt": 5,
-                "fee_pct": float(getattr(settings, "paper_fee_pct", 0.1)),
+                "fee_pct": settings.trading_fee_pct,
             },
         ),
     )
@@ -2004,7 +1433,7 @@ async def live_accumulation_calculator_run(
             partial_tp_pct=_safe_float_or_default(partial_tp_pct, 1.5),
             partial_sell_pct=_safe_float_or_default(partial_sell_pct, 20.0),
             min_order_usdt=_safe_float_or_default(min_order_usdt, 5.0),
-            fee_pct=_safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
+            fee_pct=_safe_float_or_default(fee_pct, settings.trading_fee_pct),
         )
     return templates.TemplateResponse(
         "accumulation_calculator.html",
@@ -2025,7 +1454,7 @@ async def live_accumulation_calculator_run(
                 "partial_tp_pct": _safe_float_or_default(partial_tp_pct, 1.5),
                 "partial_sell_pct": _safe_float_or_default(partial_sell_pct, 20.0),
                 "min_order_usdt": _safe_float_or_default(min_order_usdt, 5.0),
-                "fee_pct": _safe_float_or_default(fee_pct, float(getattr(settings, "paper_fee_pct", 0.1))),
+                "fee_pct": _safe_float_or_default(fee_pct, settings.trading_fee_pct),
             },
         ),
     )
@@ -3619,608 +3048,6 @@ async def live_campaign_prices_api(campaign_id: int) -> JSONResponse:
         db.close()
 
 
-@app.get("/paper/history", response_class=HTMLResponse)
-async def paper_trading_history(request: Request) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        date_filter = str(request.query_params.get("date_range", "all")).strip().lower()
-        strategy_filter = str(request.query_params.get("strategy", "all")).strip().lower()
-        valid_date = {x[0] for x in _DATE_FILTERS}
-        valid_strategy = {x[0] for x in _STRATEGY_FILTERS}
-        if date_filter not in valid_date:
-            date_filter = "all"
-        if strategy_filter not in valid_strategy:
-            strategy_filter = "all"
-        ctx = _history_context(db, "paper", date_filter, strategy_filter)
-        return templates.TemplateResponse(
-            "trading_history.html",
-            _context("history", request=request, **ctx),
-        )
-    finally:
-        db.close()
-
-
-@app.get("/paper/campaigns/{campaign_id}", response_class=HTMLResponse)
-async def paper_campaign_details(request: Request, campaign_id: int) -> HTMLResponse:
-    db = SessionLocal()
-    try:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "paper").first()
-        if not campaign:
-            return RedirectResponse("/paper", status_code=303)
-        rules = db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).order_by(DcaRule.drop_pct.asc()).all()
-        edit_rules = {r.name: r for r in rules}
-        edit_slots = rules[:5]
-        while len(edit_slots) < 5:
-            edit_slots.append(None)
-        ai_suggested_rows = []
-        if campaign.ai_dca_enabled:
-            try:
-                suggested = json.loads(campaign.ai_dca_suggested_rules_json or "[]")
-            except Exception:
-                suggested = []
-            if isinstance(suggested, list):
-                for row in suggested:
-                    try:
-                        name_rule = str(row.get("name", "AI-DCA")).strip() or "AI-DCA"
-                        drop_pct = float(row.get("drop_pct", 0.0))
-                        allocation_pct = float(row.get("allocation_pct", 0.0))
-                        ai_suggested_rows.append(
-                            {
-                                "name": name_rule,
-                                "drop_pct": drop_pct,
-                                "allocation_pct": allocation_pct,
-                                "suggested_usdt": campaign.entry_amount_usdt * (allocation_pct / 100.0),
-                            }
-                        )
-                    except Exception:
-                        continue
-        current_rows = []
-        for row in rules:
-            current_rows.append(
-                {
-                    "name": row.name,
-                    "drop_pct": float(row.drop_pct),
-                    "allocation_pct": float(row.allocation_pct),
-                    "current_usdt": campaign.entry_amount_usdt * (float(row.allocation_pct) / 100.0),
-                }
-            )
-        positions = db.query(Position).filter(Position.campaign_id == campaign.id).order_by(desc(Position.id)).all()
-        position_ids = [p.id for p in positions]
-        executed_dca_counts: dict[int, int] = {}
-        if position_ids:
-            dca_states = db.query(PositionDcaState).filter(PositionDcaState.position_id.in_(position_ids)).all()
-            for st in dca_states:
-                if bool(st.executed):
-                    executed_dca_counts[st.position_id] = int(executed_dca_counts.get(st.position_id, 0)) + 1
-        open_symbols = [p.symbol for p in positions if p.status == "open"]
-        prices = get_prices(open_symbols) if open_symbols else {}
-        stats = _campaign_stats(db, campaign)
-        return templates.TemplateResponse(
-            "paper_campaign.html",
-            _context(
-                "paper_campaign",
-                request=request,
-                campaign=campaign,
-                rules=rules,
-                edit_rules=edit_rules,
-                edit_slots=edit_slots,
-                ai_suggested_rows=ai_suggested_rows,
-                current_rows=current_rows,
-                positions=positions,
-                executed_dca_counts=executed_dca_counts,
-                prices=prices,
-                stats=stats,
-            ),
-        )
-    finally:
-        db.close()
-
-
-@app.post("/paper/campaigns")
-async def create_paper_campaign(
-    request: Request,
-    name: str = Form(...),
-    entry_amount_usdt: str = Form(...),
-    symbols: str = Form(""),
-    tp_pct: str = Form(""),
-    sl_pct: str = Form(""),
-    dca_drop_1: str = Form(""),
-    dca_alloc_1: str = Form(""),
-    dca_drop_2: str = Form(""),
-    dca_alloc_2: str = Form(""),
-    dca_drop_3: str = Form(""),
-    dca_alloc_3: str = Form(""),
-    dca_drop_4: str = Form(""),
-    dca_alloc_4: str = Form(""),
-    dca_drop_5: str = Form(""),
-    dca_alloc_5: str = Form(""),
-    ai_dca_enabled: str | None = Form(None),
-    strict_support_score_required: str | None = Form(None),
-    trend_filter_enabled: str | None = Form(None),
-    auto_reentry_enabled: str | None = Form(None),
-    loop_enabled: str | None = Form(None),
-    loop_v2_enabled: str | None = Form(None),
-    loop_target_count: str = Form("5"),
-) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        entry_amount = _safe_float(entry_amount_usdt, 0.0) or 0.0
-        if entry_amount <= 0:
-            return RedirectResponse("/paper", status_code=303)
-
-        picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-        loop_mode = str(loop_enabled or "").lower() in {"on", "true", "1", "yes"}
-        loop_v2_mode = str(loop_v2_enabled or "").lower() in {"on", "true", "1", "yes"}
-        loop_target = int(_safe_float(loop_target_count, 5.0) or 5.0)
-        loop_target = min(max(loop_target, 1), 30)
-        ai_mode = str(ai_dca_enabled or "").lower() in {"on", "true", "1", "yes"}
-        strict_score_mode = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
-        trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
-        reentry_mode = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
-        if loop_mode:
-            ai_mode = True
-            strict_score_mode = True
-            reentry_mode = False
-            try:
-                scan = suggest_top_symbols(
-                    max(loop_target, 10),
-                    use_v2=loop_v2_mode,
-                    max_candidates=max(18, loop_target * 2),
-                )
-            except Exception:
-                # Safe fallback so campaign creation never crashes on scanner errors.
-                scan = suggest_top_symbols(max(loop_target, 10), use_v2=False, max_candidates=max(18, loop_target * 2))
-            picked = [
-                str(item.get("symbol", "")).upper()
-                for item in (scan.get("items") or [])
-                if item.get("symbol") and str(item.get("symbol", "")).upper() != "BTCUSDT"
-            ]
-            picked = picked[:loop_target]
-        if not picked and not loop_mode:
-            return RedirectResponse("/paper/create", status_code=303)
-        campaign = Campaign(
-            name=name.strip() or "Paper Campaign",
-            mode="paper",
-            status="active",
-            entry_amount_usdt=entry_amount,
-            tp_pct=_safe_float(tp_pct, None),
-            sl_pct=_safe_float(sl_pct, None),
-            ai_dca_enabled=ai_mode,
-            strict_support_score_required=strict_score_mode,
-            trend_filter_enabled=trend_mode,
-            auto_reentry_enabled=reentry_mode,
-            loop_enabled=loop_mode,
-            loop_v2_enabled=loop_v2_mode if loop_mode else False,
-            loop_target_count=loop_target if loop_mode else 0,
-        )
-        db.add(campaign)
-        db.flush()
-
-        if ai_mode:
-            ai_rules, ai_profile, ai_note = build_ai_dca_rules(picked, campaign.sl_pct)
-            campaign.ai_dca_profile = ai_profile
-            campaign.ai_dca_notes = ai_note
-            campaign.ai_dca_suggested_rules_json = json.dumps(
-                [
-                    {"name": name_rule, "drop_pct": float(drop_pct), "allocation_pct": float(alloc_pct)}
-                    for name_rule, drop_pct, alloc_pct in ai_rules
-                ]
-            )
-            for name_rule, drop_pct, alloc_pct in ai_rules:
-                db.add(
-                    DcaRule(
-                        campaign_id=campaign.id,
-                        name=name_rule,
-                        drop_pct=drop_pct,
-                        allocation_pct=alloc_pct,
-                    )
-                )
-            db.add(
-                ActivityLog(
-                    event_type="AI_DCA",
-                    symbol="-",
-                    message=f"Campaign '{campaign.name}' | {ai_note}",
-                )
-            )
-        else:
-            dca_raw = [
-                ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
-                ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
-                ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
-                ("DCA-4", _safe_float(dca_drop_4, None), _safe_float(dca_alloc_4, None)),
-                ("DCA-5", _safe_float(dca_drop_5, None), _safe_float(dca_alloc_5, None)),
-            ]
-            for name_rule, drop_pct, alloc_pct in dca_raw:
-                if drop_pct is None or alloc_pct is None:
-                    continue
-                if drop_pct <= 0 or alloc_pct <= 0:
-                    continue
-                db.add(
-                    DcaRule(
-                        campaign_id=campaign.id,
-                        name=name_rule,
-                        drop_pct=drop_pct,
-                        allocation_pct=alloc_pct,
-                    )
-                )
-        db.commit()
-
-        if loop_mode and not picked:
-            opened, errors = 0, []
-            db.add(
-                ActivityLog(
-                    event_type="LOOP_WAIT",
-                    symbol="-",
-                    message=(
-                        f"Campaign '{campaign.name}' created with 0 initial picks. "
-                        "Loop engine will keep scanning and open when candidates appear."
-                    ),
-                )
-            )
-            db.commit()
-        else:
-            try:
-                opened, errors = create_campaign_positions(db, campaign, picked)
-            except Exception as exc:
-                opened, errors = 0, [f"{type(exc).__name__}: {exc}"]
-        if errors:
-            campaign.status = "paused"
-            db.add(
-                ActivityLog(
-                    event_type="CAMPAIGN_ERROR",
-                    symbol="-",
-                    message=f"Campaign '{campaign.name}' failed to open positions: {' | '.join(errors)}",
-                )
-            )
-            db.commit()
-        if opened > 0:
-            db.add(
-                ActivityLog(
-                    event_type="CAMPAIGN",
-                    symbol="-",
-                    message=f"Campaign '{campaign.name}' started with {opened} symbols.",
-                )
-            )
-            db.commit()
-        return RedirectResponse(f"/paper/campaigns/{campaign.id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/smart-campaigns")
-async def create_paper_smart_campaign(
-    request: Request,
-    name: str = Form(...),
-    symbol: str = Form(...),
-    entry_amount_usdt: str = Form(...),
-    tp_pct: str = Form(""),
-    sl_pct: str = Form(""),
-    strategy_mode: str = Form("auto"),
-    trend_filter_enabled: str | None = Form(None),
-    strict_support_score_required: str | None = Form(None),
-) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        entry_amount = _safe_float(entry_amount_usdt, 0.0) or 0.0
-        if entry_amount <= 0:
-            return RedirectResponse("/paper/smart-create", status_code=303)
-
-        symbol_clean = str(symbol or "").strip().upper()
-        if not symbol_clean:
-            return RedirectResponse("/paper/smart-create", status_code=303)
-
-        tp_value = _safe_float(tp_pct, None)
-        sl_value = _safe_float(sl_pct, None)
-        trend_mode = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
-        strict_mode = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
-
-        plan = build_smart_dca_plan(
-            symbol=symbol_clean,
-            entry_amount_usdt=entry_amount,
-            tp_pct=tp_value,
-            sl_pct=sl_value,
-            max_levels=5,
-            strategy_mode=strategy_mode,
-        )
-        if not bool(plan.get("ok")):
-            db.add(
-                ActivityLog(
-                    event_type="SMART_DCA_FAIL",
-                    symbol=symbol_clean,
-                    message=f"Create failed: {plan.get('error', 'unknown error')}",
-                )
-            )
-            db.commit()
-            return RedirectResponse("/paper/smart-create", status_code=303)
-
-        campaign = Campaign(
-            name=name.strip() or f"SMART DCA {symbol_clean}",
-            mode="paper",
-            status="active",
-            entry_amount_usdt=entry_amount,
-            tp_pct=tp_value,
-            sl_pct=sl_value,
-            ai_dca_enabled=True,
-            smart_dca_enabled=True,
-            strict_support_score_required=strict_mode,
-            trend_filter_enabled=trend_mode,
-            auto_reentry_enabled=False,
-            loop_enabled=False,
-            loop_v2_enabled=False,
-            loop_target_count=0,
-            ai_dca_profile=f"smart_weighted_{str(strategy_mode or 'auto').strip().lower()}",
-            ai_dca_notes=str(plan.get("note", "Smart weighted DCA.")),
-            ai_dca_suggested_rules_json=json.dumps(plan.get("rules", [])),
-        )
-        db.add(campaign)
-        db.flush()
-
-        for row in plan.get("rules", []):
-            try:
-                drop_pct = float(row.get("drop_pct", 0.0))
-                alloc_pct = float(row.get("allocation_pct", 0.0))
-            except Exception:
-                continue
-            if drop_pct <= 0 or alloc_pct <= 0:
-                continue
-            db.add(
-                DcaRule(
-                    campaign_id=campaign.id,
-                    name=str(row.get("name", "SMART-DCA")).strip() or "SMART-DCA",
-                    drop_pct=drop_pct,
-                    allocation_pct=alloc_pct,
-                )
-            )
-
-        db.add(
-            ActivityLog(
-                event_type="SMART_DCA_PLAN",
-                symbol=symbol_clean,
-                message=(
-                    f"Campaign='{campaign.name}' | entry={entry_amount:.2f} | "
-                    f"estimate_total={float(plan['estimate']['total_if_all_filled_usdt']):.2f} | "
-                    f"levels={len(plan.get('rules', []))}"
-                ),
-            )
-        )
-        db.commit()
-
-        opened, errors = create_campaign_positions(db, campaign, [symbol_clean])
-        if errors:
-            campaign.status = "paused"
-            db.add(
-                ActivityLog(
-                    event_type="CAMPAIGN_ERROR",
-                    symbol=symbol_clean,
-                    message=f"Campaign '{campaign.name}' failed to open position: {' | '.join(errors)}",
-                )
-            )
-            db.commit()
-        elif opened > 0:
-            db.add(
-                ActivityLog(
-                    event_type="SMART_DCA",
-                    symbol=symbol_clean,
-                    message=f"Campaign '{campaign.name}' started with SMART DCA plan.",
-                )
-            )
-            db.commit()
-        return RedirectResponse(f"/paper/campaigns/{campaign.id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/reset")
-async def reset_paper_data(confirm_text: str = Form("")) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        if str(confirm_text).strip().upper() != "RESET":
-            db.add(
-                ActivityLog(
-                    event_type="RESET_BLOCKED",
-                    symbol="-",
-                    message="Paper reset blocked: invalid confirmation text.",
-                )
-            )
-            db.commit()
-            return RedirectResponse("/paper/create", status_code=303)
-
-        db.query(PositionDcaState).delete()
-        db.query(Position).delete()
-        db.query(DcaRule).delete()
-        db.query(Campaign).delete()
-        db.query(ActivityLog).delete()
-        db.query(AppSetting).delete()
-        db.commit()
-
-        ensure_defaults(db, settings.paper_start_balance)
-        return RedirectResponse("/paper/create", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/campaigns/{campaign_id}/toggle")
-async def toggle_paper_campaign(campaign_id: int) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "paper").first()
-        if campaign:
-            campaign.status = "paused" if campaign.status == "active" else "active"
-            db.add(
-                ActivityLog(
-                    event_type="CAMPAIGN",
-                    symbol="-",
-                    message=f"Campaign '{campaign.name}' switched to {campaign.status}.",
-                )
-            )
-            db.commit()
-        return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/campaigns/{campaign_id}/recalculate-dca")
-async def recalculate_campaign_dca_now(campaign_id: int) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "paper").first()
-        if not campaign:
-            return RedirectResponse("/paper", status_code=303)
-
-        touched_positions, updated_states = recalculate_campaign_dca(db, campaign)
-        db.add(
-            ActivityLog(
-                event_type="DCA_RECALC",
-                symbol="-",
-                message=(
-                    f"Campaign='{campaign.name}' | touched_positions={touched_positions} "
-                    f"| updated_pending_states={updated_states}"
-                ),
-            )
-        )
-        db.commit()
-        return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/positions/{position_id}/sell")
-async def manual_sell_position(position_id: int) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        pos = (
-            db.query(Position)
-            .join(Campaign, Campaign.id == Position.campaign_id)
-            .filter(Position.id == position_id, Position.status == "open", Campaign.mode == "paper")
-            .first()
-        )
-        if not pos:
-            return RedirectResponse("/paper", status_code=303)
-
-        campaign_id = pos.campaign_id
-        prices = get_prices([pos.symbol])
-        price = float(prices.get(pos.symbol, pos.average_price))
-        proceeds = float(pos.total_qty) * price
-        pnl = proceeds - float(pos.total_invested_usdt)
-
-        pos.status = "closed"
-        pos.closed_at = datetime.utcnow()
-        pos.close_price = price
-        pos.realized_pnl_usdt = pnl
-        pos.close_reason = "MANUAL_SELL"
-
-        cash_row = db.query(AppSetting).filter(AppSetting.key == "paper_cash").first()
-        cash = float(cash_row.value) if cash_row and cash_row.value else 0.0
-        cash += proceeds
-        if cash_row:
-            cash_row.value = f"{cash:.8f}"
-        else:
-            db.add(AppSetting(key="paper_cash", value=f"{cash:.8f}"))
-
-        db.add(
-            ActivityLog(
-                event_type="MANUAL_SELL",
-                symbol=pos.symbol,
-                message=(
-                    f"Campaign={pos.campaign.name} | Close={price:.6f} | Qty={pos.total_qty:.8f} "
-                    f"| Proceeds={proceeds:.2f} | PnL={pnl:+.2f}"
-                ),
-            )
-        )
-        db.commit()
-        return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
-    finally:
-        db.close()
-
-
-@app.post("/paper/campaigns/{campaign_id}/edit")
-async def edit_paper_campaign(
-    campaign_id: int,
-    tp_pct: str = Form(""),
-    sl_pct: str = Form(""),
-    trend_filter_enabled: str | None = Form(None),
-    auto_reentry_enabled: str | None = Form(None),
-    strict_support_score_required: str | None = Form(None),
-    loop_v2_enabled: str | None = Form(None),
-    loop_target_count: str = Form(""),
-    dca_drop_1: str = Form(""),
-    dca_alloc_1: str = Form(""),
-    dca_drop_2: str = Form(""),
-    dca_alloc_2: str = Form(""),
-    dca_drop_3: str = Form(""),
-    dca_alloc_3: str = Form(""),
-    dca_drop_4: str = Form(""),
-    dca_alloc_4: str = Form(""),
-    dca_drop_5: str = Form(""),
-    dca_alloc_5: str = Form(""),
-) -> RedirectResponse:
-    db = SessionLocal()
-    try:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.mode == "paper").first()
-        if not campaign:
-            return RedirectResponse("/paper", status_code=303)
-
-        campaign.tp_pct = _safe_float(tp_pct, None)
-        campaign.sl_pct = _safe_float(sl_pct, None)
-        campaign.trend_filter_enabled = str(trend_filter_enabled or "").lower() in {"on", "true", "1", "yes"}
-        campaign.auto_reentry_enabled = str(auto_reentry_enabled or "").lower() in {"on", "true", "1", "yes"}
-        campaign.strict_support_score_required = str(strict_support_score_required or "").lower() in {"on", "true", "1", "yes"}
-        if campaign.loop_enabled:
-            campaign.strict_support_score_required = True
-            campaign.loop_v2_enabled = str(loop_v2_enabled or "").lower() in {"on", "true", "1", "yes"}
-        if campaign.loop_enabled:
-            desired = int(_safe_float(loop_target_count, float(campaign.loop_target_count or 5)) or 5)
-            campaign.loop_target_count = min(max(desired, 1), 30)
-
-        incoming = [
-            ("DCA-1", _safe_float(dca_drop_1, None), _safe_float(dca_alloc_1, None)),
-            ("DCA-2", _safe_float(dca_drop_2, None), _safe_float(dca_alloc_2, None)),
-            ("DCA-3", _safe_float(dca_drop_3, None), _safe_float(dca_alloc_3, None)),
-            ("DCA-4", _safe_float(dca_drop_4, None), _safe_float(dca_alloc_4, None)),
-            ("DCA-5", _safe_float(dca_drop_5, None), _safe_float(dca_alloc_5, None)),
-        ]
-        existing = {r.name: r for r in db.query(DcaRule).filter(DcaRule.campaign_id == campaign.id).all()}
-        kept_rule_names: set[str] = set()
-        for name_rule, drop_pct, alloc_pct in incoming:
-            if drop_pct is None or alloc_pct is None or drop_pct <= 0 or alloc_pct <= 0:
-                continue
-            kept_rule_names.add(name_rule)
-            row = existing.get(name_rule)
-            if row:
-                row.drop_pct = drop_pct
-                row.allocation_pct = alloc_pct
-            else:
-                db.add(
-                    DcaRule(
-                        campaign_id=campaign.id,
-                        name=name_rule,
-                        drop_pct=drop_pct,
-                        allocation_pct=alloc_pct,
-                    )
-                )
-
-        for name_rule, row in existing.items():
-            if name_rule not in kept_rule_names:
-                db.delete(row)
-
-        db.flush()
-        _sync_open_positions_dca_states(db, campaign.id)
-        db.add(
-            ActivityLog(
-                event_type="CAMPAIGN_EDIT",
-                symbol="-",
-                message=(
-                    f"Campaign '{campaign.name}' updated: TP={campaign.tp_pct}, SL={campaign.sl_pct}, "
-                    f"DCA rules={sorted(kept_rule_names)}"
-                ),
-            )
-        )
-        db.commit()
-        return RedirectResponse(f"/paper/campaigns/{campaign_id}", status_code=303)
-    finally:
-        db.close()
-
-
 @app.post("/live/campaigns")
 async def create_live_campaign_route(
     request: Request,
@@ -4799,282 +3626,6 @@ async def api_smart_backtest(
     return JSONResponse(res)
 
 
-@app.get("/api/paper/suggestions")
-async def api_paper_suggestions(limit: int = 5, v2: int = 0) -> JSONResponse:
-    safe_limit = min(max(int(limit), 1), 10)
-    data = suggest_top_symbols(safe_limit, use_v2=bool(v2))
-    return JSONResponse(data)
-
-
-@app.get("/api/paper/smart-plan")
-async def api_paper_smart_plan(
-    symbol: str,
-    entry_amount_usdt: float = 0.0,
-    total_budget_usdt: float | None = None,
-    tp_pct: float | None = None,
-    sl_pct: float | None = None,
-    strategy_mode: str = "auto",
-) -> JSONResponse:
-    entry = float(entry_amount_usdt or 0.0)
-    budget = float(total_budget_usdt or 0.0)
-    if budget > 0 and entry <= 0:
-        seed_entry = 100.0
-        seed = build_smart_dca_plan(
-            symbol=symbol,
-            entry_amount_usdt=seed_entry,
-            tp_pct=tp_pct,
-            sl_pct=sl_pct,
-            max_levels=5,
-            strategy_mode=strategy_mode,
-        )
-        if not seed.get("ok"):
-            return JSONResponse(seed)
-        mult = float(seed.get("capital_planning", {}).get("total_multiplier_sum", 0.0))
-        if mult <= 0:
-            return JSONResponse({"ok": False, "error": "Could not derive entry from total budget."})
-        entry = budget / mult
-    plan = build_smart_dca_plan(
-        symbol=symbol,
-        entry_amount_usdt=entry,
-        tp_pct=tp_pct,
-        sl_pct=sl_pct,
-        max_levels=5,
-        strategy_mode=strategy_mode,
-    )
-    if plan.get("ok") and budget > 0:
-        plan["capital_planning"]["requested_total_budget_usdt"] = round(budget, 4)
-        plan["capital_planning"]["derived_entry_from_budget_usdt"] = round(entry, 4)
-        plan["capital_planning"]["input_mode"] = "total_budget"
-    elif plan.get("ok"):
-        plan["capital_planning"]["input_mode"] = "base_entry"
-    return JSONResponse(plan)
-
-
-@app.get("/api/paper/positions/{position_id}/dca")
-async def api_position_dca(position_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        position = db.query(Position).filter(Position.id == position_id).first()
-        if not position:
-            return JSONResponse({"items": []})
-        states = (
-            db.query(PositionDcaState)
-            .join(DcaRule, DcaRule.id == PositionDcaState.dca_rule_id)
-            .filter(PositionDcaState.position_id == position_id)
-            .order_by(DcaRule.drop_pct.asc())
-            .all()
-        )
-        items = []
-        for st in states:
-            drop_pct = float(st.custom_drop_pct if st.custom_drop_pct is not None else st.rule.drop_pct)
-            alloc_pct = float(st.custom_allocation_pct if st.custom_allocation_pct is not None else st.rule.allocation_pct)
-            if alloc_pct <= 0:
-                continue
-            trigger_price = float(position.initial_price) * (1 - (drop_pct / 100.0))
-            items.append(
-                {
-                    "rule": st.rule.name,
-                    "drop_pct": drop_pct,
-                    "allocation_pct": alloc_pct,
-                    "support_score": st.custom_support_score,
-                    "trigger_price": trigger_price,
-                    "source": "symbol_specific" if st.custom_drop_pct is not None else "campaign_default",
-                    "executed": st.executed,
-                    "executed_price": st.executed_price,
-                }
-            )
-        return JSONResponse({"items": items})
-    finally:
-        db.close()
-
-
-# ── Smart Campaign routes ──────────────────────────────────────────────────────
-
-@app.get("/api/smart-campaign/capital")
-async def api_smart_capital(n: int = 5, entry: float = 100.0) -> JSONResponse:
-    """Calculate required capital for N symbols with given entry amount."""
-    data = calculate_required_capital(entry, n, [])
-    return JSONResponse(data)
-
-
-@app.post("/api/smart-campaign/create")
-async def api_smart_create(
-    max_symbols:     int   = Form(5),
-    entry_amount:    float = Form(100.0),
-    feature_version: str   = Form("v1"),
-) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        version = feature_version if feature_version in ("v1", "v2") else "v1"
-        c = create_campaign(db, max_symbols=max_symbols, entry_amount=entry_amount, feature_version=version)
-        return JSONResponse({"ok": True, "id": c.id})
-    finally:
-        db.close()
-
-
-@app.post("/api/smart-campaign/{campaign_id}/stop")
-async def api_smart_stop(campaign_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        ok = stop_campaign(db, campaign_id)
-        return JSONResponse({"ok": ok})
-    finally:
-        db.close()
-
-
-@app.post("/api/smart-campaign/{campaign_id}/resume")
-async def api_smart_resume(campaign_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        ok = resume_campaign(db, campaign_id)
-        return JSONResponse({"ok": ok})
-    finally:
-        db.close()
-
-
-@app.get("/api/smart-campaign/list")
-async def api_smart_list() -> JSONResponse:
-    db = SessionLocal()
-    try:
-        campaigns = db.query(SmartCampaign).order_by(SmartCampaign.created_at.desc()).all()
-        return JSONResponse([campaign_summary(db, c) for c in campaigns])
-    finally:
-        db.close()
-
-
-@app.get("/api/smart-campaign/dashboard")
-async def api_smart_dashboard() -> JSONResponse:
-    """Aggregate stats across all smart campaigns for the dashboard."""
-    db = SessionLocal()
-    try:
-        from app.models.smart_campaign import SmartPosition as SP, SmartCampaign as SC
-        campaigns = db.query(SC).all()
-        positions = db.query(SP).all()
-
-        closed   = [p for p in positions if p.status != "active"]
-        active   = [p for p in positions if p.status == "active"]
-        won      = [p for p in closed if (p.close_pnl_usdt or 0) > 0]
-        lost     = [p for p in closed if (p.close_pnl_usdt or 0) <= 0]
-
-        total_invested  = sum(p.total_invested_usdt or 0 for p in active)
-        realized_pnl    = sum(p.close_pnl_usdt or 0 for p in closed)
-        open_pnl        = sum(p.pnl_usdt or 0 for p in active)
-        total_pnl       = realized_pnl + open_pnl
-
-        win_rate = (len(won) / len(closed) * 100) if closed else 0
-        avg_win  = (sum(p.close_pnl_usdt or 0 for p in won)  / len(won))  if won  else 0
-        avg_loss = (sum(p.close_pnl_usdt or 0 for p in lost) / len(lost)) if lost else 0
-
-        # Trade log — all positions sorted by latest first
-        from datetime import datetime as _dt
-        log = []
-        for p in sorted(positions, key=lambda x: x.created_at or _dt.min, reverse=True)[:50]:
-            log.append({
-                "id":            p.id,
-                "symbol":        p.symbol,
-                "status":        p.status,
-                "entry_price":   p.entry_price,
-                "avg_price":     p.avg_price,
-                "current_price": p.current_price,
-                "invested":      p.total_invested_usdt,
-                "pnl_pct":       p.pnl_pct,
-                "pnl_usdt":      p.pnl_usdt if p.status == "active" else p.close_pnl_usdt,
-                "close_reason":  p.close_reason,
-                "dca1":          p.dca1_triggered,
-                "dca2":          p.dca2_triggered,
-                "opened_at":     p.created_at.strftime("%Y-%m-%d %H:%M") if p.created_at else "",
-                "closed_at":     p.closed_at.strftime("%Y-%m-%d %H:%M") if p.closed_at else None,
-                "campaign_id":   p.campaign_id,
-            })
-
-        return JSONResponse({
-            "total_campaigns":  len(campaigns),
-            "running_campaigns": sum(1 for c in campaigns if c.status == "running"),
-            "active_positions": len(active),
-            "total_invested":   round(total_invested,  2),
-            "realized_pnl":     round(realized_pnl,    2),
-            "open_pnl":         round(open_pnl,        2),
-            "total_pnl":        round(total_pnl,       2),
-            "total_trades":     len(closed),
-            "winning_trades":   len(won),
-            "losing_trades":    len(lost),
-            "win_rate":         round(win_rate, 1),
-            "avg_win_usdt":     round(avg_win,  2),
-            "avg_loss_usdt":    round(avg_loss, 2),
-            "trade_log":        log,
-        })
-    finally:
-        db.close()
-
-
-@app.post("/api/smart-campaign/reset")
-async def api_smart_reset() -> JSONResponse:
-    """Delete ALL paper smart campaigns, positions. Keeps advisor analysis intact."""
-    db = SessionLocal()
-    try:
-        db.query(SmartPosition).delete()
-        db.query(SmartCampaign).delete()
-        db.commit()
-        return JSONResponse({"ok": True})
-    finally:
-        db.close()
-
-
-@app.get("/api/smart-campaign/{campaign_id}")
-async def api_smart_detail(campaign_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
-        if not c:
-            return JSONResponse({"error": "Not found"}, status_code=404)
-        return JSONResponse(campaign_summary(db, c))
-    finally:
-        db.close()
-
-
-@app.put("/api/smart-campaign/{campaign_id}")
-async def api_smart_edit(campaign_id: int, request: Request) -> JSONResponse:
-    body = await request.json()
-    db = SessionLocal()
-    try:
-        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
-        if not c:
-            return JSONResponse({"error": "Not found"}, status_code=404)
-        if "max_symbols" in body:
-            c.max_symbols = int(body["max_symbols"])
-        if "entry_amount_usdt" in body:
-            c.entry_amount_usdt = float(body["entry_amount_usdt"])
-        db.commit()
-        return JSONResponse({"ok": True})
-    finally:
-        db.close()
-
-
-@app.delete("/api/smart-campaign/{campaign_id}")
-async def api_smart_delete(campaign_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        c = db.query(SmartCampaign).filter(SmartCampaign.id == campaign_id).first()
-        if not c:
-            return JSONResponse({"error": "Not found"}, status_code=404)
-        db.query(SmartPosition).filter(SmartPosition.campaign_id == campaign_id).delete()
-        db.delete(c)
-        db.commit()
-        return JSONResponse({"ok": True})
-    finally:
-        db.close()
-
-
-@app.post("/api/smart-campaign/position/{position_id}/sell")
-async def api_smart_sell(position_id: int) -> JSONResponse:
-    db = SessionLocal()
-    try:
-        result = smart_manual_sell(db, position_id)
-        return JSONResponse(result)
-    finally:
-        db.close()
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # LIVE SMART CAMPAIGN ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5263,5 +3814,4 @@ async def api_live_smart_delete(campaign_id: int) -> JSONResponse:
 
 @app.get("/api/live-smart/capital")
 async def api_live_capital(n: int = 5, entry: float = 50.0):
-    from app.services.smart_campaign_service import calculate_required_capital
     return JSONResponse(calculate_required_capital(entry, n, []))

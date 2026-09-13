@@ -14,9 +14,9 @@ from app.models.paper_v2 import (
     PositionDcaState,
     SmartRuntimeState,
 )
+from app.services.analytics import _ema, _support_engine, build_smart_dca_plan
 from app.services.binance_public import get_klines
 from app.services.live_trading import recalculate_live_campaign_dca
-from app.services.paper_trading import _ema, _support_engine, build_smart_dca_plan, recalculate_campaign_dca
 
 
 def _latest_symbol_for_campaign(db: Session, campaign_id: int) -> str | None:
@@ -88,7 +88,11 @@ def _upsert_runtime(
 
 
 def refresh_smart_medium(db: Session) -> tuple[int, int]:
-    campaigns = db.query(Campaign).filter(Campaign.smart_dca_enabled == True).all()
+    campaigns = (
+        db.query(Campaign)
+        .filter(Campaign.smart_dca_enabled == True, Campaign.mode == "live")
+        .all()
+    )
     touched = 0
     errors = 0
     now = datetime.utcnow()
@@ -154,7 +158,11 @@ def _replace_campaign_rules_with_plan(db: Session, campaign: Campaign, plan_rule
 
 
 def refresh_smart_slow(db: Session) -> tuple[int, int]:
-    campaigns = db.query(Campaign).filter(Campaign.smart_dca_enabled == True).all()
+    campaigns = (
+        db.query(Campaign)
+        .filter(Campaign.smart_dca_enabled == True, Campaign.mode == "live")
+        .all()
+    )
     touched = 0
     review_only = 0
     now = datetime.utcnow()
@@ -228,10 +236,7 @@ def refresh_smart_slow(db: Session) -> tuple[int, int]:
         st.recalc_reason = None
         st.execution_zones_locked = True
         db.flush()
-        if c.mode == "live":
-            recalculate_live_campaign_dca(db, c)
-        else:
-            recalculate_campaign_dca(db, c)
+        recalculate_live_campaign_dca(db, c)
         db.add(
             ActivityLog(
                 event_type="SMART_RECALC_APPLY",

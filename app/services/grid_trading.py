@@ -22,7 +22,7 @@ _MAX_FILLS_PER_CYCLE = 3
 
 
 def _fee_rate() -> float:
-    return max(0.0, float(getattr(settings, "paper_fee_pct", 0.1)) / 100.0)
+    return max(0.0, float(settings.trading_fee_pct) / 100.0)
 
 
 def _log(db: Session, mode: str, event: str, symbol: str, msg: str) -> None:

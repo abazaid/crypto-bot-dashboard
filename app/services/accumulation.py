@@ -16,8 +16,8 @@ from app.services.binance_live import (
 from app.services.binance_public import get_prices
 
 
-def _paper_fee_rate() -> float:
-    return max(0.0, float(getattr(settings, "paper_fee_pct", 0.1)) / 100.0)
+def _fee_rate() -> float:
+    return max(0.0, float(settings.trading_fee_pct) / 100.0)
 
 
 def _log(db: Session, mode: str, event: str, symbol: str, message: str) -> None:
@@ -63,7 +63,7 @@ def _paper_buy(db: Session, plan: AccumulationPlan, price: float, usdt: float, r
     usdt = float(usdt)
     if price <= 0 or usdt < float(plan.min_order_usdt or 5.0):
         return False
-    fee_usdt = usdt * _paper_fee_rate()
+    fee_usdt = usdt * _fee_rate()
     total_spent = usdt + fee_usdt
     if float(plan.reserved_cash_usdt or 0.0) + 1e-9 < total_spent:
         return False
@@ -114,7 +114,7 @@ def _paper_sell(db: Session, plan: AccumulationPlan, price: float, qty: float, r
         return False
     avg = float(plan.avg_entry_price or 0.0)
     cost = qty * avg
-    fee_usdt = gross * _paper_fee_rate()
+    fee_usdt = gross * _fee_rate()
     net_quote = gross - fee_usdt
     pnl = net_quote - cost
     remaining = float(plan.coin_qty or 0.0) - qty

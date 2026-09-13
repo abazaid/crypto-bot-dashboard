@@ -7,7 +7,7 @@ why a symbol was skipped, why DCA was triggered or skipped.
 Safety rules:
   - Check USDT balance before every BUY (open + DCA)
   - Use actual filled qty/price from Binance order response
-  - Separate models from paper trading (no risk of mixing)
+  - Dedicated live models (no risk of mixing with other data)
 """
 from __future__ import annotations
 
@@ -34,6 +34,42 @@ logger = logging.getLogger(__name__)
 
 # Debounce: only log SKIP_BALANCE once per 5 minutes per campaign
 _last_balance_warn: dict[int, datetime] = {}
+
+
+# ── Capital calculator ────────────────────────────────────────────────────────
+
+def calculate_required_capital(
+    entry_amount: float,
+    n_symbols: int,
+    recs: list[dict],
+) -> dict:
+    """
+    Worst-case capital needed: entry + DCA1 + DCA2 for each slot.
+    Uses average DCA allocations from top N recommendations.
+    """
+    top = recs[:n_symbols] if recs else []
+    if top:
+        avg_alloc1 = sum(r.get("params", {}).get("dca_alloc_1", 150) for r in top) / len(top)
+        avg_alloc2 = sum(r.get("params", {}).get("dca_alloc_2", 250) for r in top) / len(top)
+    else:
+        avg_alloc1, avg_alloc2 = 150.0, 250.0
+
+    per_entry   = entry_amount
+    per_dca1    = entry_amount * avg_alloc1 / 100
+    per_dca2    = entry_amount * avg_alloc2 / 100
+    per_symbol  = per_entry + per_dca1 + per_dca2
+    total       = per_symbol * n_symbols
+
+    return {
+        "per_symbol_entry":  round(per_entry,  2),
+        "per_symbol_dca1":   round(per_dca1,   2),
+        "per_symbol_dca2":   round(per_dca2,   2),
+        "per_symbol_total":  round(per_symbol, 2),
+        "total_capital":     round(total,      2),
+        "n_symbols":         n_symbols,
+        "avg_alloc1_pct":    round(avg_alloc1, 1),
+        "avg_alloc2_pct":    round(avg_alloc2, 1),
+    }
 
 
 # ── Logging helper ────────────────────────────────────────────────────────────

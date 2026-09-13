@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.services.analytics import _ema, _depth_multiplier
 from app.services.binance_public import get_klines
-from app.services.paper_trading import _ema, _depth_multiplier
 
 
 @dataclass

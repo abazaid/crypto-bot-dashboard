@@ -17,13 +17,13 @@ from app.services.binance_live import (
     place_market_buy_quote,
     place_market_sell_qty,
 )
-from app.services.binance_public import get_prices
-from app.services.paper_trading import (
+from app.services.analytics import (
     _ai_dca_confirm,
     btc_market_state,
     build_symbol_ai_dca_rules,
     suggest_top_symbols,
 )
+from app.services.binance_public import get_prices
 
 
 def add_live_log(db: Session, event_type: str, symbol: str, message: str) -> None:
