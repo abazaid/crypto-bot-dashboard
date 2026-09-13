@@ -1,3 +1,6 @@
 .env
 __pycache__/
 *.py[cod]
+
+# Database backups created by scripts/remove_paper_data.py
+*.db.backup-*
