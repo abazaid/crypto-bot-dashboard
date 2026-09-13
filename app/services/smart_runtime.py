@@ -5,7 +5,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.models.paper_v2 import (
+from app.models.trading import (
     ActivityLog,
     Campaign,
     DcaRule,

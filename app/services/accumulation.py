@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.paper_v2 import AccumulationPlan, AccumulationTrade, ActivityLog
+from app.models.trading import AccumulationPlan, AccumulationTrade, ActivityLog
 from app.services.binance_live import (
     get_order_fee_usdt,
     get_usdt_free,

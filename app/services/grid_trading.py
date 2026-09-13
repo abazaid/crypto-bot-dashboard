@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.paper_v2 import ActivityLog, GridBot, GridTrade
+from app.models.trading import ActivityLog, GridBot, GridTrade
 from app.services.binance_live import (
     get_order_fee_usdt,
     get_usdt_free,

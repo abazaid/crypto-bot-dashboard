@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.paper_v2 import AIForecastCache
+from app.models.trading import AIForecastCache
 from app.services.binance_public import get_klines
 
 

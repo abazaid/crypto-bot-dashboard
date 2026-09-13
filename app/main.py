@@ -18,7 +18,7 @@ from sqlalchemy.orm import joinedload
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
-from app.models.paper_v2 import (
+from app.models.trading import (
     AccumulationPlan,
     AccumulationTrade,
     ActivityLog,

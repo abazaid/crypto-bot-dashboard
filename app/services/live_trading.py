@@ -4,7 +4,7 @@ import json
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.paper_v2 import ActivityLog, Campaign, DcaRule, Position, PositionDcaState
+from app.models.trading import ActivityLog, Campaign, DcaRule, Position, PositionDcaState
 from app.services.binance_live import (
     cancel_order,
     get_balances,
