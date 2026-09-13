@@ -97,9 +97,9 @@ def mock_binance():
 ## Testing Trading Logic
 
 ```python
-# tests/unit/test_paper_trading.py
+# tests/unit/test_analytics.py
 import pytest
-from app.services.paper_trading import PaperTradingService
+from app.services import analytics
 
 class TestSupportScoring:
     """Test support zone scoring logic."""
@@ -110,12 +110,12 @@ class TestSupportScoring:
         (1.0, "strong"),    # High score = strong DCA
     ])
     def test_dca_action_by_score(self, score, expected_action):
-        result = PaperTradingService.get_dca_action(score)
+        result = analytics.get_dca_action(score)
         assert result == expected_action
 
     def test_no_dca_without_support_score_in_strict_mode(self):
         """Strict mode: score=0 must skip DCA."""
-        result = PaperTradingService.should_execute_dca(
+        result = analytics.should_execute_dca(
             score=0.0, strict_mode=True
         )
         assert result is False
@@ -134,7 +134,7 @@ class TestDCAAllocation:
 
     def test_max_allocation_cap_respected(self):
         """Position size should never exceed MAX_SYMBOL_ALLOCATION_X."""
-        result = PaperTradingService.calculate_dca_size(
+        result = analytics.calculate_dca_size(
             current_value=700.0,
             max_multiplier=7.0,
             initial_investment=100.0
@@ -154,7 +154,6 @@ class TestCampaignAPI:
         response = client.post("/campaigns/create", data={
             "name": "Test Campaign",
             "symbol": "BTCUSDT",
-            "mode": "paper",
             "entry_amount": "100",
         })
         assert response.status_code == 200

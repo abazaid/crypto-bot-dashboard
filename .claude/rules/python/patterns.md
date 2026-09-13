@@ -7,7 +7,7 @@ paths:
 
 ## Protocol (Duck Typing)
 
-Use Protocol for abstractions between paper and live trading:
+Use Protocol for abstractions between the trading engine and exchange clients:
 
 ```python
 from typing import Protocol

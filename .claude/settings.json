@@ -15,7 +15,7 @@
       "Bash(git commit -m ':*)",
       "Bash(git push:*)",
       "Bash(python -c \"from app.services.grid_trading import create_bot, run_grid_cycle, get_grid_levels, profit_per_grid_pct; print\\('service OK'\\)\")",
-      "Bash(python -c \"from app.models.paper_v2 import GridBot, GridTrade; print\\('models OK'\\)\")",
+      "Bash(python -c \"from app.models.trading import GridBot, GridTrade; print\\('models OK'\\)\")",
       "Bash(python -c \"from app.main import app; print\\('main OK'\\)\")",
       "Bash(git commit -m ' *)"
     ]

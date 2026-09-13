@@ -7,7 +7,6 @@ class Settings:
     fast_loop_seconds = int(os.getenv("FAST_LOOP_SECONDS", os.getenv("CYCLE_SECONDS", "30")))
     medium_refresh_seconds = int(os.getenv("MEDIUM_REFRESH_SECONDS", "300"))
     slow_recalc_seconds = int(os.getenv("SLOW_RECALC_SECONDS", "14400"))
-    paper_start_balance = float(os.getenv("PAPER_START_BALANCE", "10000"))
     enforce_btc_filter = os.getenv("ENFORCE_BTC_FILTER", "true").lower() == "true"
     app_timezone = os.getenv("APP_TIMEZONE", "Asia/Riyadh")
     dca_near_support_pct = float(os.getenv("DCA_NEAR_SUPPORT_PCT", "2.0"))

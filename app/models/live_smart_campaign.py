@@ -1,6 +1,6 @@
 """
 Live Smart Campaign — real Binance order execution driven by Advisor recommendations.
-Completely separate from paper SmartCampaign for safety.
+Standalone tables, isolated from the main trading models for safety.
 """
 from __future__ import annotations
 

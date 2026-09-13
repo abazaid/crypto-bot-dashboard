@@ -33,7 +33,7 @@ alembic init alembic
 # sqlalchemy.url = sqlite:///./trading.db
 
 # Edit alembic/env.py to import your models:
-from app.models.paper_v2 import Base
+from app.models.trading import Base
 target_metadata = Base.metadata
 ```
 
@@ -138,7 +138,7 @@ def downgrade():
 These indexes should be added to improve query performance:
 
 ```python
-# In models/paper_v2.py, add to table definitions:
+# In models/trading.py, add to table definitions:
 # Or as a migration:
 
 indexes_to_add = [

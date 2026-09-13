@@ -1,7 +1,6 @@
 # Crypto Bots v2
 
 Smart campaign-based crypto trading platform with:
-- `Paper Trading` (full simulation engine)
 - `Live Mode` (real Binance execution)
 - `Smart DCA` (support-zone weighted accumulation)
 - `Smart Backtesting` (standalone ROI / MDD / Recovery module)
@@ -25,7 +24,7 @@ Core principle:
 
 ## Architecture
 
-- Campaign-centric system (`paper` / `live`).
+- Campaign-centric system (`live`).
 - Each campaign has isolated:
   - symbols scope
   - TP/SL
@@ -39,20 +38,9 @@ Core principle:
 
 ## Modes
 
-## 1) Paper Trading
+## Live Mode
 
-Virtual wallet simulation with full strategy lifecycle.
-
-Highlights:
-- Create standard, loop, and SMART DCA campaigns.
-- Edit TP/SL and DCA rules per campaign.
-- Manual sell per symbol.
-- Recalculate DCA now.
-- Independent trading history.
-
-## 2) Live Mode
-
-Real Binance execution with campaign logic mirrored from paper mode.
+Real Binance execution.
 
 Highlights:
 - Reads real balances from Binance.
@@ -189,7 +177,6 @@ Rule:
 ## Backtesting Module (Standalone)
 
 A separate module is now available for SMART DCA profile testing:
-- `/paper/backtest`
 - `/live/backtest`
 
 It reports:
@@ -206,8 +193,7 @@ Purpose:
 
 ## History & Analytics
 
-Separate history pages:
-- `/paper/history`
+History page:
 - `/live/history`
 
 Includes:
@@ -224,12 +210,6 @@ Includes:
 ## Main Pages
 
 - `/` mode selector
-- `/paper`
-- `/paper/create`
-- `/paper/smart-create`
-- `/paper/backtest`
-- `/paper/campaigns/{id}`
-- `/paper/history`
 - `/live`
 - `/live/create`
 - `/live/smart-create`
@@ -247,7 +227,6 @@ Core variables:
 - `APP_TIMEZONE`
 - `DATABASE_URL`
 - `CYCLE_SECONDS`
-- `PAPER_START_BALANCE`
 - `ENFORCE_BTC_FILTER`
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
@@ -267,7 +246,7 @@ Core variables:
 For SQLite persistence:
 - mount persistent volume to `/data`
 - set:
-  - `DATABASE_URL=sqlite:////data/paper_trading.db`
+  - `DATABASE_URL=sqlite:////data/db/paper_trading_v2.db`
 
 This prevents data loss after redeploy and avoids accidental fresh DB files.
 

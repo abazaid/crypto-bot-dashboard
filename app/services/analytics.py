@@ -1,8 +1,8 @@
 """Shared market analytics and DCA planning utilities.
 
-Extracted from the former paper_trading module: pure market-data
-functions (indicators, support engine, symbol scanning, DCA planning)
-used by live trading, smart runtime and backtesting. No DB access here.
+Pure market-data functions (indicators, support engine, symbol scanning,
+DCA planning) used by live trading, smart runtime and backtesting.
+No DB access here.
 """
 
 from app.core.config import settings

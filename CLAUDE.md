@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Campaign-based crypto trading automation platform supporting paper (simulated) and live (real Binance) trading modes. Built with Python 3, FastAPI, SQLAlchemy, and APScheduler.
+Campaign-based crypto trading automation platform for live trading (real Binance + KuCoin execution). Built with Python 3, FastAPI, SQLAlchemy, and APScheduler.
 
 ## Stack
 
@@ -16,10 +16,10 @@ Campaign-based crypto trading automation platform supporting paper (simulated) a
 | File | Purpose |
 |------|---------|
 | `app/main.py` | Router hub, endpoints, scheduler setup |
-| `app/services/paper_trading.py` | Paper mode logic, support scoring, DCA |
+| `app/services/analytics.py` | Market analysis, support scoring, DCA planning |
 | `app/services/live_trading.py` | Live Binance order execution |
 | `app/services/binance_live.py` | Binance API wrapper |
-| `app/models/paper_v2.py` | SQLAlchemy ORM models |
+| `app/models/trading.py` | SQLAlchemy ORM models |
 | `app/core/config.py` | Settings from environment variables |
 
 ## Available Agents

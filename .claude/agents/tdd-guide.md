@@ -52,7 +52,7 @@ pytest --cov=app --cov-report=term-missing
 1. **DCA logic**: What happens when support score = 0?
 2. **Order execution**: What if Binance returns an error mid-fill?
 3. **Concurrent locks**: What if two threads try to enter same campaign?
-4. **Paper vs Live parity**: Same input should produce same result in both modes
+4. **Min notional limits**: What if the computed order value falls below the exchange minimum (e.g. 5 USDT)?
 5. **Scheduler recovery**: What if job fails — does it retry safely?
 6. **SL/TP re-arming**: What if avg price changes after a DCA fill?
 7. **Empty/None symbol**: What if Binance returns empty klines?
@@ -64,7 +64,7 @@ pytest --cov=app --cov-report=term-missing
 tests/
 ├── conftest.py              # Shared fixtures (mock DB, mock Binance)
 ├── unit/
-│   ├── test_paper_trading.py    # Support scoring, DCA allocation
+│   ├── test_analytics.py        # Support scoring, DCA allocation
 │   ├── test_live_trading.py     # Order logic (mocked Binance)
 │   ├── test_accumulation.py     # DCA plan execution
 │   └── test_forecasting.py      # Forecast calculations
@@ -106,7 +106,7 @@ def db_session():
 - [ ] All FastAPI endpoints have integration tests
 - [ ] Binance API always mocked in tests (never real calls)
 - [ ] Error paths tested (not just happy path)
-- [ ] Paper vs live mode parity tested
+- [ ] Exchange minimum-order edge cases tested
 - [ ] Concurrent operation safety tested
 - [ ] Coverage is 80%+
 

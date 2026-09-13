@@ -153,5 +153,5 @@ logging.info(
 - [ ] All order attempts audit-logged (success AND failure)
 - [ ] Retry logic has a maximum attempt cap
 - [ ] Logs sanitized — no API keys or secrets in log output
-- [ ] Paper mode tested thoroughly before enabling live mode
-- [ ] Separate API keys for paper test account vs live account
+- [ ] Live changes validated with small order sizes before scaling up
+- [ ] Separate API keys per exchange account (Binance 1/2, KuCoin) — never shared

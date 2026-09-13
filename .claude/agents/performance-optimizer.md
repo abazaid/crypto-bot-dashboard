@@ -28,7 +28,7 @@ python -m pstats profile.out
 # Check DB table sizes
 python -c "
 from app.core.database import SessionLocal
-from app.models.paper_v2 import ActivityLog, MarketSnapshot
+from app.models.trading import ActivityLog, MarketSnapshot
 db = SessionLocal()
 print('ActivityLog rows:', db.query(ActivityLog).count())
 print('MarketSnapshot rows:', db.query(MarketSnapshot).count())
@@ -67,7 +67,7 @@ print('MarketSnapshot rows:', db.query(MarketSnapshot).count())
 
 | Anti-Pattern | Location | Fix |
 |---|---|---|
-| Fetching klines every cycle for each symbol | paper_trading.py | Cache with TTL |
+| Fetching klines every cycle for each symbol | analytics.py | Cache with TTL |
 | N+1: query positions then query each campaign | main.py | Join query |
 | ActivityLog grows forever | DB | Add scheduled cleanup |
 | MarketSnapshot grows forever | DB | Add retention limit |

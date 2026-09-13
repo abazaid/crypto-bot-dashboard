@@ -78,6 +78,6 @@ sell_qty = extra_qty * (sell_pct / 100)
 | الملف | الوظيفة |
 |-------|---------|
 | [app/services/accumulation.py](../app/services/accumulation.py) | منطق البوت الكامل |
-| [app/models/paper_v2.py](../app/models/paper_v2.py) | نموذج `AccumulationPlan` في قاعدة البيانات |
+| [app/models/trading.py](../app/models/trading.py) | نموذج `AccumulationPlan` في قاعدة البيانات |
 | [app/web/templates/accumulation_plan.html](../app/web/templates/accumulation_plan.html) | واجهة عرض الخطة |
 | [app/web/templates/accumulation_home.html](../app/web/templates/accumulation_home.html) | الصفحة الرئيسية للبوت |
