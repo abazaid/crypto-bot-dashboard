@@ -838,7 +838,7 @@ def _scheduled_live_acc_cycle() -> None:
         return
     db = SessionLocal()
     try:
-        run_accumulation_cycle(db, "live")
+        run_accumulation_cycle(db)
     finally:
         db.close()
         live_acc_lock.release()
@@ -850,7 +850,7 @@ def _scheduled_live_grid_cycle() -> None:
         return
     db = SessionLocal()
     try:
-        run_grid_cycle(db, "live")
+        run_grid_cycle(db)
     finally:
         db.close()
         live_grid_lock.release()
@@ -1133,7 +1133,6 @@ async def live_grid_create(
     try:
         bot = create_grid_bot(
             db,
-            mode="live",
             name=name,
             symbol=symbol,
             lower_limit=_safe_float_or_default(lower_limit, 0.0),
@@ -1250,7 +1249,6 @@ async def live_accumulation_create(
     try:
         plan = create_accumulation_plan(
             db,
-            mode="live",
             name=name,
             symbol=symbol,
             total_capital_usdt=_safe_float_or_default(total_capital_usdt, 0.0),
