@@ -21,6 +21,8 @@ Campaign-based crypto trading automation platform for live trading (real Binance
 | `app/services/binance_live.py` | Binance API wrapper |
 | `app/models/trading.py` | SQLAlchemy ORM models |
 | `app/core/config.py` | Settings from environment variables |
+| `app/services/ai_pool_service.py` | AI Trader isolated pool (ledger, exits, breakers) — see `docs/ai_trader.md` |
+| `app/services/ai_strategy.py` | AI Trader strategy ensemble (breakout / pullback / squeeze) |
 
 ## Available Agents
 
@@ -72,7 +74,7 @@ pytest -m "not slow"    # Skip slow tests
 ## Known Issues to Fix (Priority Order)
 
 1. **27 bare except blocks** — `grep -n "except:" app/ -r` shows them all
-2. **No test suite** — start with `tests/conftest.py` and unit tests for support scoring
+2. **Test suite is partial** — `tests/` covers the AI Trader pool (indicators, strategy, ledger); support scoring and legacy services still need tests
 3. **No Alembic migrations** — schema changes are currently manual
 4. **Unbounded ActivityLog/MarketSnapshot tables** — need cleanup job
 5. **No retry logic on Binance API** — add exponential backoff

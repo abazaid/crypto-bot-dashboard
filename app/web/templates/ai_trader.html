@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="layout-split">
+  <aside class="layout-side card">
+    <h3>Live Menu</h3>
+    <a class="side-link" href="/live">Campaigns Home</a>
+    <a class="side-link" href="/live/all-coins">All Coins</a>
+    <a class="side-link active" href="/live/ai-trader">AI Trader</a>
+    <a class="side-link" href="/live/accumulation">Accumulation Bot</a>
+    <a class="side-link" href="/live/grid">Grid Bot</a>
+    <a class="side-link" href="/live/history">Live History</a>
+  </aside>
+
+  <div class="layout-main">
+    <section class="hero">
+      <h1>AI Trader (Binance 1)</h1>
+      <p>An isolated sub-wallet inside the account. It trades only its own capital and its own coins: breakout, trend-pullback and squeeze strategies, ATR stops, partial take-profit, trailing stop, daily-loss and drawdown breakers.</p>
+      {% if error %}<p class="pnl-neg">{{ error }}</p>{% endif %}
+      {% if notice %}<p class="pnl-pos">{{ notice }}</p>{% endif %}
+    </section>
+
+    {% if not pool %}
+    <section class="card">
+      <h2>Create AI Pool</h2>
+      <p class="muted-line">Account free USDT: <strong>{{ "%.2f"|format(account_free_usdt) }}</strong>. The amount you allocate is reserved for the AI; nothing else in the account is touched.</p>
+      <form method="post" action="/live/ai-trader/create" class="form-grid">
+        <label>Amount (USDT)
+          <input type="number" name="amount" step="0.01" min="10" value="50" required>
+        </label>
+        <label>Risk profile
+          <select name="risk_profile">
+            <option value="conservative">Conservative (1% risk, 3 positions, DD stop 10%)</option>
+            <option value="balanced" selected>Balanced (1.5% risk, 4 positions, DD stop 15%)</option>
+            <option value="aggressive">Aggressive (2.5% risk, 5 positions, DD stop 20%)</option>
+          </select>
+        </label>
+        <label>Name
+          <input type="text" name="name" value="AI Trader" maxlength="80">
+        </label>
+        <div class="full">
+          <button type="submit" onclick="return confirm('Allocate this amount to the AI pool and start live trading?');">Save &amp; Start</button>
+        </div>
+      </form>
+    </section>
+    {% else %}
+
+    <section class="cards four">
+      <article class="card stat">
+        <h3>Equity</h3>
+        <p id="ai-equity">{{ "%.2f"|format(summary.equity_usdt) }} USDT</p>
+        <span class="muted-line">allocated {{ "%.2f"|format(summary.allocated_usdt) }}</span>
+      </article>
+      <article class="card stat">
+        <h3>Total PnL</h3>
+        <p id="ai-total-pnl" class="{{ 'pnl-pos' if summary.total_pnl_usdt >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(summary.total_pnl_usdt) }} ({{ "%+.2f"|format(summary.total_pnl_pct) }}%)</p>
+        <span class="muted-line">realized {{ "%+.2f"|format(summary.realized_pnl_usdt) }} · fees {{ "%.2f"|format(summary.fees_paid_usdt) }}</span>
+      </article>
+      <article class="card stat">
+        <h3>Cash / Invested</h3>
+        <p id="ai-cash">{{ "%.2f"|format(summary.cash_usdt) }} / {{ "%.2f"|format(summary.invested_usdt) }}</p>
+        <span class="muted-line">{{ summary.open_count }} open · max {{ summary.settings.max_positions }}</span>
+      </article>
+      <article class="card stat">
+        <h3>Status</h3>
+        <p id="ai-status" class="{{ 'pnl-pos' if summary.status == 'running' else 'pnl-neg' }}">{{ summary.status|upper }}</p>
+        <span class="muted-line">{{ summary.halt_reason or ('BTC: ' ~ summary.market_state) }} · DD {{ "%.1f"|format(summary.drawdown_pct) }}% · win {{ "%.0f"|format(summary.win_rate_pct) }}% ({{ summary.trades_won }}/{{ summary.trades_won + summary.trades_lost }})</span>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Controls</h2>
+      <div class="actions-row" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+        {% if summary.status == 'running' %}
+        <form method="post" action="/live/ai-trader/{{ pool.id }}/pause"><button type="submit" class="soft-btn">Pause entries</button></form>
+        {% else %}
+        <form method="post" action="/live/ai-trader/{{ pool.id }}/resume"><button type="submit">Resume</button></form>
+        {% endif %}
+        <form method="post" action="/live/ai-trader/{{ pool.id }}/add-funds" class="inline-form">
+          <input type="number" name="amount" step="0.01" min="1" placeholder="USDT" style="width:110px" required>
+          <button type="submit" class="soft-btn">Add funds</button>
+        </form>
+        <form method="post" action="/live/ai-trader/{{ pool.id }}/withdraw" class="inline-form">
+          <input type="number" name="amount" step="0.01" min="1" placeholder="USDT" style="width:110px" required>
+          <button type="submit" class="soft-btn-gold">Withdraw cash</button>
+        </form>
+        <form method="post" action="/live/ai-trader/{{ pool.id }}/close-all" onsubmit="return confirm('Market-sell ALL pool positions now? Only coins bought by the AI pool are sold.');">
+          <button type="submit" class="sell-btn">Close all pool positions</button>
+        </form>
+      </div>
+      <p class="muted-line">Profile: <strong>{{ summary.risk_profile }}</strong> · risk/trade {{ summary.settings.risk_per_trade_pct }}% · max position {{ summary.settings.max_position_pct }}% · min score {{ summary.settings.min_entry_score }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · cooldown {{ summary.settings.symbol_cooldown_hours }}h · time stop {{ summary.settings.time_stop_hours }}h</p>
+      <details>
+        <summary>Edit risk settings</summary>
+        <form method="post" action="/live/ai-trader/{{ pool.id }}/settings" class="form-grid" style="margin-top:8px;">
+          <label>Profile preset
+            <select name="risk_profile">
+              <option value="">(keep custom)</option>
+              <option value="conservative">Conservative</option>
+              <option value="balanced">Balanced</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+          </label>
+          <label>Risk per trade %<input type="number" name="risk_per_trade_pct" step="0.05" value="{{ summary.settings.risk_per_trade_pct }}"></label>
+          <label>Max position % of equity<input type="number" name="max_position_pct" step="1" value="{{ summary.settings.max_position_pct }}"></label>
+          <label>Max positions<input type="number" name="max_positions" step="1" value="{{ summary.settings.max_positions }}"></label>
+          <label>Min entry score<input type="number" name="min_entry_score" step="1" value="{{ summary.settings.min_entry_score }}"></label>
+          <label>Daily loss limit %<input type="number" name="daily_loss_limit_pct" step="0.5" value="{{ summary.settings.daily_loss_limit_pct }}"></label>
+          <label>Max drawdown %<input type="number" name="max_drawdown_pct" step="0.5" value="{{ summary.settings.max_drawdown_pct }}"></label>
+          <label>Symbol cooldown (h)<input type="number" name="symbol_cooldown_hours" step="1" value="{{ summary.settings.symbol_cooldown_hours }}"></label>
+          <label>Max entries / hour<input type="number" name="max_entries_per_hour" step="1" value="{{ summary.settings.max_entries_per_hour }}"></label>
+          <label>Time stop (h)<input type="number" name="time_stop_hours" step="1" value="{{ summary.settings.time_stop_hours }}"></label>
+          <label class="inline-check"><input type="checkbox" name="avoid_account_holdings" value="1" {% if summary.settings.avoid_account_holdings %}checked{% endif %}> Skip coins the account already holds</label>
+          <div class="full"><button type="submit" class="soft-btn">Save settings</button></div>
+        </form>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Open Positions <span class="muted-line" id="ai-refresh-text">(auto-refresh 10s)</span></h2>
+      <div class="table-scroll">
+        <table class="campaigns-table">
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Strategy</th><th>Qty (pool)</th><th>Avg Entry</th><th>Price</th><th>Invested</th><th>Unrealized</th><th>Stop</th><th>TP1</th><th>Score</th><th>Opened</th><th>Sell</th>
+            </tr>
+          </thead>
+          <tbody id="ai-positions-tbody">
+            {% for p in summary.positions %}
+            <tr>
+              <td><strong>{{ p.symbol }}</strong>{% if p.external_flag %}<br><span class="pnl-neg" style="font-size:11px">{{ p.external_flag }}</span>{% endif %}</td>
+              <td>{{ p.strategy }}</td>
+              <td>{{ "%.8g"|format(p.qty) }}</td>
+              <td>{{ "%.6g"|format(p.avg_entry) }}</td>
+              <td>{{ "%.6g"|format(p.current_price) }}</td>
+              <td>{{ "%.2f"|format(p.invested_usdt) }}</td>
+              <td class="{{ 'pnl-pos' if p.unrealized_pnl_usdt >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(p.unrealized_pnl_usdt) }} ({{ "%+.2f"|format(p.unrealized_pnl_pct) }}%)</td>
+              <td>{{ "%.6g"|format(p.stop_price) }}{% if p.stop_price > p.initial_stop_price %} <span class="badge">trail</span>{% endif %}</td>
+              <td>{{ "%.6g"|format(p.tp1_price) }}{% if p.tp1_done %} <span class="badge">done</span>{% endif %}</td>
+              <td title="{{ p.entry_reason }}">{{ "%.0f"|format(p.entry_score) }}</td>
+              <td>{{ p.opened_at }}</td>
+              <td>
+                <form method="post" action="/live/ai-trader/positions/{{ p.id }}/sell" class="inline-form" onsubmit="return confirm('Sell this pool position now?');">
+                  <select name="fraction"><option value="1">100%</option><option value="0.5">50%</option><option value="0.25">25%</option></select>
+                  <button type="submit" class="mini-btn sell-btn">Sell</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="12" class="muted-line">No open positions. The scanner runs every 5 minutes.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Last Scan</h2>
+      {% set scan = summary.last_scan %}
+      {% if scan and scan.at %}
+      <p class="muted-line">{{ scan.at }} UTC · BTC regime: <strong>{{ scan.regime }}</strong> · {{ scan.note }}</p>
+      {% if scan.signals %}
+      <div class="table-scroll">
+        <table class="campaigns-table">
+          <thead><tr><th>Symbol</th><th>Strategy</th><th>Score</th><th>Price</th><th>Stop</th><th>Risk %</th><th>Why</th></tr></thead>
+          <tbody>
+            {% for s in scan.signals %}
+            <tr>
+              <td><strong>{{ s.symbol }}</strong></td><td>{{ s.strategy }}</td><td>{{ s.score }}</td><td>{{ "%.6g"|format(s.price) }}</td><td>{{ "%.6g"|format(s.stop_price) }}</td><td>{{ s.risk_pct }}</td>
+              <td style="font-size:12px">{{ s.reasons|join(' · ') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="muted-line">No qualifying setups in the last scan ({{ scan.scanned|length }} symbols checked).</p>
+      {% endif %}
+      {% else %}
+      <p class="muted-line">No scan yet since the server started.</p>
+      {% endif %}
+    </section>
+
+    <section class="cards two">
+      <article class="card">
+        <h2>Decision Log</h2>
+        <div class="log-list" id="ai-log-list">
+          {% for log in logs %}
+          <div class="log-item">
+            <span>{{ log.time }}</span>
+            <strong>{{ log.event }}</strong>
+            <span>{{ log.symbol }}</span>
+            <p>{{ log.message }}</p>
+          </div>
+          {% else %}
+          <p class="muted-line">No events yet.</p>
+          {% endfor %}
+        </div>
+      </article>
+      <article class="card">
+        <h2>Fills</h2>
+        <div class="table-scroll">
+          <table class="campaigns-table">
+            <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Kind</th><th>Qty</th><th>Price</th><th>USDT</th><th>PnL</th></tr></thead>
+            <tbody>
+              {% for t in trades %}
+              <tr>
+                <td>{{ t.time }}</td><td>{{ t.symbol }}</td><td>{{ t.side }}</td><td>{{ t.kind }}</td><td>{{ "%.8g"|format(t.qty) }}</td><td>{{ "%.6g"|format(t.price) }}</td><td>{{ "%.2f"|format(t.quote_usdt) }}</td>
+                <td class="{{ 'pnl-pos' if (t.pnl_usdt or 0) >= 0 else 'pnl-neg' }}">{% if t.pnl_usdt is not none %}{{ "%+.2f"|format(t.pnl_usdt) }}{% else %}-{% endif %}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="8" class="muted-line">No fills yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    {% if closed %}
+    <section class="card">
+      <h2>Closed Positions</h2>
+      <div class="table-scroll">
+        <table class="campaigns-table">
+          <thead><tr><th>Symbol</th><th>Strategy</th><th>Avg Entry</th><th>Close Price</th><th>Realized PnL</th><th>Reason</th><th>Opened</th><th>Closed</th></tr></thead>
+          <tbody>
+            {% for p in closed %}
+            <tr>
+              <td>{{ p.symbol }}</td><td>{{ p.strategy }}</td><td>{{ "%.6g"|format(p.avg_entry) }}</td><td>{{ "%.6g"|format(p.current_price) }}</td>
+              <td class="{{ 'pnl-pos' if p.realized_pnl_usdt >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(p.realized_pnl_usdt) }}</td>
+              <td>{{ p.close_reason }}</td><td>{{ p.opened_at }}</td><td>{{ p.closed_at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
+    <script>
+    (function () {
+      const poolId = {{ pool.id }};
+      function fmt(n, d) { return Number(n).toFixed(d); }
+      function sg(n) { return (n >= 0 ? "+" : "") + fmt(n, 2); }
+      function cls(n) { return n >= 0 ? "pnl-pos" : "pnl-neg"; }
+      async function refresh() {
+        try {
+          const r = await fetch("/live/ai-trader/api/state?pool_id=" + poolId, { cache: "no-store" });
+          if (!r.ok) return;
+          const s = await r.json();
+          document.getElementById("ai-equity").textContent = fmt(s.equity_usdt, 2) + " USDT";
+          const tp = document.getElementById("ai-total-pnl");
+          tp.textContent = sg(s.total_pnl_usdt) + " (" + sg(s.total_pnl_pct) + "%)";
+          tp.className = cls(s.total_pnl_usdt);
+          document.getElementById("ai-cash").textContent = fmt(s.cash_usdt, 2) + " / " + fmt(s.invested_usdt, 2);
+          const st = document.getElementById("ai-status");
+          st.textContent = String(s.status).toUpperCase();
+          st.className = s.status === "running" ? "pnl-pos" : "pnl-neg";
+          const tb = document.getElementById("ai-positions-tbody");
+          if (!s.positions.length) {
+            tb.innerHTML = '<tr><td colspan="12" class="muted-line">No open positions. The scanner runs every 5 minutes.</td></tr>';
+          } else {
+            tb.innerHTML = s.positions.map(p => `
+              <tr>
+                <td><strong>${p.symbol}</strong>${p.external_flag ? '<br><span class="pnl-neg" style="font-size:11px">' + p.external_flag + '</span>' : ''}</td>
+                <td>${p.strategy}</td>
+                <td>${Number(p.qty).toPrecision(8)}</td>
+                <td>${Number(p.avg_entry).toPrecision(6)}</td>
+                <td>${Number(p.current_price).toPrecision(6)}</td>
+                <td>${fmt(p.invested_usdt, 2)}</td>
+                <td class="${cls(p.unrealized_pnl_usdt)}">${sg(p.unrealized_pnl_usdt)} (${sg(p.unrealized_pnl_pct)}%)</td>
+                <td>${Number(p.stop_price).toPrecision(6)}${p.stop_price > p.initial_stop_price ? ' <span class="badge">trail</span>' : ''}</td>
+                <td>${Number(p.tp1_price).toPrecision(6)}${p.tp1_done ? ' <span class="badge">done</span>' : ''}</td>
+                <td title="${(p.entry_reason || '').replace(/"/g, '&quot;')}">${fmt(p.entry_score, 0)}</td>
+                <td>${p.opened_at}</td>
+                <td>
+                  <form method="post" action="/live/ai-trader/positions/${p.id}/sell" class="inline-form" onsubmit="return confirm('Sell this pool position now?');">
+                    <select name="fraction"><option value="1">100%</option><option value="0.5">50%</option><option value="0.25">25%</option></select>
+                    <button type="submit" class="mini-btn sell-btn">Sell</button>
+                  </form>
+                </td>
+              </tr>`).join("");
+          }
+          document.getElementById("ai-refresh-text").textContent = "(updated " + new Date().toLocaleTimeString() + ")";
+        } catch (e) { /* keep last render */ }
+      }
+      setInterval(refresh, 10000);
+    })();
+    </script>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

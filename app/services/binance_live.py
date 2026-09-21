@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import json
 import math
 from pathlib import Path
@@ -16,6 +17,7 @@ import requests
 from app.core.config import settings
 from app.services.binance_public import get_book_tickers, get_exchange_info, get_prices
 
+_logger = logging.getLogger(__name__)
 BASE_URL = "https://api.binance.com"
 TIMEOUT = 15
 TRADE_PAGE_LIMIT = 1000
@@ -321,12 +323,41 @@ def _order_summary(raw: dict) -> dict[str, float]:
     executed_qty = float(raw.get("executedQty", 0.0))
     quote_qty = float(raw.get("cummulativeQuoteQty", 0.0))
     avg_price = quote_qty / executed_qty if executed_qty > 0 else 0.0
+    symbol = str(raw.get("symbol", "")).upper()
+    base_asset = _base_asset_from_symbol(symbol) if symbol else ""
+    fee_base = 0.0
+    fee_usdt = 0.0
+    for fill in raw.get("fills", []) or []:
+        commission = _to_float(fill.get("commission"), 0.0)
+        if commission <= 0:
+            continue
+        asset = str(fill.get("commissionAsset", "")).upper()
+        fill_price = _to_float(fill.get("price"), avg_price)
+        if asset == base_asset and base_asset:
+            fee_base += commission
+            fee_usdt += commission * fill_price
+        elif asset in {"USDT", "USDC", "FDUSD", "BUSD", "TUSD"}:
+            fee_usdt += commission
+        else:
+            # e.g. BNB fee discount: value it via the cached price feed (no extra REST round-trip).
+            try:
+                px = float(get_prices([f"{asset}USDT"]).get(f"{asset}USDT", 0.0))
+            except Exception as exc:
+                px = 0.0
+                _logger.warning("fee valuation failed for %s: %s", asset, exc)
+            if px > 0:
+                fee_usdt += commission * px
+            else:
+                _logger.warning("fee of %s %s on %s could not be valued in USDT; ledger under-counts this fee", commission, asset, symbol)
     return {
         "order_id": float(raw.get("orderId", 0) or 0),
         "status": str(raw.get("status", "")),
         "executed_qty": executed_qty,
         "quote_qty": quote_qty,
         "avg_price": avg_price,
+        "fee_base": fee_base,
+        "fee_usdt": fee_usdt,
+        "net_qty": max(0.0, executed_qty - fee_base),
     }
 
 
@@ -413,19 +444,18 @@ def get_order_fee_usdt(symbol: str, order_id: int) -> float:
     return float(total)
 
 
-def place_market_buy_quote(symbol: str, quote_usdt: float) -> dict[str, float]:
+def place_market_buy_quote(symbol: str, quote_usdt: float, client_order_id: str | None = None) -> dict[str, float]:
     if quote_usdt <= 0:
         raise RuntimeError("quote_usdt must be > 0")
-    raw = _signed_request(
-        "POST",
-        "/api/v3/order",
-        {
-            "symbol": symbol.upper(),
-            "side": "BUY",
-            "type": "MARKET",
-            "quoteOrderQty": f"{quote_usdt:.8f}",
-        },
-    )
+    params: dict[str, Any] = {
+        "symbol": symbol.upper(),
+        "side": "BUY",
+        "type": "MARKET",
+        "quoteOrderQty": f"{quote_usdt:.8f}",
+    }
+    if client_order_id:
+        params["newClientOrderId"] = str(client_order_id)[:36]
+    raw = _signed_request("POST", "/api/v3/order", params)
     invalidate_account_cache()
     return _order_summary(raw)
 
@@ -493,23 +523,22 @@ def place_limit_buy_quote(
     return out
 
 
-def place_market_sell_qty(symbol: str, quantity: float) -> dict[str, float]:
+def place_market_sell_qty(symbol: str, quantity: float, client_order_id: str | None = None) -> dict[str, float]:
     if quantity <= 0:
         raise RuntimeError("quantity must be > 0")
     qty, min_qty, step = normalize_qty_for_sell(symbol, quantity, cap_to_free_balance=True)
     if qty <= 0 or qty < min_qty:
         raise RuntimeError(f"quantity below min lot size for {symbol}: {qty}")
     qty_str = _fmt_with_step(qty, step)
-    raw = _signed_request(
-        "POST",
-        "/api/v3/order",
-        {
-            "symbol": symbol.upper(),
-            "side": "SELL",
-            "type": "MARKET",
-            "quantity": qty_str,
-        },
-    )
+    params: dict[str, Any] = {
+        "symbol": symbol.upper(),
+        "side": "SELL",
+        "type": "MARKET",
+        "quantity": qty_str,
+    }
+    if client_order_id:
+        params["newClientOrderId"] = str(client_order_id)[:36]
+    raw = _signed_request("POST", "/api/v3/order", params)
     invalidate_account_cache()
     return _order_summary(raw)
 
@@ -565,6 +594,21 @@ def cancel_order(symbol: str, order_id: int) -> dict:
     )
     invalidate_account_cache()
     return out
+
+
+def get_order_by_client_id(symbol: str, client_order_id: str) -> dict | None:
+    """Look an order up by its newClientOrderId. Returns None when Binance reports it does not exist."""
+    try:
+        return _signed_request(
+            "GET",
+            "/api/v3/order",
+            {"symbol": symbol.upper(), "origClientOrderId": str(client_order_id)[:36]},
+        )
+    except RuntimeError as exc:
+        text = str(exc)
+        if "-2013" in text or "does not exist" in text.lower():
+            return None
+        raise
 
 
 def get_order(symbol: str, order_id: int) -> dict:

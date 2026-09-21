@@ -98,6 +98,8 @@ from app.services.live_smart_campaign_service import (
     run_live_smart_cycle,
     stop_live_campaign,
 )
+from app.models.ai_pool import AiPool, AiPoolLog, AiPoolPosition, AiPoolTrade
+from app.services import ai_pool_service
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -866,6 +868,8 @@ async def on_startup() -> None:
     _LSC.__table__.create(bind=engine, checkfirst=True)
     _LSP.__table__.create(bind=engine, checkfirst=True)
     _LSCL.__table__.create(bind=engine, checkfirst=True)
+    for _tbl in (AiPool, AiPoolPosition, AiPoolTrade, AiPoolLog):
+        _tbl.__table__.create(bind=engine, checkfirst=True)
     _apply_schema_updates()
 
     # Start real-time price WebSocket (Binance !miniTicker@arr)
@@ -934,6 +938,45 @@ async def on_startup() -> None:
         seconds=10,
         id="live_smart_campaign_cycle",
         replace_existing=True,
+    )
+
+    # ── AI Trader pool: exits every 10s, entry scan every 5 min ──────────
+    def _scheduled_ai_pool_tick() -> None:
+        db = SessionLocal()
+        try:
+            ai_pool_service.run_ai_pool_tick(db)
+        except Exception as e:
+            logger.error("AI pool tick error: %s", e)
+        finally:
+            db.close()
+
+    def _scheduled_ai_pool_scan() -> None:
+        db = SessionLocal()
+        try:
+            ai_pool_service.run_ai_pool_scan(db)
+        except Exception as e:
+            logger.error("AI pool scan error: %s", e)
+        finally:
+            db.close()
+
+    scheduler.add_job(
+        _scheduled_ai_pool_tick,
+        "interval",
+        seconds=10,
+        id="ai_pool_tick",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _scheduled_ai_pool_scan,
+        "interval",
+        seconds=300,
+        id="ai_pool_scan",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=45),
     )
 
     scheduler.start()
@@ -3813,3 +3856,212 @@ async def api_live_smart_delete(campaign_id: int) -> JSONResponse:
 @app.get("/api/live-smart/capital")
 async def api_live_capital(n: int = 5, entry: float = 50.0):
     return JSONResponse(calculate_required_capital(entry, n, []))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI Trader (isolated pool on Binance 1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _ai_pool_or_none(db, pool_id: int | None = None):
+    q = db.query(AiPool).filter(AiPool.status != "deleted")
+    if pool_id is not None:
+        q = q.filter(AiPool.id == pool_id)
+    return q.order_by(AiPool.id.asc()).first()
+
+
+def _ai_trader_redirect(msg: str = "", error: str = "") -> RedirectResponse:
+    from urllib.parse import urlencode
+
+    params = {}
+    if msg:
+        params["notice"] = msg
+    if error:
+        params["error"] = error
+    suffix = f"?{urlencode(params)}" if params else ""
+    return RedirectResponse(url=f"/live/ai-trader{suffix}", status_code=303)
+
+
+@app.get("/live/ai-trader", response_class=HTMLResponse)
+async def ai_trader_page(request: Request, notice: str = "", error: str = "") -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db)
+        summary = None
+        logs: list[dict] = []
+        trades: list[dict] = []
+        closed: list[dict] = []
+        account_free = 0.0
+        if pool:
+            try:
+                summary = ai_pool_service.pool_summary(db, pool)
+            except Exception as e:
+                error = error or f"summary error: {e}"
+                summary = ai_pool_service.pool_summary(db, pool, refresh_prices=False)
+            logs = ai_pool_service.recent_logs(db, pool.id, limit=80)
+            trades = ai_pool_service.recent_trades(db, pool.id, limit=60)
+            closed = ai_pool_service.closed_positions(db, pool.id, limit=40)
+        else:
+            try:
+                account_free = float(get_balances().get("USDT", {}).get("free", 0.0))
+            except Exception as e:
+                error = error or f"Binance balance error: {e}"
+        return templates.TemplateResponse(
+            "ai_trader.html",
+            _context(
+                "ai_trader",
+                request=request,
+                pool=pool,
+                summary=summary,
+                logs=logs,
+                trades=trades,
+                closed=closed,
+                account_free_usdt=account_free,
+                notice=notice[:300],
+                error=error[:300],
+            ),
+        )
+    finally:
+        db.close()
+
+
+@app.get("/live/ai-trader/api/state")
+async def ai_trader_state_api(pool_id: int | None = None) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return JSONResponse({"error": "no pool"}, status_code=404)
+        try:
+            return JSONResponse(ai_pool_service.pool_summary(db, pool))
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/create")
+async def ai_trader_create(amount: str = Form(...), risk_profile: str = Form("balanced"), name: str = Form("AI Trader")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        amt = ai_pool_service.finite_amount(amount)
+        pool = ai_pool_service.create_pool(db, amt, risk_profile=risk_profile, account="binance_1", name=name)
+        return _ai_trader_redirect(msg=f"Pool #{pool.id} created with {amt:.2f} USDT. First scan in about a minute.")
+    except (ValueError, RuntimeError) as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/{pool_id:int}/pause")
+async def ai_trader_pause(pool_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return _ai_trader_redirect(error="pool not found")
+        ai_pool_service.pause_pool(db, pool, "manual")
+        return _ai_trader_redirect(msg="Entries paused. Open positions stay protected by stops.")
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/{pool_id:int}/resume")
+async def ai_trader_resume(pool_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return _ai_trader_redirect(error="pool not found")
+        ai_pool_service.resume_pool(db, pool)
+        return _ai_trader_redirect(msg="Pool resumed.")
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/{pool_id:int}/add-funds")
+async def ai_trader_add_funds(pool_id: int, amount: str = Form(...)) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return _ai_trader_redirect(error="pool not found")
+        ai_pool_service.add_funds(db, pool, ai_pool_service.finite_amount(amount))
+        return _ai_trader_redirect(msg="Funds added to the pool.")
+    except (ValueError, RuntimeError) as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/{pool_id:int}/withdraw")
+async def ai_trader_withdraw(pool_id: int, amount: str = Form(...)) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return _ai_trader_redirect(error="pool not found")
+        ai_pool_service.withdraw_funds(db, pool, ai_pool_service.finite_amount(amount))
+        return _ai_trader_redirect(msg="Cash released from the pool (it stays in your Binance account).")
+    except (ValueError, RuntimeError) as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/{pool_id:int}/close-all")
+async def ai_trader_close_all(pool_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return _ai_trader_redirect(error="pool not found")
+        n = ai_pool_service.close_all_positions(db, pool)
+        return _ai_trader_redirect(msg=f"Close-all executed: {n} position(s) sold.")
+    except Exception as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/{pool_id:int}/settings")
+async def ai_trader_settings(request: Request, pool_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return _ai_trader_redirect(error="pool not found")
+        form = await request.form()
+        keys = (
+            "risk_profile", "risk_per_trade_pct", "max_position_pct", "max_positions", "min_entry_score",
+            "daily_loss_limit_pct", "max_drawdown_pct", "symbol_cooldown_hours", "max_entries_per_hour", "time_stop_hours",
+        )
+        kwargs = {k: form.get(k) for k in keys}
+        kwargs["avoid_account_holdings"] = form.get("avoid_account_holdings") == "1"
+        ai_pool_service.update_settings(db, pool, **kwargs)
+        return _ai_trader_redirect(msg="Settings saved.")
+    except (ValueError, RuntimeError) as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader/positions/{position_id:int}/sell")
+async def ai_trader_sell_position(position_id: int, fraction: str = Form("1")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        res = ai_pool_service.manual_sell_position(db, position_id, fraction)
+        if res.get("ok"):
+            return _ai_trader_redirect(msg=f"Sold {res['executed']:.8g} @ {res['avg']:.6g} (pnl {res['pnl']:+.2f} USDT)")
+        return _ai_trader_redirect(error=str(res.get("error", "sell failed")))
+    except ValueError as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e))
+    finally:
+        db.close()
