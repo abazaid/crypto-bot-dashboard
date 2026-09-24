@@ -21,6 +21,7 @@ import logging
 import math
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -29,7 +30,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.ai_pool import AiPool, AiPoolLog, AiPoolPosition, AiPoolTrade
-from app.services.ai_strategy import Signal, market_regime, regime_min_score_adjust, scan_universe
+from app.models.trading import AppSetting
+from app.services.ai_strategy import Signal, btc_short_term_bias, market_regime, regime_min_score_adjust, scan_universe
 from app.services.binance_public import get_prices
 
 logger = logging.getLogger(__name__)
@@ -40,11 +42,13 @@ MIN_POOL_CAPITAL = 10.0
 DUST_USDT = 0.5
 RECONCILE_EVERY_SECONDS = 60
 SUPPORTED_ACCOUNTS = {"binance_1": "Binance 1 (All Coins)"}
+EXCLUDED_SYMBOLS_SETTING_KEY = "ai_pool_excluded_symbols"
+WEAK_BTC_RISK_MULTIPLIER = 0.5
 
 RISK_PROFILES: dict[str, dict[str, float]] = {
-    "conservative": dict(risk_per_trade_pct=1.0, max_position_pct=25.0, max_positions=3, min_entry_score=75.0, daily_loss_limit_pct=3.0, max_drawdown_pct=10.0, symbol_cooldown_hours=24.0, max_entries_per_hour=1, time_stop_hours=72.0),
-    "balanced": dict(risk_per_trade_pct=1.5, max_position_pct=35.0, max_positions=4, min_entry_score=65.0, daily_loss_limit_pct=4.0, max_drawdown_pct=15.0, symbol_cooldown_hours=12.0, max_entries_per_hour=2, time_stop_hours=72.0),
-    "aggressive": dict(risk_per_trade_pct=2.5, max_position_pct=45.0, max_positions=5, min_entry_score=55.0, daily_loss_limit_pct=6.0, max_drawdown_pct=20.0, symbol_cooldown_hours=6.0, max_entries_per_hour=3, time_stop_hours=96.0),
+    "conservative": dict(risk_per_trade_pct=1.0, max_position_pct=25.0, max_positions=3, min_entry_score=75.0, daily_loss_limit_pct=3.0, max_drawdown_pct=10.0, symbol_cooldown_hours=24.0, max_entries_per_hour=1, time_stop_hours=72.0, max_portfolio_risk_pct=2.5, breaker_cooldown_hours=24.0),
+    "balanced": dict(risk_per_trade_pct=1.5, max_position_pct=35.0, max_positions=4, min_entry_score=65.0, daily_loss_limit_pct=4.0, max_drawdown_pct=15.0, symbol_cooldown_hours=12.0, max_entries_per_hour=2, time_stop_hours=72.0, max_portfolio_risk_pct=4.0, breaker_cooldown_hours=12.0),
+    "aggressive": dict(risk_per_trade_pct=2.5, max_position_pct=45.0, max_positions=5, min_entry_score=55.0, daily_loss_limit_pct=6.0, max_drawdown_pct=20.0, symbol_cooldown_hours=6.0, max_entries_per_hour=3, time_stop_hours=96.0, max_portfolio_risk_pct=7.0, breaker_cooldown_hours=6.0),
 }
 
 _LAST_SCAN: dict[int, dict[str, Any]] = {}
@@ -176,6 +180,8 @@ def _apply_profile(pool: AiPool, profile: str) -> None:
     pool.symbol_cooldown_hours = float(p["symbol_cooldown_hours"])
     pool.max_entries_per_hour = int(p["max_entries_per_hour"])
     pool.time_stop_hours = float(p["time_stop_hours"])
+    pool.max_portfolio_risk_pct = float(p.get("max_portfolio_risk_pct", 4.0))
+    pool.breaker_cooldown_hours = float(p.get("breaker_cooldown_hours", 12.0))
 
 
 def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced", account: str = "binance_1", name: str = "AI Trader") -> AiPool:
@@ -282,6 +288,8 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "symbol_cooldown_hours": (0.0, 168.0),
         "max_entries_per_hour": (1, 10),
         "time_stop_hours": (6.0, 720.0),
+        "max_portfolio_risk_pct": (1.0, 20.0),
+        "breaker_cooldown_hours": (0.0, 168.0),
     }
     changed: list[str] = []
     for key, (lo, hi) in allowed.items():
@@ -318,6 +326,56 @@ def _prices_for(symbols: list[str]) -> dict[str, float]:
     except Exception as exc:
         logger.warning("AI pool price fetch failed: %s", exc)
         return {}
+
+
+def open_risk_usdt(positions: list[AiPoolPosition], prices: dict[str, float]) -> float:
+    """Portfolio heat: what all open positions would lose if every stop were hit right now."""
+    total = 0.0
+    for p in positions:
+        px = float(prices.get(p.symbol, p.current_price or p.avg_entry or 0.0))
+        total += max(0.0, float(p.qty) * (px - float(p.stop_price or 0.0)))
+    return total
+
+
+def heat_capped_notional(notional: float, risk_pct: float, equity: float, max_portfolio_risk_pct: float, open_risk: float, min_notional: float) -> tuple[float, str]:
+    """Shrink a sized entry so total open risk stays under the portfolio cap. 0 means skip."""
+    if risk_pct <= 0 or equity <= 0:
+        return 0.0, "invalid"
+    cap = equity * max_portfolio_risk_pct / 100.0
+    room = cap - open_risk
+    if room <= 0:
+        return 0.0, "heat_cap_full"
+    new_risk = notional * risk_pct / 100.0
+    if new_risk <= room:
+        return notional, "ok"
+    shrunk = room / (risk_pct / 100.0)
+    if shrunk < min_notional:
+        return 0.0, "heat_cap_room_below_min"
+    return round(shrunk, 2), "heat_capped"
+
+
+def excluded_symbols(db: Session) -> set[str]:
+    row = db.query(AppSetting).filter(AppSetting.key == EXCLUDED_SYMBOLS_SETTING_KEY).first()
+    if not row or not row.value:
+        return set()
+    return {s.strip().upper() for s in row.value.split(",") if s.strip()}
+
+
+def _add_excluded_symbol(db: Session, symbol: str) -> None:
+    current = excluded_symbols(db)
+    current.add(symbol.upper())
+    value = ",".join(sorted(current))[:120]
+    row = db.query(AppSetting).filter(AppSetting.key == EXCLUDED_SYMBOLS_SETTING_KEY).first()
+    if row:
+        row.value = value
+    else:
+        db.add(AppSetting(key=EXCLUDED_SYMBOLS_SETTING_KEY, value=value))
+    db.flush()
+
+
+def _is_symbol_rejection(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return ("-2010" in text and "not permitted" in text) or "-1121" in text or "invalid symbol" in text
 
 
 def pool_equity(pool: AiPool, positions: list[AiPoolPosition], prices: dict[str, float]) -> float:
@@ -438,6 +496,10 @@ def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float) -> Opt
     try:
         res = ex.place_market_buy_quote(symbol, quote, client_order_id=cid)
     except Exception as exc:
+        if _is_symbol_rejection(exc):
+            _add_excluded_symbol(db, symbol)
+            _log(db, pool.id, "EXCLUDE", f"exchange rejected this symbol for the account; permanently excluded from scans ({exc})", symbol)
+            return None
         recovered = _recover_order(ex, symbol, cid)
         if recovered is None:
             _record_error(db, pool, symbol, f"BUY failed: {exc}")
@@ -498,10 +560,10 @@ def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float) -> Opt
     return pos
 
 
-def _sell(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: float, kind: str, price_hint: float) -> Optional[dict]:
+def _sell(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: float, kind: str, price_hint: float, balances: Optional[dict] = None) -> Optional[dict]:
     """Sell up to qty_wanted of the pool's OWN qty and COMMIT immediately. Never exceeds pos.qty nor free balance."""
     try:
-        return _sell_inner(db, pool, pos, qty_wanted, kind, price_hint)
+        return _sell_inner(db, pool, pos, qty_wanted, kind, price_hint, balances)
     except Exception as exc:
         logger.exception("AI pool: unexpected error during SELL %s", pos.symbol)
         try:
@@ -513,12 +575,28 @@ def _sell(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: float, kin
         _commit_quietly(db)
 
 
-def _sell_inner(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: float, kind: str, price_hint: float) -> Optional[dict]:
+def _sell_inner(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: float, kind: str, price_hint: float, balances: Optional[dict] = None) -> Optional[dict]:
+    plan = _plan_sell(db, pool, pos, qty_wanted, price_hint, balances)
+    if plan is None:
+        return None
+    res, cid, err = _place_sell(_exchange(pool.account), pool.id, pos.symbol, plan["qty"])
+    if res is None:
+        _record_error(db, pool, pos.symbol, f"SELL failed ({kind}): {err}")
+        _LAST_RECONCILE_AT[pool.id] = 0.0
+        return None
+    if err is not None:
+        _log(db, pool.id, "RECOVERED", f"SELL request errored ({err}) but order {cid} is {res['status']} on the exchange; recorded from lookup", pos.symbol)
+    return _record_sell(db, pool, pos, res, kind, cid, plan)
+
+
+def _plan_sell(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: float, price_hint: float, balances: Optional[dict] = None) -> Optional[dict]:
+    """Decide the exact sellable qty (never above pool qty or free balance). Returns None when nothing can be sold."""
     ex = _exchange(pool.account)
     symbol = pos.symbol
     base = _base_asset(symbol)
     try:
-        balances = _balances_or_raise(ex)
+        if not balances:
+            balances = _balances_or_raise(ex)
         filters = ex.get_symbol_lot_filters(symbol)
     except Exception as exc:
         _record_error(db, pool, symbol, f"pre-sell lookup failed: {exc}")
@@ -541,18 +619,24 @@ def _sell_inner(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: floa
             return None
         _log(db, pool.id, "SKIP_SELL", f"cannot sell {qty:.8g} {base}: below lot/notional limits (free {free:.8g})", symbol)
         return None
+    return {"qty": qty, "min_qty": min_qty, "base": base, "owned": owned}
 
-    cid = _client_id(pool.id, "X")
+
+def _place_sell(ex, pool_id: int, symbol: str, qty: float) -> tuple[Optional[dict], str, Optional[Exception]]:
+    """Exchange call only (thread-safe, no DB). Returns (fill, client_id, error). error set with a fill means recovered."""
+    cid = _client_id(pool_id, "X")
     try:
-        res = ex.place_market_sell_qty(symbol, qty, client_order_id=cid)
+        return ex.place_market_sell_qty(symbol, qty, client_order_id=cid), cid, None
     except Exception as exc:
         recovered = _recover_order(ex, symbol, cid)
-        if recovered is None:
-            _record_error(db, pool, symbol, f"SELL failed ({kind}): {exc}")
-            _LAST_RECONCILE_AT[pool.id] = 0.0
-            return None
-        res = recovered
-        _log(db, pool.id, "RECOVERED", f"SELL request errored ({exc}) but order {cid} is {res['status']} on the exchange; recorded from lookup", symbol)
+        return recovered, cid, exc
+
+
+def _record_sell(db: Session, pool: AiPool, pos: AiPoolPosition, res: dict, kind: str, cid: str, plan: dict) -> Optional[dict]:
+    symbol = pos.symbol
+    base = plan["base"]
+    owned = float(pos.qty)
+    min_qty = float(plan["min_qty"])
     executed = float(res.get("executed_qty", 0.0))
     received = float(res.get("quote_qty", 0.0))
     avg = float(res.get("avg_price", 0.0))
@@ -650,10 +734,17 @@ def _apply_breakers(db: Session, pool: AiPool, equity: float) -> None:
     if pool.day_key != today:
         pool.day_key = today
         pool.day_start_equity_usdt = equity
-        if pool.status == "paused" and (pool.halt_reason or "").startswith("daily_loss"):
+    if pool.status == "paused" and (pool.halt_reason or "").startswith("daily_loss"):
+        # Lift only when BOTH a new UTC day started and the cooldown since the breaker has elapsed.
+        fired_at = pool.breaker_at or datetime.utcnow()
+        cooled = (datetime.utcnow() - fired_at) >= timedelta(hours=float(pool.breaker_cooldown_hours or 0.0))
+        new_day = fired_at.strftime("%Y-%m-%d") != today
+        if cooled and new_day:
             pool.status = "running"
             pool.halt_reason = None
-            _log(db, pool.id, "RESUME", "New UTC day: daily-loss pause lifted.")
+            pool.breaker_at = None
+            pool.day_start_equity_usdt = equity
+            _log(db, pool.id, "RESUME", f"Daily-loss pause lifted after {pool.breaker_cooldown_hours:.0f}h cooldown and a new UTC day. Baseline {equity:.2f}.")
     if equity > float(pool.peak_equity_usdt or 0.0):
         pool.peak_equity_usdt = equity
     if pool.status != "running":
@@ -664,7 +755,8 @@ def _apply_breakers(db: Session, pool: AiPool, equity: float) -> None:
         if day_loss_pct >= float(pool.daily_loss_limit_pct):
             pool.status = "paused"
             pool.halt_reason = f"daily_loss {day_loss_pct:.1f}%"
-            _log(db, pool.id, "BREAKER", f"Daily loss {day_loss_pct:.1f}% >= {pool.daily_loss_limit_pct:.1f}% — no new entries until next UTC day.")
+            pool.breaker_at = datetime.utcnow()
+            _log(db, pool.id, "BREAKER", f"Daily loss {day_loss_pct:.1f}% >= {pool.daily_loss_limit_pct:.1f}% — no new entries for at least {pool.breaker_cooldown_hours:.0f}h and until a new UTC day.")
             return
     peak = float(pool.peak_equity_usdt or 0.0)
     if peak > 0:
@@ -675,9 +767,13 @@ def _apply_breakers(db: Session, pool: AiPool, equity: float) -> None:
             _log(db, pool.id, "BREAKER", f"Drawdown {dd:.1f}% from peak >= {pool.max_drawdown_pct:.1f}% — pool HALTED. Exits still protected; resume manually.")
 
 
-def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: float, regime: str) -> None:
+def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: float, regime: str, balances: Optional[dict] = None, defer_full_exits: bool = False) -> Optional[str]:
+    """
+    Update live fields and apply exit rules. With defer_full_exits=True, a full exit (stop/trail/time_stop)
+    is NOT executed here; the kind is returned so the caller can fire several stops in parallel.
+    """
     if price <= 0 or float(pos.qty) <= 0:
-        return
+        return None
     pos.current_price = price
     pos.highest_price = max(float(pos.highest_price or 0.0), price)
     invested = float(pos.invested_usdt)
@@ -695,19 +791,21 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
     # 1) Hard stop / trailing stop
     if price <= float(pos.stop_price):
         kind = "trail" if pos.tp1_done or float(pos.stop_price) > float(pos.initial_stop_price) else "stop"
-        _sell(db, pool, pos, float(pos.qty), kind, price)
-        return
+        if defer_full_exits:
+            return kind
+        _sell(db, pool, pos, float(pos.qty), kind, price, balances)
+        return None
 
     # 2) Partial take-profit at TP1, then move stop to breakeven
     if not pos.tp1_done and float(pos.tp1_price) > 0 and price >= float(pos.tp1_price):
         fraction = 0.5 if pos.strategy == "pullback" else 0.4
-        res = _sell(db, pool, pos, float(pos.qty) * fraction, "tp1", price)
+        res = _sell(db, pool, pos, float(pos.qty) * fraction, "tp1", price, balances)
         if res is not None or pos.status == "closed":
             pos.tp1_done = True
             if pos.status == "open":
                 pos.stop_price = max(float(pos.stop_price), breakeven_price(float(pos.avg_entry), settings.trading_fee_pct))
                 _log(db, pool.id, "STOP_MOVE", f"TP1 hit: stop moved to breakeven {pos.stop_price:.6g}", pos.symbol)
-        return
+        return None
 
     # 3) Trailing stop ratchet (activates after TP1 or once price is 1R in profit)
     activated = pos.tp1_done or (r > 0 and price >= float(pos.avg_entry) + r)
@@ -720,7 +818,52 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
     age_h = (datetime.utcnow() - (pos.opened_at or datetime.utcnow())).total_seconds() / 3600.0
     if age_h >= float(pool.time_stop_hours) and float(pos.unrealized_pnl_pct) < 0.5 and not pos.tp1_done:
         _log(db, pool.id, "TIME_STOP", f"{age_h:.0f}h without progress ({pos.unrealized_pnl_pct:+.2f}%) — exiting", pos.symbol)
-        _sell(db, pool, pos, float(pos.qty), "time_stop", price)
+        if defer_full_exits:
+            return "time_stop"
+        _sell(db, pool, pos, float(pos.qty), "time_stop", price, balances)
+    return None
+
+
+def _execute_exits(db: Session, pool: AiPool, exits: list[tuple[AiPoolPosition, str, float]], balances: Optional[dict]) -> None:
+    """
+    Fire several full exits at once: plan each (DB, sequential), place all orders in parallel
+    (exchange only), then record fills sequentially. In a flash crash every second of latency costs.
+    """
+    if not exits:
+        return
+    if len(exits) == 1:
+        pos, kind, px = exits[0]
+        _sell(db, pool, pos, float(pos.qty), kind, px, balances)
+        return
+    ex = _exchange(pool.account)
+    plans: list[tuple[AiPoolPosition, str, dict]] = []
+    for pos, kind, px in exits:
+        plan = _plan_sell(db, pool, pos, float(pos.qty), px, balances)
+        if plan is not None:
+            plans.append((pos, kind, plan))
+    _commit_quietly(db)
+    if not plans:
+        return
+    # Plain values only cross the thread boundary: ORM instances are expired after commit and must
+    # never be touched from worker threads.
+    pool_id = int(pool.id)
+    jobs = [(str(pos.symbol), float(plan["qty"])) for pos, _kind, plan in plans]
+    with ThreadPoolExecutor(max_workers=min(4, len(jobs)), thread_name_prefix="ai-exit") as tp:
+        results = list(tp.map(lambda job: _place_sell(ex, pool_id, job[0], job[1]), jobs))
+    for (pos, kind, plan), (res, cid, err) in zip(plans, results):
+        try:
+            if res is None:
+                _record_error(db, pool, pos.symbol, f"SELL failed ({kind}): {err}")
+                _LAST_RECONCILE_AT[pool.id] = 0.0
+            else:
+                if err is not None:
+                    _log(db, pool.id, "RECOVERED", f"SELL request errored ({err}) but order {cid} is {res['status']} on the exchange; recorded from lookup", pos.symbol)
+                _record_sell(db, pool, pos, res, kind, cid, plan)
+        except Exception as exc:
+            logger.exception("AI pool: recording parallel exit for %s failed", pos.symbol)
+            _log(db, pool.id, "ERROR", f"recording exit failed: {exc}", pos.symbol)
+        finally:
+            _commit_quietly(db)
 
 
 def run_ai_pool_tick(db: Session) -> None:
@@ -750,10 +893,20 @@ def _tick_locked(db: Session, regime: str) -> None:
                     _LAST_RECONCILE_AT[pool.id] = now
                     _reconcile(db, pool, positions, prices)
                     positions = [p for p in positions if p.status == "open"]
+                balances: Optional[dict] = None
+                if positions and prices:
+                    try:
+                        balances = _balances_or_raise(_exchange(pool.account))  # one snapshot per tick
+                    except Exception as exc:
+                        logger.warning("AI pool: balance snapshot failed, sells will fetch individually: %s", exc)
+                exits: list[tuple[AiPoolPosition, str, float]] = []
                 for pos in positions:
                     px = float(prices.get(pos.symbol, 0.0))
                     if px > 0:
-                        _manage_position(db, pool, pos, px, regime)
+                        kind = _manage_position(db, pool, pos, px, regime, balances, defer_full_exits=True)
+                        if kind:
+                            exits.append((pos, kind, px))
+                _execute_exits(db, pool, exits, balances)
                 positions = [p for p in positions if p.status == "open"]
                 equity = pool_equity(pool, positions, prices)
                 _apply_breakers(db, pool, equity)
@@ -853,7 +1006,7 @@ def _scan_pool(db: Session, pool: AiPool, regime: str) -> None:
         state["note"] = "Hourly entry limit reached."
         return
 
-    exclude = set(open_symbols) | _recently_traded_symbols(db, pool)
+    exclude = set(open_symbols) | _recently_traded_symbols(db, pool) | excluded_symbols(db)
     if pool.avoid_account_holdings:
         exclude |= _account_holdings_symbols(ex, open_symbols)
 
@@ -886,6 +1039,15 @@ def _enter_signals_locked(db: Session, pool: AiPool, ex, qualified: list[Signal]
     if slots <= 0 or entries_left <= 0:
         state["note"] = "Slots or hourly entry limit exhausted."
         return
+    bias = btc_short_term_bias()
+    risk_pct = float(pool.risk_per_trade_pct)
+    if bias == "weak":
+        risk_pct *= WEAK_BTC_RISK_MULTIPLIER
+        _log_debounced(db, pool.id, "BTC_WEAK", f"BTC below 1h EMA20 or down >1% in 4h: entry risk halved to {risk_pct:.2f}%", every_seconds=1800)
+    state["btc_bias"] = bias
+    open_risk = open_risk_usdt(positions, prices)
+    max_heat = float(pool.max_portfolio_risk_pct or 4.0)
+    state["open_risk_usdt"] = round(open_risk, 2)
     opened = 0
     for sig in qualified:
         if opened >= min(slots, entries_left):
@@ -898,16 +1060,22 @@ def _enter_signals_locked(db: Session, pool: AiPool, ex, qualified: list[Signal]
             min_notional = max(MIN_NOTIONAL_FLOOR, float(f.get("min_notional", 0.0) or 0.0) * 1.15)
         except Exception:
             pass
-        notional, why = compute_entry_notional(equity, float(pool.cash_usdt), float(pool.risk_per_trade_pct), float(pool.max_position_pct), sig.risk_pct, min_notional)
+        notional, why = compute_entry_notional(equity, float(pool.cash_usdt), risk_pct, float(pool.max_position_pct), sig.risk_pct, min_notional)
         if notional <= 0:
             _log_debounced(db, pool.id, "SKIP_SIZE", f"{why} (equity {equity:.2f}, cash {pool.cash_usdt:.2f}, stop {sig.risk_pct:.1f}%)", sig.symbol, every_seconds=900)
             continue
+        notional, heat_why = heat_capped_notional(notional, sig.risk_pct, equity, max_heat, open_risk, min_notional)
+        if notional <= 0:
+            _log_debounced(db, pool.id, "SKIP_HEAT", f"{heat_why}: open risk {open_risk:.2f} of cap {equity * max_heat / 100.0:.2f} USDT ({max_heat:.1f}% of equity)", sig.symbol, every_seconds=900)
+            state["note"] = f"portfolio risk cap reached ({open_risk:.2f} USDT open risk)."
+            break
         pos = _buy(db, pool, sig, notional)
         if pos is not None:
             opened += 1
             positions.append(pos)
+            open_risk += float(pos.qty) * max(0.0, float(pos.avg_entry) - float(pos.stop_price))
             equity = pool_equity(pool, positions, _prices_for([p.symbol for p in positions]))
-    state["note"] = f"{len(qualified)} qualified, {opened} entered."
+    state["note"] = f"{len(qualified)} qualified, {opened} entered (BTC {bias}, open risk {open_risk:.2f} USDT)."
 
 
 # ── Manual actions ─────────────────────────────────────────────────────────────
@@ -1036,7 +1204,10 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             "max_entries_per_hour": int(pool.max_entries_per_hour),
             "time_stop_hours": float(pool.time_stop_hours),
             "avoid_account_holdings": bool(pool.avoid_account_holdings),
+            "max_portfolio_risk_pct": float(pool.max_portfolio_risk_pct or 4.0),
+            "breaker_cooldown_hours": float(pool.breaker_cooldown_hours or 12.0),
         },
+        "open_risk_usdt": open_risk_usdt(positions, prices),
         "last_scan": scan,
         "last_scan_at": pool.last_scan_at.strftime("%Y-%m-%d %H:%M:%S") if pool.last_scan_at else None,
         "last_tick_at": pool.last_tick_at.strftime("%Y-%m-%d %H:%M:%S") if pool.last_tick_at else None,

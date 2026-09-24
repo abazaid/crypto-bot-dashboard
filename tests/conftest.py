@@ -23,7 +23,7 @@ def db_session():
     from sqlalchemy.orm import sessionmaker
 
     from app.core.database import Base
-    from app.models import ai_pool  # noqa: F401  (register tables)
+    from app.models import ai_pool, trading  # noqa: F401  (register tables)
 
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
@@ -134,4 +134,5 @@ def fake_exchange(monkeypatch):
     monkeypatch.setattr(ai_pool_service, "_exchange", lambda account: ex)
     monkeypatch.setattr(ai_pool_service, "_prices_for", lambda symbols: {s: ex.price for s in symbols})
     monkeypatch.setattr(ai_pool_service, "market_regime", lambda force_refresh=False: "bullish")
+    monkeypatch.setattr(ai_pool_service, "btc_short_term_bias", lambda force_refresh=False: "ok")
     return ex

@@ -47,6 +47,9 @@ class AiPool(Base):
     max_entries_per_hour = Column(Integer, default=2)
     time_stop_hours = Column(Float, default=72.0)
     avoid_account_holdings = Column(Boolean, default=True)
+    max_portfolio_risk_pct = Column(Float, default=4.0)  # sum of open stop-distances, % of equity
+    breaker_cooldown_hours = Column(Float, default=12.0)  # wait after a daily-loss breaker before re-entering
+    breaker_at = Column(DateTime, nullable=True)
 
     # ── Stats ────────────────────────────────────────────────────────────
     trades_won = Column(Integer, default=0)

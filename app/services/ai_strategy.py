@@ -59,6 +59,7 @@ _INTERVAL_SECONDS = {"1h": 3600, "4h": 14400, "1d": 86400}
 _KLINE_CACHE: dict[tuple[str, str], dict] = {}
 _KLINE_LOCK = threading.Lock()
 _REGIME_CACHE: dict = {"expires_at": 0.0, "state": "neutral"}
+_BIAS_CACHE: dict = {"expires_at": 0.0, "state": "ok"}
 
 
 @dataclass
@@ -126,6 +127,29 @@ def market_regime(force_refresh: bool = False) -> str:
         state = str(_REGIME_CACHE.get("state") or "neutral")
     _REGIME_CACHE["state"] = state
     _REGIME_CACHE["expires_at"] = now + 900
+    return state
+
+
+def btc_short_term_bias(force_refresh: bool = False) -> str:
+    """
+    'weak' when BTC is under its 1h EMA20 or fell more than 1% over the last 4 hours, else 'ok'.
+    Altcoin longs opened while BTC is weak intraday get half the normal risk budget. Cached 5 min.
+    """
+    now = time.time()
+    if not force_refresh and _BIAS_CACHE["expires_at"] > now:
+        return str(_BIAS_CACHE["state"])
+    state = str(_BIAS_CACHE.get("state") or "ok")
+    try:
+        kl = get_klines_cached("BTCUSDT", "1h", 60)
+        closes = [float(k[4]) for k in kl[:-1]]
+        e20 = ema(closes, 20)
+        r4 = pct_return(closes, 4)
+        if e20 is not None and r4 is not None:
+            state = "weak" if (closes[-1] < e20 or r4 < -1.0) else "ok"
+    except Exception as exc:
+        logger.warning("AI BTC bias check failed: %s", exc)
+    _BIAS_CACHE["state"] = state
+    _BIAS_CACHE["expires_at"] = now + 300
     return state
 
 
@@ -258,12 +282,15 @@ def evaluate_symbol(symbol: str, regime: str, kl4h: list[list] | None = None, kl
             stop = min(stop, live_price - 1.0 * atr_4)  # never tighter than 1 ATR
             r = live_price - stop
             score = 55.0
-            score += min(15.0, max(0.0, adx_4 - 20.0))
+            score += min(10.0, max(0.0, adx_4 - 20.0))
             score += min(10.0, max(0.0, (vol_ratio_4 - 1.0) * 8.0))
             score += 6.0 if strong_stack else 0.0
             score += 5.0 if ret_7d > 0 else 0.0
             score += 4.0 if cd.closes[-1] > ema50_d else 0.0
             score -= 8.0 if atr_pct > 6.0 else 0.0
+            score -= 8.0 if rsi_4 > 70.0 else 0.0  # breaking out already overbought on 4h
+            score -= 5.0 if ret_7d > 15.0 else 0.0  # late in the move
+            score -= 5.0 if ret_7d > 30.0 else 0.0  # parabolic already
             score += 5.0 if regime == "bullish" else (-10.0 if regime == "bearish" else 0.0)
             reasons = [
                 f"4h close broke 20-bar Donchian high ({upper:.6g})",
@@ -299,13 +326,21 @@ def evaluate_symbol(symbol: str, regime: str, kl4h: list[list] | None = None, kl
             stop = min(swing_low - 0.2 * atr_4, live_price - 1.5 * atr_4)
             stop = max(stop, live_price - 2.5 * atr_4)  # cap the risk
             r = live_price - stop
-            score = 58.0
-            score += 8.0 if adx_4 >= 20 else 0.0
+            # Recalibrated: pullbacks used to score 85-95 across the board, which made the score
+            # useless for ranking. Base lowered and penalties added for extended/overbought entries.
+            score = 48.0
+            score += 8.0 if adx_4 >= 20 else (-5.0 if adx_4 < 18 else 0.0)
             score += 6.0 if cd.closes[-1] > ema50_d else 0.0
             score += 5.0 if ret_7d > -3.0 else 0.0
             score += min(8.0, max(0.0, (rsi_1 - 35.0) / 27.0 * 8.0))
             score += 5.0 if vol_ratio_4 >= 1.0 else 0.0
             score -= 8.0 if atr_pct > 6.0 else 0.0
+            score -= 6.0 if rsi_4 > 65.0 else 0.0  # 4h already overbought
+            score -= 6.0 if (close_4 - ema20_4) > 1.0 * atr_4 else 0.0  # bounce already extended past EMA20
+            score -= 6.0 if ret_7d > 25.0 else 0.0  # chasing a parabolic week
+            # Depth of the pullback: touching EMA50 is a better entry than barely grazing EMA20.
+            deepest = min(c4.lows[-5:])
+            score += 6.0 if deepest <= ema50_4 + 0.3 * atr_4 else 0.0
             score += 5.0 if regime == "bullish" else (-12.0 if regime == "bearish" else 0.0)
             reasons = [
                 "4h EMA20 > EMA50 > EMA200 uptrend",
@@ -328,7 +363,7 @@ def evaluate_symbol(symbol: str, regime: str, kl4h: list[list] | None = None, kl
             stop = max(mid_b, live_price - 2.0 * atr_4)
             stop = min(stop, live_price - 1.0 * atr_4)
             r = live_price - stop
-            score = 52.0
+            score = 54.0
             score += min(12.0, max(0.0, (vol_ratio_4 - 1.0) * 8.0))
             score += 8.0 if strong_stack else 0.0
             score += 6.0 if adx_4 >= 18 else 0.0

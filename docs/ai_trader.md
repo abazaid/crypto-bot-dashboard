@@ -39,16 +39,25 @@ breakeven + fees. Time stop closes positions with < +0.5% after N hours.
 and by cash. Below the exchange minimum, the minimum is used only if the implied
 risk stays ≤ 2× the configured risk.
 
+## Portfolio-level risk (added after the first live days)
+
+* **Portfolio heat cap**: the sum of all open stop-distances (what every stop would lose right now)
+  may not exceed `max_portfolio_risk_pct` of equity (balanced: 4%). New entries are shrunk to fit or skipped.
+* **BTC intraday weakness**: when BTC is under its 1h EMA20 or fell >1% in 4h, entry risk is halved.
+* **Exits**: tick every 5s, one balance snapshot per tick, and simultaneous stops are placed in parallel.
+* **Rejected symbols** (e.g. "not permitted for this account") are excluded permanently (AppSetting
+  `ai_pool_excluded_symbols`).
+
 ## Circuit breakers
 
-* Daily loss ≥ limit → paused until next UTC day (exits still run).
+* Daily loss ≥ limit → paused; lifted only after `breaker_cooldown_hours` (balanced: 12h) AND a new UTC day.
 * Drawdown from peak ≥ limit → halted; resume manually.
 * 5 consecutive exchange errors → paused.
 * Per-symbol cooldown after a stop; max entries per hour.
 
 ## Loops
 
-* `ai_pool_tick` every 10s: stops, TP1, trailing, time stop, reconcile, breakers.
+* `ai_pool_tick` every 5s: stops, TP1, trailing, time stop, reconcile, breakers.
 * `ai_pool_scan` every 5min: regime, universe scan, sized entries.
 
 ## Tests

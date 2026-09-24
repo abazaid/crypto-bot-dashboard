@@ -299,3 +299,88 @@ def test_invalid_equity_halts_pool(db_session, fake_exchange):
     pool = svc.create_pool(db_session, 100.0)
     svc._apply_breakers(db_session, pool, float("nan"))
     assert pool.status == "halted" and pool.halt_reason == "invalid_equity"
+
+
+# ── Improvements after the first live days ─────────────────────────────────────
+
+def test_heat_cap_shrinks_and_blocks_entries():
+    # equity 100, cap 4% = 4 USDT of open risk; already 3 USDT open; new trade risks 5% of notional
+    n, why = svc.heat_capped_notional(notional=40.0, risk_pct=5.0, equity=100.0, max_portfolio_risk_pct=4.0, open_risk=3.0, min_notional=6.0)
+    assert why == "heat_capped" and n == pytest.approx(20.0)  # only 1 USDT of room -> 20 notional
+    n, why = svc.heat_capped_notional(40.0, 5.0, 100.0, 4.0, 3.8, 6.0)
+    assert n == 0.0 and why == "heat_cap_room_below_min"
+    n, why = svc.heat_capped_notional(40.0, 5.0, 100.0, 4.0, 4.5, 6.0)
+    assert n == 0.0 and why == "heat_cap_full"
+    n, why = svc.heat_capped_notional(10.0, 5.0, 100.0, 4.0, 0.0, 6.0)
+    assert n == 10.0 and why == "ok"
+
+
+def test_open_risk_sums_stop_distances(db_session, fake_exchange):
+    pool = svc.create_pool(db_session, 100.0)
+    p1 = svc._buy(db_session, pool, _signal(symbol="AAAUSDT", stop=95.0), 30.0)
+    p2 = svc._buy(db_session, pool, _signal(symbol="BBBUSDT", stop=90.0), 30.0)
+    risk = svc.open_risk_usdt([p1, p2], {"AAAUSDT": 100.0, "BBBUSDT": 100.0})
+    assert risk == pytest.approx(p1.qty * 5.0 + p2.qty * 10.0)
+
+
+def test_daily_loss_breaker_needs_cooldown_and_new_day(db_session, fake_exchange):
+    pool = svc.create_pool(db_session, 100.0)
+    svc._apply_breakers(db_session, pool, 95.0)
+    assert pool.status == "paused" and pool.breaker_at is not None
+    # new day but only 1h later -> still paused
+    pool.breaker_at = datetime.utcnow() - timedelta(hours=1)
+    pool.day_key = "2000-01-01"
+    svc._apply_breakers(db_session, pool, 95.0)
+    assert pool.status == "paused"
+    # cooldown elapsed but breaker fired today -> still paused
+    pool.breaker_at = datetime.utcnow() - timedelta(hours=13)
+    svc._apply_breakers(db_session, pool, 95.0)
+    assert pool.status == "paused"
+    # cooldown elapsed AND fired on a previous day -> lifted, baseline reset
+    pool.breaker_at = datetime.utcnow() - timedelta(hours=30)
+    svc._apply_breakers(db_session, pool, 95.0)
+    assert pool.status == "running" and pool.day_start_equity_usdt == pytest.approx(95.0)
+
+
+def test_rejected_symbol_is_excluded_persistently(db_session, fake_exchange, monkeypatch):
+    pool = svc.create_pool(db_session, 100.0)
+
+    def reject(symbol, quote, client_order_id=None):
+        raise RuntimeError('Binance API error 400: {"code":-2010,"msg":"This symbol is not permitted for this account."}')
+
+    monkeypatch.setattr(fake_exchange, "place_market_buy_quote", reject)
+    assert svc._buy(db_session, pool, _signal(symbol="DASHUSDT"), 10.0) is None
+    assert "DASHUSDT" in svc.excluded_symbols(db_session)
+    assert pool.consecutive_errors == 0  # a rejection is not an API failure
+    assert pool.cash_usdt == 100.0
+
+
+def test_parallel_exits_close_every_stopped_position(db_session, fake_exchange):
+    pool = svc.create_pool(db_session, 100.0)
+    a = svc._buy(db_session, pool, _signal(symbol="AAAUSDT", stop=95.0), 20.0)
+    b = svc._buy(db_session, pool, _signal(symbol="BBBUSDT", stop=95.0), 20.0)
+    c = svc._buy(db_session, pool, _signal(symbol="CCCUSDT", stop=95.0), 20.0)
+    fake_exchange.price = 90.0
+    exits = []
+    for pos in (a, b, c):
+        kind = svc._manage_position(db_session, pool, pos, 90.0, "bullish", None, defer_full_exits=True)
+        assert kind == "stop"
+        exits.append((pos, kind, 90.0))
+    svc._execute_exits(db_session, pool, exits, fake_exchange.get_balances())
+    assert all(p.status == "closed" for p in (a, b, c))
+    assert pool.trades_lost == 3
+    sells = [o for o in fake_exchange.orders if o["side"] == "SELL"]
+    assert len(sells) == 3
+    assert pool.cash_usdt == pytest.approx(40.0 + sum(o["qty"] * 90.0 * 0.999 for o in sells), rel=1e-6)
+
+
+def test_weak_btc_halves_entry_risk(db_session, fake_exchange, monkeypatch):
+    pool = svc.create_pool(db_session, 100.0)
+    monkeypatch.setattr(svc, "btc_short_term_bias", lambda force_refresh=False: "weak")
+    state = {}
+    svc._enter_signals_locked(db_session, pool, fake_exchange, [_signal(symbol="AAAUSDT", stop=95.0)], state)
+    buys = [o for o in fake_exchange.orders if o["side"] == "BUY"]
+    assert len(buys) == 1
+    # normal: 1.5% of 100 / 5% = 30 ; weak: 0.75 / 5% = 15
+    assert buys[0]["quote"] == pytest.approx(15.0)
+    assert state["btc_bias"] == "weak"
