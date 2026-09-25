@@ -4218,7 +4218,7 @@ async def signals_telegram_reconnect() -> RedirectResponse:
 
 
 @app.get("/live/signals/audit", response_class=HTMLResponse)
-async def signals_audit_page(request: Request, limit: int = 15, posts: int = 60) -> HTMLResponse:
+async def signals_audit_page(request: Request, limit: int = 30, posts: int = 150) -> HTMLResponse:
     """Replay the channel's recent posts against real candles under our execution rules (read-only)."""
     import asyncio as _asyncio
 

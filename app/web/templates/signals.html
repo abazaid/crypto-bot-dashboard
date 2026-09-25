@@ -50,7 +50,7 @@
         <form method="post" action="/live/signals/telegram/logout" class="inline-form" onsubmit="return confirm('Remove the Telegram session from the server?');"><button type="submit" class="soft-btn">Log out of Telegram</button></form>
       {% endif %}
       <form method="get" action="/live/signals/audit" class="inline-form" style="margin-top:8px;">
-        <label>Audit the channel's last <input type="number" name="limit" value="15" min="1" max="100" style="width:70px"> signals against real candles</label>
+        <label>Audit the channel's last <input type="number" name="limit" value="30" min="1" max="100" style="width:70px"> signals against real candles</label>
         <button type="submit" class="soft-btn">Run audit (read-only)</button>
       </form>
       <details style="margin-top:8px;">

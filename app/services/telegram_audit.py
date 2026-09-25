@@ -165,11 +165,13 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
             continue  # chatter / results posts are not signals
         row = AuditRow(msg_id=int(p["id"]), posted_at=posted_at, symbol=sig.symbol, status="", entry_low=sig.entry_low, entry_high=sig.entry_high, stop=sig.stop_price, targets_total=len(sig.targets), channel_marks=marks, raw_text=text)
         problems = validate_signal(sig)
-        if problems:
+        wide_only = bool(problems) and all("too wide" in p for p in problems)
+        if problems and not wide_only:
             row.status = "not_binance" if not sig.is_binance else "invalid"
             row.note = "; ".join(problems)
             rows.append(row)
             continue
+        wide_note = " | WIDE STOP: live trading would skip this signal" if wide_only else ""
         age_h = max(0.0, (now_ms - posted_ms) / 3600000.0)
         interval = _interval_for_age(age_h)
         try:
@@ -186,7 +188,7 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
             continue
         res = simulate(sig, klines, posted_ms, window)
         row.status = res["status"]
-        row.note = res.get("note", "")
+        row.note = (res.get("note", "") + wide_note).strip(" |")
         row.entry = res.get("entry")
         row.targets_hit = int(res.get("targets_hit", 0))
         row.hits = list(res.get("hits", []))
