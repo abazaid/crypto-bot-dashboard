@@ -777,6 +777,7 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE ai_pools ADD COLUMN max_portfolio_risk_pct FLOAT DEFAULT 4.0",
         "ALTER TABLE ai_pools ADD COLUMN breaker_cooldown_hours FLOAT DEFAULT 12.0",
         "ALTER TABLE ai_pools ADD COLUMN breaker_at DATETIME",
+        "ALTER TABLE ai_pools ADD COLUMN profit_giveback_pct FLOAT DEFAULT 50.0",
     ]
     for stmt in stmts:
         try:
@@ -4040,7 +4041,7 @@ async def ai_trader_settings(request: Request, pool_id: int) -> RedirectResponse
         keys = (
             "risk_profile", "risk_per_trade_pct", "max_position_pct", "max_positions", "min_entry_score",
             "daily_loss_limit_pct", "max_drawdown_pct", "symbol_cooldown_hours", "max_entries_per_hour", "time_stop_hours",
-            "max_portfolio_risk_pct", "breaker_cooldown_hours",
+            "max_portfolio_risk_pct", "breaker_cooldown_hours", "profit_giveback_pct",
         )
         kwargs = {k: form.get(k) for k in keys}
         kwargs["avoid_account_holdings"] = form.get("avoid_account_holdings") == "1"

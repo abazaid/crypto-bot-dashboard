@@ -306,6 +306,7 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "time_stop_hours": (6.0, 720.0),
         "max_portfolio_risk_pct": (1.0, 20.0),
         "breaker_cooldown_hours": (0.0, 168.0),
+        "profit_giveback_pct": (10.0, 100.0),
     }
     changed: list[str] = []
     for key, (lo, hi) in allowed.items():
@@ -836,6 +837,14 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
         old_stop = float(pos.stop_price)
         pos.stop_price = floor
         _log(db, pool.id, "STOP_MOVE", f"profit ladder: stop {old_stop:.6g} -> {floor:.6g} (reached {(float(pos.highest_price) - float(pos.avg_entry)) / r:.1f}R)", pos.symbol)
+    # Give-back guard: once past 1R, never hand back more than profit_giveback_pct of the peak open profit.
+    # (50% default: a trade that reached +8% cannot close below +4%.) Set to 100 to disable.
+    giveback = float(pool.profit_giveback_pct if pool.profit_giveback_pct is not None else 50.0)
+    peak_gain = float(pos.highest_price) - float(pos.avg_entry)
+    if r > 0 and peak_gain >= r and giveback < 100.0:
+        guard = float(pos.avg_entry) + peak_gain * (1.0 - giveback / 100.0)
+        if guard > float(pos.stop_price):
+            pos.stop_price = guard
     activated = pos.tp1_done or (r > 0 and float(pos.highest_price) >= float(pos.avg_entry) + r)
     if activated and float(pos.trail_atr) > 0:
         new_stop = trailing_stop_price(float(pos.highest_price), float(pos.trail_atr), trail_mult)
@@ -1264,6 +1273,7 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             "avoid_account_holdings": bool(pool.avoid_account_holdings),
             "max_portfolio_risk_pct": float(pool.max_portfolio_risk_pct or 4.0),
             "breaker_cooldown_hours": float(pool.breaker_cooldown_hours or 12.0),
+            "profit_giveback_pct": float(pool.profit_giveback_pct if pool.profit_giveback_pct is not None else 50.0),
         },
         "open_risk_usdt": open_risk_usdt(positions, prices),
         "last_scan": scan,

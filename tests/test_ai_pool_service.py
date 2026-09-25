@@ -393,8 +393,9 @@ def test_profit_ladder_protects_winner_before_tp1(db_session, fake_exchange):
     svc._manage_position(db_session, pool, pos, 108.6, "bullish")  # exactly 1R, below TP1
     assert pos.tp1_done is False
     assert pos.stop_price >= 100.0  # breakeven locked
-    svc._manage_position(db_session, pool, pos, 104.0, "bullish")  # pullback: stop must not move down
-    assert pos.stop_price >= 100.0
+    assert pos.stop_price == pytest.approx(104.3)  # give-back guard: keep half of the +8.6 peak
+    svc._manage_position(db_session, pool, pos, 105.0, "bullish")  # pullback above guard: nothing sold, stop unchanged
+    assert pos.status == "open" and pos.stop_price == pytest.approx(104.3)
     svc._manage_position(db_session, pool, pos, 117.5, "bullish")  # 2R reached (TP1 sells half at >= 112.9)
     assert pos.stop_price >= 108.6 - 1e-6  # +1R locked
 
@@ -405,3 +406,14 @@ def test_profit_ladder_pure():
     assert svc.profit_ladder_stop(100.0, 5.0, 110.0, 0.1) == pytest.approx(105.0)
     assert svc.profit_ladder_stop(100.0, 5.0, 119.0, 0.1) == pytest.approx(110.0)
     assert svc.profit_ladder_stop(100.0, 0.0, 119.0, 0.1) is None
+
+
+def test_giveback_guard_can_be_disabled(db_session, fake_exchange):
+    pool = svc.create_pool(db_session, 100.0)
+    pool.profit_giveback_pct = 100.0
+    pos = svc._buy(db_session, pool, _signal(stop=95.0), 30.0)
+    svc._manage_position(db_session, pool, pos, 106.0, "bullish")  # 1.2R reached, under TP1 107.5
+    assert pos.stop_price == pytest.approx(svc.breakeven_price(100.0, 0.1))  # ladder only
+    pool.profit_giveback_pct = 30.0
+    svc._manage_position(db_session, pool, pos, 106.0, "bullish")
+    assert pos.stop_price == pytest.approx(104.2)  # keep 70% of +6

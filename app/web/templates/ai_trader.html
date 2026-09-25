@@ -87,7 +87,7 @@
           <button type="submit" class="sell-btn">Close all pool positions</button>
         </form>
       </div>
-      <p class="muted-line">Profile: <strong>{{ summary.risk_profile }}</strong> · risk/trade {{ summary.settings.risk_per_trade_pct }}% · max position {{ summary.settings.max_position_pct }}% · min score {{ summary.settings.min_entry_score }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · cooldown {{ summary.settings.symbol_cooldown_hours }}h · time stop {{ summary.settings.time_stop_hours }}h · portfolio risk cap {{ summary.settings.max_portfolio_risk_pct }}% (open now {{ "%.2f"|format(summary.open_risk_usdt) }} USDT) · breaker cooldown {{ summary.settings.breaker_cooldown_hours }}h</p>
+      <p class="muted-line">Profile: <strong>{{ summary.risk_profile }}</strong> · risk/trade {{ summary.settings.risk_per_trade_pct }}% · max position {{ summary.settings.max_position_pct }}% · min score {{ summary.settings.min_entry_score }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · cooldown {{ summary.settings.symbol_cooldown_hours }}h · time stop {{ summary.settings.time_stop_hours }}h · portfolio risk cap {{ summary.settings.max_portfolio_risk_pct }}% (open now {{ "%.2f"|format(summary.open_risk_usdt) }} USDT) · breaker cooldown {{ summary.settings.breaker_cooldown_hours }}h · profit give-back max {{ summary.settings.profit_giveback_pct }}%</p>
       <details>
         <summary>Edit risk settings</summary>
         <form method="post" action="/live/ai-trader/{{ pool.id }}/settings" class="form-grid" style="margin-top:8px;">
@@ -110,6 +110,7 @@
           <label>Time stop (h)<input type="number" name="time_stop_hours" step="1" value="{{ summary.settings.time_stop_hours }}"></label>
           <label>Portfolio risk cap % of equity<input type="number" name="max_portfolio_risk_pct" step="0.5" value="{{ summary.settings.max_portfolio_risk_pct }}"></label>
           <label>Cooldown after daily-loss breaker (h)<input type="number" name="breaker_cooldown_hours" step="1" value="{{ summary.settings.breaker_cooldown_hours }}"></label>
+          <label>Max profit give-back after 1R (%)<input type="number" name="profit_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.profit_giveback_pct }}"></label>
           <label class="inline-check"><input type="checkbox" name="avoid_account_holdings" value="1" {% if summary.settings.avoid_account_holdings %}checked{% endif %}> Skip coins the account already holds</label>
           <div class="full"><button type="submit" class="soft-btn">Save settings</button></div>
         </form>

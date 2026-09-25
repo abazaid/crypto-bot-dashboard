@@ -50,6 +50,7 @@ class AiPool(Base):
     max_portfolio_risk_pct = Column(Float, default=4.0)  # sum of open stop-distances, % of equity
     breaker_cooldown_hours = Column(Float, default=12.0)  # wait after a daily-loss breaker before re-entering
     breaker_at = Column(DateTime, nullable=True)
+    profit_giveback_pct = Column(Float, default=50.0)  # after 1R, never give back more than this % of peak open profit
 
     # ── Stats ────────────────────────────────────────────────────────────
     trades_won = Column(Integer, default=0)
