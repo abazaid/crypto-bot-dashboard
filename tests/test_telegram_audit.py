@@ -21,8 +21,9 @@ def test_simulate_all_targets_done():
         _k(60, 0.214, 0.240, 0.213, 0.238),  # T4 -> done
     ]
     res = simulate(sig, kl, posted_ms=0, window_hours=12)
-    assert res["status"] == "done" and res["targets_hit"] == 4
-    expected = (0.2 * (0.171 / 0.150 - 1) + 0.25 * (0.187 / 0.150 - 1) + 0.25 * (0.210 / 0.150 - 1) + 0.30 * (0.233 / 0.150 - 1)) * 100 - 0.2
+    # all four targets touched; half of the last slice sold, 15% runner still open at the last close
+    assert res["status"] == "open" and res["targets_hit"] == 4
+    expected = (0.2 * (0.171 / 0.150 - 1) + 0.25 * (0.187 / 0.150 - 1) + 0.25 * (0.210 / 0.150 - 1) + 0.15 * (0.233 / 0.150 - 1) + 0.15 * (0.238 / 0.150 - 1)) * 100 - 0.2
     assert res["pnl_pct"] == pytest.approx(expected, abs=0.05)
 
 
@@ -43,7 +44,7 @@ def test_simulate_trail_after_t2_locks_t1_profit():
     ]
     res = simulate(sig, kl, 0, 12)
     assert res["status"] == "trail" and res["hits"] == ["T1", "T2"]
-    assert res["pnl_pct"] > 10.0  # 45% sold at targets, 55% out at 0.171
+    assert res["pnl_pct"] > 10.0  # 45% sold at targets, 55% out at the locked stop (>= 0.179)
 
 
 def test_simulate_missed_and_open():
@@ -53,3 +54,23 @@ def test_simulate_missed_and_open():
     kl2 = [_k(0, 0.150, 0.152, 0.149, 0.151), _k(15, 0.151, 0.160, 0.150, 0.158)]
     res = simulate(sig, kl2, 0, 12)
     assert res["status"] == "open" and res["pnl_pct"] == pytest.approx((0.158 / 0.150 - 1) * 100 - 0.2, abs=0.05)
+
+
+def test_channel_rules_market_entry_and_4h_close_stop():
+    from app.services.telegram_audit import simulate_channel_rules
+
+    sig = parse_signal(ALICE)
+    fine = [
+        _k(0, 0.160, 0.175, 0.159, 0.172),   # market entry at 0.160 (above the zone), T1 touched
+        _k(15, 0.172, 0.174, 0.130, 0.131),  # wick below the stop: NOT a stop under channel rules
+        _k(30, 0.131, 0.190, 0.130, 0.188),  # T2 touched
+        _k(1000, 0.188, 0.189, 0.187, 0.188),
+    ]
+    k4h = [[0, 0.160, 0.190, 0.130, 0.188, 1.0]]  # the 4h candle closes above the stop
+    res = simulate_channel_rules(sig, fine, k4h, 0)
+    assert res["entry"] == 0.160 and res["hits"] == ["T1", "T2"] and res["status"] == "open"
+    # a 4h close below the stop after the targets
+    k4h2 = [[0, 0.160, 0.190, 0.130, 0.188, 1.0], [4 * 3600 * 1000, 0.188, 0.189, 0.120, 0.125, 1.0]]
+    fine2 = fine + [_k(8 * 60, 0.125, 0.126, 0.124, 0.125)]
+    res2 = simulate_channel_rules(sig, fine2, k4h2, 0)
+    assert res2["status"] == "stop_after_targets" and res2["exit_price"] == 0.125

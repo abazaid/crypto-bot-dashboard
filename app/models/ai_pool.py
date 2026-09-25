@@ -55,6 +55,9 @@ class AiPool(Base):
     breakeven_at_r = Column(Float, default=0.6)  # move stop to breakeven (and arm the give-back guard) at this many R
     tp1_r = Column(Float, default=1.2)  # first partial take-profit at this many R
     tp1_fraction = Column(Float, default=0.4)  # fraction sold at TP1
+    target_lock_pct = Column(Float, default=50.0)  # signals: after target n, stop = prev level + this % of the leg
+    runner_giveback_pct = Column(Float, default=30.0)  # signals: trailing give-back for the runner kept after the last target
+    last_target_sell_pct = Column(Float, default=50.0)  # signals: % of the last target's fraction sold at that target (rest = runner)
 
     # ── Stats ────────────────────────────────────────────────────────────
     trades_won = Column(Integer, default=0)

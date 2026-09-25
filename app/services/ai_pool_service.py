@@ -323,6 +323,9 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "breakeven_at_r": (0.3, 1.5),
         "tp1_r": (0.8, 3.0),
         "tp1_fraction": (0.2, 0.8),
+        "target_lock_pct": (0.0, 90.0),
+        "runner_giveback_pct": (10.0, 100.0),
+        "last_target_sell_pct": (0.0, 100.0),
     }
     changed: list[str] = []
     for key, (lo, hi) in allowed.items():
@@ -1384,6 +1387,9 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             "breakeven_at_r": float(pool.breakeven_at_r or DEFAULT_BREAKEVEN_AT_R),
             "tp1_r": float(pool.tp1_r or DEFAULT_TP1_R),
             "tp1_fraction": float(pool.tp1_fraction or DEFAULT_TP1_FRACTION),
+            "target_lock_pct": float(pool.target_lock_pct if pool.target_lock_pct is not None else 50.0),
+            "runner_giveback_pct": float(pool.runner_giveback_pct if pool.runner_giveback_pct is not None else 30.0),
+            "last_target_sell_pct": float(pool.last_target_sell_pct if pool.last_target_sell_pct is not None else 50.0),
         },
         "open_risk_usdt": open_risk_usdt(positions, prices),
         "last_scan": scan,

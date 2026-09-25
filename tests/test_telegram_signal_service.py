@@ -95,11 +95,11 @@ def test_target_ladder_sells_fractions_and_steps_stop_behind(db_session, fake_ex
     sold1 = max(q0 * 0.2, 5.5 / 0.172)
     assert pos.qty == pytest.approx(q0 - sold1, rel=0.02)
     assert pos.stop_price >= 0.150
-    # target 2 (0.187): sell 25% of initial (~6.3 USDT, above the minimum), stop -> target 1
+    # target 2 (0.187): sell 25% of initial (~6.3 USDT, above the minimum), stop -> T1 + 50% of the leg
     _price(fake_exchange, monkeypatch, 0.188)
     svc.manage_signal_position(db_session, tg_pool, pos, 0.188)
     assert pos.qty == pytest.approx(q0 - sold1 - q0 * 0.25, rel=0.03)
-    assert pos.stop_price == pytest.approx(0.171)
+    assert pos.stop_price == pytest.approx(0.171 + 0.5 * (0.187 - 0.171))
     # pullback to 0.170 -> stopped out as 'trail' with profit
     _price(fake_exchange, monkeypatch, 0.170)
     kind = svc.manage_signal_position(db_session, tg_pool, pos, 0.170, defer_full_exits=True)
@@ -169,7 +169,7 @@ def test_gap_through_two_targets_fills_both_in_one_tick(db_session, fake_exchang
     svc.manage_signal_position(db_session, tg_pool, pos, 0.190)
     plan = json.loads(pos.plan_json)
     assert plan["targets"][0]["done"] and plan["targets"][1]["done"] and not plan["targets"][2]["done"]
-    assert pos.stop_price == pytest.approx(0.171)
+    assert pos.stop_price == pytest.approx(0.171 + 0.5 * (0.187 - 0.171))
 
 
 def test_duplicate_race_hits_unique_constraint(db_session, fake_exchange, tg_pool, monkeypatch):
@@ -192,3 +192,24 @@ def test_lookup_failure_keeps_signal_pending(db_session, fake_exchange, tg_pool,
     assert res["status"] == "pending_entry"
     monkeypatch.setattr(fake_exchange, "get_symbol_lot_filters", lambda s: dict(fake_exchange.filters))
     assert svc.check_pending_signals(db_session, tg_pool) == 1
+
+
+def test_last_target_keeps_a_runner_with_tight_giveback(db_session, fake_exchange, tg_pool, monkeypatch):
+    tg_pool.cash_usdt = 300.0  # 100 USDT per slot so every slice clears the exchange minimum
+    tg_pool.allocated_usdt = 300.0
+    db_session.commit()
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1020, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    q0 = pos.qty
+    _price(fake_exchange, monkeypatch, 0.240)  # gaps through all four targets
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.240)
+    assert pos.status == "open"
+    # sold 20+25+25 + half of 30 = 85% -> 15% runner left
+    assert pos.qty == pytest.approx(q0 * 0.15, rel=0.05)
+    assert all(t["done"] for t in json.loads(pos.plan_json)["targets"])
+    # runner: the higher of (T3 + 50% of the T3->T4 leg = 0.2215) and (peak give-back 30% -> 0.213)
+    assert pos.stop_price == pytest.approx(0.210 + 0.5 * (0.233 - 0.210), rel=0.01)
+    _price(fake_exchange, monkeypatch, 0.300)
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.300)
+    assert pos.stop_price == pytest.approx(0.150 + 0.7 * (0.300 - 0.150), rel=0.01)  # ratchets up

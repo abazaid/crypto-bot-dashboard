@@ -320,8 +320,16 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
         if price < float(t["price"]):
             break
         is_last = i == len(targets) - 1
-        qty = float(pos.qty) if is_last else min(float(pos.qty), float(pos.qty_initial) * float(t.get("fraction", 0.0)))
-        if not is_last:
+        if is_last:
+            # Last target: sell only part of its fraction; the rest is a "runner" that trails.
+            last_sell = float(pool.last_target_sell_pct if pool.last_target_sell_pct is not None else 50.0) / 100.0
+            qty = min(float(pos.qty), float(pos.qty_initial) * float(t.get("fraction", 0.0)) * last_sell)
+            if qty * price < min_notional * 1.1 or (float(pos.qty) - qty) * price < min_notional * 1.1:
+                # too small to split at the exchange minimum: keep everything as runner (no sale) unless
+                # even the whole remainder is small, then sell all.
+                qty = float(pos.qty) if float(pos.qty) * price < min_notional * 2.2 else 0.0
+        else:
+            qty = min(float(pos.qty), float(pos.qty_initial) * float(t.get("fraction", 0.0)))
             # Binance rejects orders under the minimum notional (5 USDT). With small slots the channel's
             # 20% slice can be worth 4 USDT: sell the minimum instead, and sell everything when the
             # remainder would itself become unsellable dust.
@@ -329,22 +337,25 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
             qty = min(float(pos.qty), max(qty, floor_qty))
             if (float(pos.qty) - qty) * price < min_notional * 1.1:
                 qty = float(pos.qty)
-        if qty <= 0:
-            t["done"] = True
-            continue
-        res = pools._sell(db, pool, pos, qty, f"tp{i + 1}", price, balances)
-        if res is None and pos.status == "open":
-            _note_signal(db, pos, f"target {i + 1} sell failing; retrying next tick")
-            pools._commit_quietly(db)
-            break
+        res = None
+        if qty > 0:
+            res = pools._sell(db, pool, pos, qty, f"tp{i + 1}", price, balances)
+            if res is None and pos.status == "open":
+                _note_signal(db, pos, f"target {i + 1} sell failing; retrying next tick")
+                pools._commit_quietly(db)
+                break
         t["done"] = True
         t["done_at"] = datetime.utcnow().isoformat(timespec="seconds")
         t["fill_price"] = float(res["avg"]) if res else price
         if pos.status == "open":
-            new_stop = pools.breakeven_price(float(pos.avg_entry), settings.trading_fee_pct) if i == 0 else float(targets[i - 1]["price"])
+            # Stop after target n: previous level (entry for n=1) + target_lock_pct of the leg to target n.
+            prev_level = float(pos.avg_entry) if i == 0 else float(targets[i - 1]["price"])
+            lock = float(pool.target_lock_pct if pool.target_lock_pct is not None else 50.0) / 100.0
+            new_stop = prev_level + lock * (float(t["price"]) - prev_level)
+            new_stop = max(new_stop, pools.breakeven_price(float(pos.avg_entry), settings.trading_fee_pct))
             if new_stop > float(pos.stop_price):
                 pos.stop_price = new_stop
-                pools._log(db, pool.id, "STOP_MOVE", f"target {i + 1} hit: stop raised to {new_stop:.6g} ({'breakeven' if i == 0 else 'target ' + str(i)})", pos.symbol)
+                pools._log(db, pool.id, "STOP_MOVE", f"target {i + 1} hit: stop raised to {new_stop:.6g} ({lock * 100:.0f}% of the leg above {prev_level:.6g})", pos.symbol)
             pos.tp1_done = True
         pos.plan_json = json.dumps(plan)
         sync_signal_status(db, pos)
@@ -356,10 +367,15 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
     if pos.status != "open":
         return None
 
-    # 3) Give-back guard between targets (after the first target is banked)
+    # 3) Give-back guard after the first target; tighter for the runner once every target is done.
     done_count = sum(1 for t in targets if t.get("done"))
     if done_count > 0:
         giveback = float(pool.profit_giveback_pct if pool.profit_giveback_pct is not None else 50.0)
+        if targets and done_count >= len(targets):
+            giveback = min(giveback, float(pool.runner_giveback_pct if pool.runner_giveback_pct is not None else 30.0))
+        from app.services.ai_strategy import btc_short_term_bias  # lazy import (test-patchable via pools)
+        if pools.btc_short_term_bias() == "weak":
+            giveback = min(giveback, pools.WEAK_BTC_MAX_GIVEBACK_PCT)
         peak_gain = float(pos.highest_price) - float(pos.avg_entry)
         if peak_gain > 0 and giveback < 100.0:
             guard = float(pos.avg_entry) + peak_gain * (1.0 - giveback / 100.0)

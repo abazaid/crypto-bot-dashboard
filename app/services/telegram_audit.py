@@ -46,6 +46,13 @@ class AuditRow:
     duration_h: Optional[float] = None
     raw_text: str = ""
     hits: list[str] = field(default_factory=list)
+    # the same signal replayed with the CHANNEL's own rules (market entry at post, 4h-close stop)
+    ch_status: str = ""
+    ch_entry: Optional[float] = None
+    ch_targets_hit: int = 0
+    ch_hits: list[str] = field(default_factory=list)
+    ch_pnl_pct: Optional[float] = None
+    ch_note: str = ""
 
 
 def _interval_for_age(age_hours: float) -> str:
@@ -56,8 +63,14 @@ def _interval_for_age(age_hours: float) -> str:
     return "4h"
 
 
+TARGET_LOCK = 0.5  # stop after target n = prev level + 50% of the leg
+RUNNER_GIVEBACK = 0.30  # runner after the last target trails 30% below its peak
+GIVEBACK = 0.50  # between targets
+LAST_TARGET_SELL = 0.5  # half of the last fraction is sold, the rest runs
+
+
 def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float) -> dict:
-    """Replay one signal over candles [open_time, open, high, low, close, ...]. Returns a result dict."""
+    """Replay one signal over candles [open_time, open, high, low, close, ...] under OUR rules. Returns a result dict."""
     entry: Optional[float] = None
     entry_ms: Optional[int] = None
     stop = float(sig.stop_price)
@@ -105,17 +118,18 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
             break
         while next_target < len(targets) and h >= float(targets[next_target].price):
             tg = targets[next_target]
-            frac = min(remaining, float(tg.sell_fraction)) if next_target < len(targets) - 1 else remaining
+            is_last = next_target == len(targets) - 1
+            frac = min(remaining, float(tg.sell_fraction) * (LAST_TARGET_SELL if is_last else 1.0))
             realized += frac * (float(tg.price) / entry - 1.0)
             remaining -= frac
             hits.append(f"T{next_target + 1}")
-            stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0) if next_target == 0 else float(targets[next_target - 1].price))
+            prev_level = entry if next_target == 0 else float(targets[next_target - 1].price)
+            stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0), prev_level + TARGET_LOCK * (float(tg.price) - prev_level))
             next_target += 1
-            if remaining <= 1e-9:
-                exit_price = float(tg.price)
-                exit_ms = t
-                result = "done"
-                break
+        # give-back guard from the peak (tighter for the runner after the last target)
+        if next_target > 0:
+            gb = RUNNER_GIVEBACK if next_target >= len(targets) else GIVEBACK
+            stop = max(stop, entry + (max_high - entry) * (1.0 - gb))
         if remaining <= 1e-9:
             break
 
@@ -143,6 +157,77 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
         "pnl_pct": pnl_pct,
         "max_gain_pct": (max_high / entry - 1.0) * 100.0 if max_high > 0 else 0.0,
         "duration_h": ((end_ms - (entry_ms or posted_ms)) / 3600000.0) if entry_ms else None,
+    }
+
+
+def simulate_channel_rules(sig: ParsedSignal, fine: list[list], k4h: list[list], posted_ms: int) -> dict:
+    """
+    Replay the signal the way the channel itself accounts for it:
+      * entry at market on the first candle after the post (no waiting for the zone)
+      * a target counts when the price touches it (fine candles)
+      * stop only when a 4h candle CLOSES below the stop level (exit at that close)
+      * fractions sold at targets, remainder out at the stop close or marked to market
+    """
+    if not fine:
+        return {"status": "error", "note": "no candles"}
+    entry = float(fine[0][1])
+    entry_ms = int(fine[0][0])
+    if entry <= 0:
+        return {"status": "error", "note": "bad entry candle"}
+    targets = list(sig.targets)
+    next_target = 0
+    remaining = 1.0
+    realized = 0.0
+    hits: list[str] = []
+    max_high = 0.0
+    result = "open"
+    exit_price: Optional[float] = None
+    exit_ms: Optional[int] = None
+    four_h = 4 * 3600 * 1000
+    stop_closes = [(int(k[0]) + four_h, float(k[4])) for k in k4h if int(k[0]) + four_h > entry_ms and float(k[4]) < float(sig.stop_price)]
+    next_stop = stop_closes[0] if stop_closes else None
+    last_close = entry
+    for k in fine:
+        t = int(k[0])
+        h, c = float(k[2]), float(k[4])
+        last_close = c
+        if next_stop and t >= next_stop[0]:
+            exit_price = next_stop[1]
+            realized += remaining * (exit_price / entry - 1.0)
+            remaining = 0.0
+            exit_ms = next_stop[0]
+            result = "stop" if next_target == 0 else "stop_after_targets"
+            break
+        max_high = max(max_high, h)
+        while next_target < len(targets) and h >= float(targets[next_target].price):
+            tg = targets[next_target]
+            frac = min(remaining, float(tg.sell_fraction)) if next_target < len(targets) - 1 else remaining
+            realized += frac * (float(tg.price) / entry - 1.0)
+            remaining -= frac
+            hits.append(f"T{next_target + 1}")
+            next_target += 1
+            if remaining <= 1e-9:
+                exit_price, exit_ms, result = float(tg.price), t, "done"
+                break
+        if remaining <= 1e-9:
+            break
+    if remaining > 1e-9:
+        total = realized + remaining * (last_close / entry - 1.0)
+        exit_price = last_close
+        note = f"open, {len(hits)}/{len(targets)} targets so far"
+    else:
+        total = realized
+        note = {"stop": "4h close below stop before any target", "stop_after_targets": "4h close below stop after targets", "done": "all targets reached"}.get(result, "")
+    return {
+        "status": result,
+        "note": note,
+        "entry": entry,
+        "hits": hits,
+        "targets_hit": len(hits),
+        "exit_price": exit_price,
+        "pnl_pct": total * 100.0 - FEE_RT_PCT,
+        "max_gain_pct": (max_high / entry - 1.0) * 100.0 if max_high > 0 else 0.0,
+        "duration_h": ((exit_ms or int(fine[-1][0])) - entry_ms) / 3600000.0,
     }
 
 
@@ -186,6 +271,18 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
             row.note = "no candles returned (symbol not on Binance spot?)"
             rows.append(row)
             continue
+        try:
+            k4h = get_klines_range(sig.symbol, "4h", posted_ms - 4 * 3600 * 1000, limit=1000)
+        except Exception as exc:
+            k4h = []
+            logger.warning("4h klines failed for %s: %s", sig.symbol, exc)
+        ch = simulate_channel_rules(sig, klines, k4h, posted_ms)
+        row.ch_status = ch["status"]
+        row.ch_entry = ch.get("entry")
+        row.ch_targets_hit = int(ch.get("targets_hit", 0))
+        row.ch_hits = list(ch.get("hits", []))
+        row.ch_pnl_pct = ch.get("pnl_pct")
+        row.ch_note = ch.get("note", "")
         res = simulate(sig, klines, posted_ms, window)
         row.status = res["status"]
         row.note = (res.get("note", "") + wide_note).strip(" |")
@@ -201,7 +298,18 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
     traded = [r for r in rows if r.status in {"stop", "trail", "done", "open"}]
     closed = [r for r in traded if r.status != "open"]
     pnls = [r.pnl_pct for r in traded if r.pnl_pct is not None]
+    ch_rows = [r for r in rows if r.ch_status in {"stop", "stop_after_targets", "done", "open"}]
+    ch_closed = [r for r in ch_rows if r.ch_status != "open"]
+    ch_pnls = [r.ch_pnl_pct for r in ch_rows if r.ch_pnl_pct is not None]
     summary = {
+        "ch_traded": len(ch_rows),
+        "ch_hit_t1": sum(1 for r in ch_rows if r.ch_targets_hit >= 1),
+        "ch_hit_all": sum(1 for r in ch_rows if r.ch_status == "done"),
+        "ch_stopped": sum(1 for r in ch_rows if r.ch_status in {"stop", "stop_after_targets"}),
+        "ch_open": sum(1 for r in ch_rows if r.ch_status == "open"),
+        "ch_avg_pnl_pct": (sum(ch_pnls) / len(ch_pnls)) if ch_pnls else None,
+        "ch_sum_pnl_pct": sum(ch_pnls) if ch_pnls else 0.0,
+        "ch_win_rate_pct": (100.0 * sum(1 for r in ch_closed if (r.ch_pnl_pct or 0) > 0) / len(ch_closed)) if ch_closed else None,
         "posts_scanned": len(posts),
         "signals": len(rows),
         "executable": sum(1 for r in rows if r.status not in {"invalid", "not_binance", "error"}),

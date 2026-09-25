@@ -22,6 +22,14 @@
 
     {% set s = report.summary %}
     {% if s %}
+    <h2 style="margin:8px 0 4px">By the channel's own rules (market entry at post, stop only on a 4h close below the level)</h2>
+    <section class="cards four">
+      <article class="card stat"><h3>Traded</h3><p>{{ s.ch_traded }}</p><span class="muted-line">every executable signal, entered immediately</span></article>
+      <article class="card stat"><h3>Reached T1 / all targets</h3><p>{{ s.ch_hit_t1 }} / {{ s.ch_hit_all }}</p><span class="muted-line">stopped (4h close): {{ s.ch_stopped }} · still open: {{ s.ch_open }}</span></article>
+      <article class="card stat"><h3>Avg result</h3><p class="{{ 'pnl-pos' if (s.ch_sum_pnl_pct or 0) >= 0 else 'pnl-neg' }}">{% if s.ch_avg_pnl_pct is not none %}{{ "%+.2f"|format(s.ch_avg_pnl_pct) }}%{% else %}n/a{% endif %}</p><span class="muted-line">sum {{ "%+.1f"|format(s.ch_sum_pnl_pct or 0) }}%</span></article>
+      <article class="card stat"><h3>Win rate (closed)</h3><p>{% if s.ch_win_rate_pct is not none %}{{ "%.0f"|format(s.ch_win_rate_pct) }}%{% else %}n/a{% endif %}</p><span class="muted-line">fractions sold at targets, rest at stop close</span></article>
+    </section>
+    <h2 style="margin:8px 0 4px">By OUR rules (zone entry within 12h, stop one target behind, immediate stop)</h2>
     <section class="cards four">
       <article class="card stat"><h3>Signals found</h3><p>{{ s.signals }}</p><span class="muted-line">in {{ s.posts_scanned }} posts · {{ s.executable }} executable</span></article>
       <article class="card stat"><h3>Would have traded</h3><p>{{ s.traded }}</p><span class="muted-line">missed (never entered zone): {{ s.missed }}</span></article>
@@ -37,7 +45,7 @@
       <h2>Signal by signal</h2>
       <div class="table-scroll">
         <table class="campaigns-table">
-          <thead><tr><th>Posted (UTC)</th><th>Msg</th><th>Symbol</th><th>Zone</th><th>Stop</th><th>Entry (sim)</th><th>Targets hit</th><th>Channel ✅</th><th>Max gain</th><th>Result</th><th>PnL (our rules)</th><th>Duration</th><th>Note</th></tr></thead>
+          <thead><tr><th>Posted (UTC)</th><th>Msg</th><th>Symbol</th><th>Zone</th><th>Stop</th><th>Channel ✅</th><th>Channel rules: entry</th><th>hit</th><th>result</th><th>PnL</th><th>Our rules: entry</th><th>hit</th><th>result</th><th>PnL</th><th>Max gain</th><th>Note</th></tr></thead>
           <tbody>
             {% for r in report.rows %}
             <tr>
@@ -46,17 +54,20 @@
               <td><strong>{{ r.symbol }}</strong></td>
               <td>{% if r.entry_low %}{{ "%.6g"|format(r.entry_low) }} – {{ "%.6g"|format(r.entry_high) }}{% endif %}</td>
               <td>{% if r.stop %}{{ "%.6g"|format(r.stop) }}{% endif %}</td>
-              <td>{% if r.entry %}{{ "%.6g"|format(r.entry) }}{% else %}-{% endif %}</td>
-              <td>{{ r.targets_hit }}/{{ r.targets_total }} {% if r.hits %}<span class="muted-line">({{ r.hits|join(' ') }})</span>{% endif %}</td>
               <td>{{ r.channel_marks }}</td>
-              <td>{% if r.max_gain_pct is not none %}{{ "%+.1f"|format(r.max_gain_pct) }}%{% else %}-{% endif %}</td>
+              <td>{% if r.ch_entry %}{{ "%.6g"|format(r.ch_entry) }}{% else %}-{% endif %}</td>
+              <td>{{ r.ch_targets_hit }}/{{ r.targets_total }}</td>
+              <td>{% if r.ch_status %}<span class="badge {{ 'pnl-pos' if r.ch_status == 'done' else ('pnl-neg' if r.ch_status in ['stop', 'stop_after_targets'] else '') }}">{{ r.ch_status }}</span>{% else %}-{% endif %}</td>
+              <td class="{{ 'pnl-pos' if (r.ch_pnl_pct or 0) > 0 else ('pnl-neg' if (r.ch_pnl_pct or 0) < 0 else '') }}">{% if r.ch_pnl_pct is not none %}{{ "%+.2f"|format(r.ch_pnl_pct) }}%{% else %}-{% endif %}</td>
+              <td>{% if r.entry %}{{ "%.6g"|format(r.entry) }}{% else %}-{% endif %}</td>
+              <td>{{ r.targets_hit }}/{{ r.targets_total }}</td>
               <td><span class="badge {{ 'pnl-pos' if r.status in ['done', 'trail'] else ('pnl-neg' if r.status in ['stop', 'invalid', 'not_binance', 'error'] else '') }}">{{ r.status }}</span></td>
               <td class="{{ 'pnl-pos' if (r.pnl_pct or 0) > 0 else ('pnl-neg' if (r.pnl_pct or 0) < 0 else '') }}">{% if r.pnl_pct is not none %}{{ "%+.2f"|format(r.pnl_pct) }}%{% else %}-{% endif %}</td>
-              <td>{% if r.duration_h is not none %}{{ "%.0f"|format(r.duration_h) }}h{% else %}-{% endif %}</td>
-              <td style="font-size:12px" title="{{ r.raw_text|e }}">{{ r.note }}</td>
+              <td>{% if r.max_gain_pct is not none %}{{ "%+.1f"|format(r.max_gain_pct) }}%{% else %}-{% endif %}</td>
+              <td style="font-size:12px" title="{{ r.raw_text|e }}">{{ r.ch_note }}{% if r.note %} | ours: {{ r.note }}{% endif %}</td>
             </tr>
             {% else %}
-            <tr><td colspan="13" class="muted-line">No signals found in the scanned posts.</td></tr>
+            <tr><td colspan="16" class="muted-line">No signals found in the scanned posts.</td></tr>
             {% endfor %}
           </tbody>
         </table>
