@@ -1147,8 +1147,37 @@ def close_all_positions(db: Session, pool: AiPool) -> int:
 
 # ── Read models for the UI ─────────────────────────────────────────────────────
 
+def _targets_for(p: AiPoolPosition, price: float) -> dict:
+    """Human-readable targets: R as %, TP1 %, ladder levels (price and %), and how many R reached."""
+    entry = float(p.avg_entry or 0.0)
+    r = entry - float(p.initial_stop_price or 0.0)
+    if entry <= 0 or r <= 0:
+        return {"r_pct": 0.0, "tp1_pct": 0.0, "ladder": [], "reached_r": 0.0}
+    r_pct = r / entry * 100.0
+    highest = max(float(p.highest_price or 0.0), price)
+    ladder = []
+    for k in (1, 2, 3, 4):
+        trigger = entry + k * r
+        lock = breakeven_price(entry, settings.trading_fee_pct) if k == 1 else entry + (k - 1) * r
+        ladder.append({
+            "k": k,
+            "trigger_price": trigger,
+            "trigger_pct": k * r_pct,
+            "lock_price": lock,
+            "lock_pct": (lock / entry - 1.0) * 100.0,
+            "reached": highest >= trigger,
+        })
+    return {
+        "r_pct": r_pct,
+        "tp1_pct": (float(p.tp1_price or 0.0) / entry - 1.0) * 100.0 if p.tp1_price else 0.0,
+        "ladder": ladder,
+        "reached_r": (highest - entry) / r,
+    }
+
+
 def position_to_dict(p: AiPoolPosition) -> dict:
     return {
+        "targets": _targets_for(p, float(p.current_price or p.avg_entry or 0.0)),
         "id": p.id,
         "symbol": p.symbol,
         "strategy": p.strategy,
@@ -1186,6 +1215,7 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             d["current_price"] = px
             d["unrealized_pnl_usdt"] = float(p.qty) * px - float(p.invested_usdt)
             d["unrealized_pnl_pct"] = (px / float(p.avg_entry) - 1.0) * 100.0 if float(p.avg_entry) > 0 else 0.0
+            d["targets"] = _targets_for(p, px)
         invested += float(p.invested_usdt)
         market += float(p.qty) * px
         rows.append(d)

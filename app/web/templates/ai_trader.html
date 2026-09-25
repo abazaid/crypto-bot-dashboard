@@ -122,7 +122,7 @@
         <table class="campaigns-table">
           <thead>
             <tr>
-              <th>Symbol</th><th>Strategy</th><th>Qty (pool)</th><th>Avg Entry</th><th>Price</th><th>Invested</th><th>Unrealized</th><th>Stop</th><th>TP1</th><th>Score</th><th>Opened</th><th>Sell</th>
+              <th>Symbol</th><th>Strategy</th><th>Qty (pool)</th><th>Avg Entry</th><th>Price</th><th>Invested</th><th>Unrealized</th><th>Stop</th><th>Targets (R = stop distance)</th><th>Score</th><th>Opened</th><th>Sell</th>
             </tr>
           </thead>
           <tbody id="ai-positions-tbody">
@@ -136,7 +136,11 @@
               <td>{{ "%.2f"|format(p.invested_usdt) }}</td>
               <td class="{{ 'pnl-pos' if p.unrealized_pnl_usdt >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(p.unrealized_pnl_usdt) }} ({{ "%+.2f"|format(p.unrealized_pnl_pct) }}%)</td>
               <td>{{ "%.6g"|format(p.stop_price) }}{% if p.stop_price > p.initial_stop_price %} <span class="badge">trail</span>{% endif %}</td>
-              <td>{{ "%.6g"|format(p.tp1_price) }}{% if p.tp1_done %} <span class="badge">done</span>{% endif %}</td>
+              <td style="font-size:12px; white-space:nowrap">
+                <strong>TP1</strong> {{ "%.6g"|format(p.tp1_price) }} (+{{ "%.1f"|format(p.targets.tp1_pct) }}%){% if p.tp1_done %} <span class="badge">done</span>{% endif %}<br>
+                <span class="muted-line">R = {{ "%.1f"|format(p.targets.r_pct) }}% · reached {{ "%.1f"|format(p.targets.reached_r) }}R</span><br>
+                {% for l in p.targets.ladder %}<span class="{{ 'pnl-pos' if l.reached else 'muted-line' }}">{{ l.k }}R +{{ "%.1f"|format(l.trigger_pct) }}% → lock {{ "%+.1f"|format(l.lock_pct) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}
+              </td>
               <td title="{{ p.entry_reason }}">{{ "%.0f"|format(p.entry_score) }}</td>
               <td>{{ p.opened_at }}</td>
               <td>
@@ -270,7 +274,11 @@
                 <td>${fmt(p.invested_usdt, 2)}</td>
                 <td class="${cls(p.unrealized_pnl_usdt)}">${sg(p.unrealized_pnl_usdt)} (${sg(p.unrealized_pnl_pct)}%)</td>
                 <td>${Number(p.stop_price).toPrecision(6)}${p.stop_price > p.initial_stop_price ? ' <span class="badge">trail</span>' : ''}</td>
-                <td>${Number(p.tp1_price).toPrecision(6)}${p.tp1_done ? ' <span class="badge">done</span>' : ''}</td>
+                <td style="font-size:12px; white-space:nowrap">
+                  <strong>TP1</strong> ${Number(p.tp1_price).toPrecision(6)} (+${fmt(p.targets.tp1_pct, 1)}%)${p.tp1_done ? ' <span class="badge">done</span>' : ''}<br>
+                  <span class="muted-line">R = ${fmt(p.targets.r_pct, 1)}% · reached ${fmt(p.targets.reached_r, 1)}R</span><br>
+                  ${p.targets.ladder.map(l => `<span class="${l.reached ? 'pnl-pos' : 'muted-line'}">${l.k}R +${fmt(l.trigger_pct, 1)}% → lock ${l.lock_pct >= 0 ? '+' : ''}${fmt(l.lock_pct, 1)}%</span>`).join(' · ')}
+                </td>
                 <td title="${(p.entry_reason || '').replace(/"/g, '&quot;')}">${fmt(p.entry_score, 0)}</td>
                 <td>${p.opened_at}</td>
                 <td>
