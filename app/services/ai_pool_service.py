@@ -40,7 +40,7 @@ CLIENT_PREFIX = "AIPOOL"
 MIN_NOTIONAL_FLOOR = 6.0  # USDT; Binance minimum is 5, keep a buffer for rounding
 MIN_POOL_CAPITAL = 10.0
 DUST_USDT = 0.5
-RECONCILE_EVERY_SECONDS = 60
+RECONCILE_EVERY_SECONDS = 180
 SUPPORTED_ACCOUNTS = {"binance_1": "Binance 1 (All Coins)"}
 EXCLUDED_SYMBOLS_SETTING_KEY = "ai_pool_excluded_symbols"
 WEAK_BTC_RISK_MULTIPLIER = 0.5
@@ -963,11 +963,16 @@ def _execute_exits(db: Session, pool: AiPool, exits: list[tuple[AiPoolPosition, 
     """
     if not exits:
         return
+    ex = _exchange(pool.account)
+    if balances is None:
+        try:
+            balances = _balances_or_raise(ex)  # one snapshot for all exits of this tick
+        except Exception as exc:
+            logger.warning("AI pool: balance snapshot failed, sells will fetch individually: %s", exc)
     if len(exits) == 1:
         pos, kind, px = exits[0]
         _sell(db, pool, pos, float(pos.qty), kind, px, balances)
         return
-    ex = _exchange(pool.account)
     plans: list[tuple[AiPoolPosition, str, dict]] = []
     for pos, kind, px in exits:
         plan = _plan_sell(db, pool, pos, float(pos.qty), px, balances)
@@ -1025,12 +1030,9 @@ def _tick_locked(db: Session, regime: str) -> None:
                     _LAST_RECONCILE_AT[pool.id] = now
                     _reconcile(db, pool, positions, prices)
                     positions = [p for p in positions if p.status == "open"]
+                # Balances are fetched lazily (only when an exit is about to be placed): the account
+                # endpoint costs weight 20 and a 5s tick across two accounts was feeding Binance IP bans.
                 balances: Optional[dict] = None
-                if positions and prices:
-                    try:
-                        balances = _balances_or_raise(_exchange(pool.account))  # one snapshot per tick
-                    except Exception as exc:
-                        logger.warning("AI pool: balance snapshot failed, sells will fetch individually: %s", exc)
                 exits: list[tuple[AiPoolPosition, str, float]] = []
                 for pos in positions:
                     px = float(prices.get(pos.symbol, 0.0))

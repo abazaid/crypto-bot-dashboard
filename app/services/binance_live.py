@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 import requests
 
 from app.core.config import settings
+from app.services import binance_ratelimit as _rl
 from app.services.binance_public import get_book_tickers, get_exchange_info, get_prices
 
 _logger = logging.getLogger(__name__)
@@ -26,7 +27,8 @@ ACCOUNT_INFO_TTL_SECONDS = 5.0
 COST_BASIS_TTL_SECONDS = 1800.0
 _SYMBOL_FILTER_CACHE: dict[str, dict[str, float]] = {}
 _CACHE_EXPIRES_AT = 0.0
-_COST_BASIS_CACHE: dict[str, dict[str, Any]] = {}
+_COST_BASIS_CACHE: dict[str, dict[str, Any]] = _rl.load_json("cost_basis_binance_1.json")
+_COST_BASIS_CACHE_FILE = "cost_basis_binance_1.json"
 _ALL_COINS_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
 _ACCOUNT_INFO_CACHE: dict[str, Any] = {"expires_at": 0.0, "data": None}
 _COMPLETED_TRADES_CACHE: dict[str, Any] = {"expires_at": 0.0, "key": "", "data": None}
@@ -45,7 +47,7 @@ _KNOWN_QUOTES = [
 ]
 COMPLETED_TRADES_TTL_SECONDS = 120
 COMPLETED_TRADES_REFRESH_BUCKET_SECONDS = 3600
-_COMPLETED_TRADES_CACHE_FILE = Path(__file__).resolve().parents[1] / "storage" / "binance_completed_trades_cache.json"
+_COMPLETED_TRADES_CACHE_FILE = _rl.persistent_dir() / "binance_completed_trades_cache.json"
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -192,12 +194,7 @@ def _ensure_keys() -> None:
 
 
 def _signed_request(method: str, path: str, params: dict[str, Any] | None = None) -> dict:
-    global _BINANCE_BAN_UNTIL_TS
-    now_ts = time.time()
-    if _BINANCE_BAN_UNTIL_TS > now_ts:
-        raise RuntimeError(
-            f"Binance API temporarily banned until {int(_BINANCE_BAN_UNTIL_TS)} (unix)."
-        )
+    _rl.check_ban()
     _ensure_keys()
     q = dict(params or {})
     q["timestamp"] = int(time.time() * 1000)
@@ -213,11 +210,7 @@ def _signed_request(method: str, path: str, params: dict[str, Any] | None = None
     url = f"{BASE_URL}{path}?{query}"
     resp = requests.request(method.upper(), url, headers=headers, timeout=TIMEOUT)
     if resp.status_code >= 400:
-        if resp.status_code == 418:
-            ban_until = _extract_ban_until_ts(resp.text)
-            _BINANCE_BAN_UNTIL_TS = float(ban_until or (time.time() + 120))
-        elif resp.status_code == 429:
-            _BINANCE_BAN_UNTIL_TS = max(_BINANCE_BAN_UNTIL_TS, time.time() + 10)
+        _rl.note_http_error(resp.status_code, resp.text)
         raise RuntimeError(f"Binance API error {resp.status_code}: {resp.text}")
     return resp.json()
 
@@ -785,7 +778,7 @@ def get_completed_trades_from_binance(
             _COMPLETED_TRADES_CACHE["refresh_bucket"] = refresh_bucket
             _COMPLETED_TRADES_CACHE["expires_at"] = now_ts + 600.0
             return disk_cached
-        if _BINANCE_BAN_UNTIL_TS > now_ts:
+        if _rl.is_banned():
             stale_disk = _load_completed_trades_disk_cache_any(cache_key=cache_key)
             if stale_disk is not None:
                 _COMPLETED_TRADES_CACHE["key"] = cache_key
@@ -977,7 +970,7 @@ def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000)
     if cached:
         cached_qty = float(cached.get("qty_now", -1.0))
         expires_at = float(cached.get("expires_at", 0.0))
-        if abs(cached_qty - float(qty_now)) < 1e-12 and expires_at > time.time():
+        if abs(cached_qty - float(qty_now)) < 1e-12 and (expires_at > time.time() or _rl.is_banned()):
             return (
                 float(cached.get("avg_entry", 0.0)),
                 float(cached.get("invested", 0.0)),
@@ -1052,6 +1045,7 @@ def _cost_basis_from_trades(symbol: str, qty_now: float, max_trades: int = 1000)
         "used": int(used),
         "expires_at": time.time() + COST_BASIS_TTL_SECONDS,
     }
+    _rl.save_json(_COST_BASIS_CACHE_FILE, _COST_BASIS_CACHE)
     return max(avg_entry, 0.0), max(invested_now, 0.0), used
 
 
@@ -1110,7 +1104,7 @@ def list_spot_coin_positions(
 
     # Fetch cost basis for all candidates in parallel (each makes one Binance API call).
     cost_basis: dict[str, tuple[float, float, int]] = {}
-    with ThreadPoolExecutor(max_workers=min(len(candidate_rows), 10)) as ex:
+    with ThreadPoolExecutor(max_workers=min(len(candidate_rows), 3)) as ex:
         fut_to_sym = {
             ex.submit(
                 _cost_basis_from_trades,

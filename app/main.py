@@ -1877,6 +1877,7 @@ def _warm_all_coins_caches() -> None:
         include_forecasts=True,
         cache_ttl_seconds=ttl,
     )
+    time.sleep(20)  # spread request weight: the two Binance accounts share one IP limit
     _refresh_all_coins_cache(
         cache_key="live_all_coins_binance_2_full",
         list_positions_fn=list_spot_coin_positions_2,
