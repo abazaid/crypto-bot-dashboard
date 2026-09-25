@@ -326,6 +326,7 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "target_lock_pct": (0.0, 90.0),
         "runner_giveback_pct": (10.0, 100.0),
         "last_target_sell_pct": (0.0, 100.0),
+        "entry_split_pct": (0.0, 100.0),
     }
     changed: list[str] = []
     for key, (lo, hi) in allowed.items():
@@ -498,14 +499,15 @@ def _record_error(db: Session, pool: AiPool, symbol: str, message: str) -> None:
         _log(db, pool.id, "BREAKER", f"{recent} exchange errors in the last {ERROR_RATE_WINDOW_MIN} min — pool paused. Resume manually after checking the API.")
 
 
-def _buy(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra: Optional[dict] = None) -> Optional[AiPoolPosition]:
+def _buy(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra: Optional[dict] = None, merge_into: Optional[AiPoolPosition] = None) -> Optional[AiPoolPosition]:
     """
     Place one entry and COMMIT it immediately: a real fill must never be lost to a later rollback.
     `extra` fields (e.g. a telegram plan) are applied to the position BEFORE the same commit, so a
-    position can never exist without its plan.
+    position can never exist without its plan. With `merge_into`, the fill is added to that open
+    position (second entry leg): qty, cost basis and average entry are merged.
     """
     try:
-        return _buy_inner(db, pool, sig, quote_usdt, extra)
+        return _buy_inner(db, pool, sig, quote_usdt, extra, merge_into)
     except Exception as exc:
         logger.exception("AI pool: unexpected error during BUY %s", sig.symbol)
         try:
@@ -517,7 +519,7 @@ def _buy(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra: Optio
         _commit_quietly(db)
 
 
-def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra: Optional[dict] = None) -> Optional[AiPoolPosition]:
+def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra: Optional[dict] = None, merge_into: Optional[AiPoolPosition] = None) -> Optional[AiPoolPosition]:
     """
     Cash is RESERVED under the ledger lock, the exchange order is placed WITHOUT the lock (so a slow
     Binance response never delays stop-loss ticks of any pool), and the fill is recorded under the
@@ -602,6 +604,21 @@ def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra:
             pool.cash_usdt = float(pool.cash_usdt) - fee_usdt
             cost_basis += fee_usdt
         pool.fees_paid_usdt = float(pool.fees_paid_usdt) + fee_usdt
+
+        if merge_into is not None and merge_into.status == "open":
+            pos = merge_into
+            old_qty = float(pos.qty)
+            new_qty = old_qty + net_qty
+            pos.avg_entry = ((float(pos.avg_entry) * old_qty) + avg * net_qty) / new_qty if new_qty > 0 else avg
+            pos.qty = new_qty
+            pos.qty_initial = float(pos.qty_initial) + net_qty
+            pos.invested_usdt = float(pos.invested_usdt) + cost_basis
+            pos.entry_fee_usdt = float(pos.entry_fee_usdt or 0.0) + fee_usdt
+            pos.highest_price = max(float(pos.highest_price or 0.0), avg)
+            pos.current_price = avg
+            db.add(AiPoolTrade(pool_id=pool.id, position_id=pos.id, symbol=symbol, side="BUY", kind="add", qty=net_qty, price=avg, quote_usdt=spent, fee_usdt=fee_usdt, order_id=str(int(res.get("order_id", 0) or 0)), client_order_id=cid))
+            _log(db, pool.id, "ENTRY_ADD", f"BUY {spent:.2f} USDT @ {avg:.6g} added ({net_qty:.8g} {_base_asset(symbol)}) | new avg {pos.avg_entry:.6g}, qty {pos.qty:.8g} | cash left {pool.cash_usdt:.2f}", symbol)
+            return pos
 
         r = avg - sig.stop_price
         pos = AiPoolPosition(
@@ -1390,6 +1407,7 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             "target_lock_pct": float(pool.target_lock_pct if pool.target_lock_pct is not None else 50.0),
             "runner_giveback_pct": float(pool.runner_giveback_pct if pool.runner_giveback_pct is not None else 30.0),
             "last_target_sell_pct": float(pool.last_target_sell_pct if pool.last_target_sell_pct is not None else 50.0),
+            "entry_split_pct": float(pool.entry_split_pct if pool.entry_split_pct is not None else 50.0),
         },
         "open_risk_usdt": open_risk_usdt(positions, prices),
         "last_scan": scan,

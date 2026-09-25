@@ -227,22 +227,71 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         reasons=[f"Telegram @{row.channel} msg {row.msg_id}", f"zone {row.entry_low:.6g}-{row.entry_high:.6g}", f"{len(targets)} targets"],
         metrics={},
     )
+    # Split entry ("تقسيم الدخول"): part now, the rest waits at the bottom of the zone.
+    split = float(pool.entry_split_pct if pool.entry_split_pct is not None else 50.0) / 100.0
+    leg1 = round(amount, 2)
+    leg2: Optional[dict] = None
+    at_bottom = price <= float(row.entry_low) * 1.002
+    if 0.0 < split < 1.0 and not at_bottom and amount * split >= min_notional and amount * (1.0 - split) >= min_notional:
+        leg1 = round(amount * split, 2)
+        leg2 = {
+            "amount": round(amount - leg1, 2),
+            "price": float(row.entry_low),
+            "expires_at": (datetime.utcnow() + timedelta(hours=72)).isoformat(timespec="seconds"),
+            "filled": False,
+        }
+    plan = {"targets": targets, "stop_level": float(row.stop_price), "channel": row.channel, "msg_id": row.msg_id}
+    if leg2:
+        plan["leg2"] = leg2
     extra = {
         "tp1_price": sig.tp1_price,
         "trail_atr": 0.0,
         "signal_id": row.id,
-        "plan_json": json.dumps({"targets": targets, "stop_level": float(row.stop_price), "channel": row.channel, "msg_id": row.msg_id}),
+        "plan_json": json.dumps(plan),
     }
-    pos = pools._buy(db, pool, sig, round(amount, 2), extra=extra)  # no lock held here
+    pos = pools._buy(db, pool, sig, leg1, extra=extra)  # no lock held here
     if pos is None:
         row.status_note = "buy failed; will retry while pending"
         return False
     with pools._LEDGER_LOCK:
         row.status = "entered"
         row.position_id = pos.id
-        row.status_note = f"bought {amount:.2f} USDT @ {pos.avg_entry:.6g}"
+        row.status_note = f"bought {leg1:.2f} USDT @ {pos.avg_entry:.6g}" + (f"; {leg2['amount']:.2f} USDT waits at {leg2['price']:.6g}" if leg2 else "")
         pools._commit_quietly(db)
     return True
+
+
+def _fill_second_leg(db: Session, pool: AiPool, pos: AiPoolPosition, plan: dict, price: float) -> None:
+    """Buy the waiting half at the bottom of the zone (called from the tick; cancels itself after T1 or 72h)."""
+    leg2 = plan.get("leg2") or {}
+    if not leg2 or leg2.get("filled") or leg2.get("cancelled"):
+        return
+    targets = plan.get("targets", [])
+    if any(t.get("done") for t in targets):
+        leg2["cancelled"] = "first target already hit"
+        pos.plan_json = json.dumps(plan)
+        return
+    try:
+        expires = datetime.fromisoformat(str(leg2.get("expires_at")))
+    except ValueError:
+        expires = datetime.utcnow()
+    if datetime.utcnow() > expires:
+        leg2["cancelled"] = "expired"
+        pos.plan_json = json.dumps(plan)
+        pools._log(db, pool.id, "LEG2_CANCELLED", "second entry leg expired unfilled", pos.symbol)
+        return
+    if price > float(leg2["price"]) * 1.002 or price <= float(pos.stop_price):
+        return
+    sig = Signal(symbol=pos.symbol, strategy="telegram", score=0.0, price=price, atr_4h=0.0, stop_price=float(pos.stop_price), tp1_price=float(pos.tp1_price or price), tp1_fraction=0.0, trail_mult=0.0, reasons=["second entry leg at zone bottom"], metrics={})
+    res = pools._buy(db, pool, sig, float(leg2["amount"]), merge_into=pos)
+    if res is None:
+        return
+    leg2["filled"] = True
+    leg2["filled_at"] = datetime.utcnow().isoformat(timespec="seconds")
+    leg2["fill_price"] = price
+    pos.plan_json = json.dumps(plan)
+    _note_signal(db, pos, f"second leg filled @ {price:.6g}; avg {float(pos.avg_entry):.6g}")
+    pools._commit_quietly(db)
 
 
 def repair_unlinked_positions(db: Session, pool: AiPool) -> int:
@@ -309,8 +358,16 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
         kind = "trail" if done_count > 0 else "stop"
         if defer_full_exits:
             return kind
+        leg2 = plan.get("leg2")
+        if leg2 and not leg2.get("filled") and not leg2.get("cancelled"):
+            leg2["cancelled"] = "stopped out"
+            pos.plan_json = json.dumps(plan)
         pools._sell(db, pool, pos, float(pos.qty), kind, price, balances)
         return None  # status sync happens in _close_position_record
+
+    # 1b) Second entry leg waiting at the bottom of the zone
+    if plan.get("leg2"):
+        _fill_second_leg(db, pool, pos, plan, price)
 
     # 2) Targets, in order; every target the price has cleared is filled this tick
     min_notional = _min_notional_for(pool, pos.symbol)
@@ -347,6 +404,9 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
         t["done"] = True
         t["done_at"] = datetime.utcnow().isoformat(timespec="seconds")
         t["fill_price"] = float(res["avg"]) if res else price
+        leg2 = plan.get("leg2")
+        if leg2 and not leg2.get("filled") and not leg2.get("cancelled"):
+            leg2["cancelled"] = "first target hit"  # never add size to a trade that is already taking profit
         if pos.status == "open":
             # Stop after target n: previous level (entry for n=1) + target_lock_pct of the leg to target n.
             prev_level = float(pos.avg_entry) if i == 0 else float(targets[i - 1]["price"])

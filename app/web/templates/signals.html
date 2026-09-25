@@ -13,7 +13,7 @@
   <div class="layout-main">
     <section class="hero">
       <h1>Telegram Signals (Binance 1)</h1>
-      <p>Isolated pool that follows <strong>@{{ telegram.channel or '?' }}</strong>. Only NEW posts after activation are traded. Enters inside the entry zone (never chases), sells the channel's fraction at each target, locks part of every leg with the stop, and keeps a trailing runner after the last target.</p>
+      <p>Isolated pool that follows <strong>@{{ telegram.channel or '?' }}</strong>. Only NEW posts after activation are traded. Enters inside the entry zone (never chases) in two legs (half now, half at the zone bottom), sells the channel's fraction at each target, locks part of every leg with the stop, and keeps a trailing runner after the last target.</p>
       {% if error %}<p class="pnl-neg">{{ error }}</p>{% endif %}
       {% if notice %}<p class="pnl-pos">{{ notice }}</p>{% endif %}
     </section>
@@ -102,6 +102,7 @@
           <label>Daily loss limit %<input type="number" name="daily_loss_limit_pct" step="0.5" value="{{ summary.settings.daily_loss_limit_pct }}"></label>
           <label>Max drawdown %<input type="number" name="max_drawdown_pct" step="0.5" value="{{ summary.settings.max_drawdown_pct }}"></label>
           <label>Max profit give-back (%)<input type="number" name="profit_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.profit_giveback_pct }}"></label>
+          <label>Entry split: % bought now (rest waits at zone bottom)<input type="number" name="entry_split_pct" step="5" min="0" max="100" value="{{ summary.settings.entry_split_pct }}"></label>
           <label>Stop after target n: lock % of the leg<input type="number" name="target_lock_pct" step="5" min="0" max="90" value="{{ summary.settings.target_lock_pct }}"></label>
           <label>Last target: sell % of its fraction (rest = runner)<input type="number" name="last_target_sell_pct" step="5" min="0" max="100" value="{{ summary.settings.last_target_sell_pct }}"></label>
           <label>Runner give-back (%)<input type="number" name="runner_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.runner_giveback_pct }}"></label>

@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture()
 def tg_pool(db_session, fake_exchange):
     pool = pools.create_pool(db_session, 100.0, kind="telegram", name="Signals")
-    pools.update_settings(db_session, pool, max_positions=5)
+    pools.update_settings(db_session, pool, max_positions=5, entry_split_pct=0)  # split tested explicitly below
     return pool
 
 
@@ -213,3 +213,52 @@ def test_last_target_keeps_a_runner_with_tight_giveback(db_session, fake_exchang
     _price(fake_exchange, monkeypatch, 0.300)
     svc.manage_signal_position(db_session, tg_pool, pos, 0.300)
     assert pos.stop_price == pytest.approx(0.150 + 0.7 * (0.300 - 0.150), rel=0.01)  # ratchets up
+
+
+def test_split_entry_half_now_half_at_zone_bottom(db_session, fake_exchange, tg_pool, monkeypatch):
+    tg_pool.cash_usdt = 300.0
+    tg_pool.allocated_usdt = 300.0
+    tg_pool.entry_split_pct = 50.0
+    db_session.commit()
+    _price(fake_exchange, monkeypatch, 0.152)  # inside the zone, above the bottom (0.148)
+    svc.ingest_message_db(db_session, "signal252", 1030, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    assert pos.invested_usdt == pytest.approx(30.0)  # half of the 60 USDT slot
+    plan = json.loads(pos.plan_json)
+    assert plan["leg2"]["amount"] == pytest.approx(30.0) and plan["leg2"]["price"] == 0.148
+    q1 = pos.qty
+    # price dips to the bottom -> second leg fills and the average entry drops
+    _price(fake_exchange, monkeypatch, 0.148)
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.148)
+    assert json.loads(pos.plan_json)["leg2"]["filled"] is True
+    assert pos.qty > q1 * 1.9
+    assert pos.avg_entry == pytest.approx((0.152 + 0.148) / 2, rel=0.01)
+    assert pos.invested_usdt == pytest.approx(60.0)
+    assert len([o for o in fake_exchange.orders if o["side"] == "BUY"]) == 2
+
+
+def test_split_entry_cancelled_after_first_target(db_session, fake_exchange, tg_pool, monkeypatch):
+    tg_pool.cash_usdt = 300.0
+    tg_pool.allocated_usdt = 300.0
+    tg_pool.entry_split_pct = 50.0
+    db_session.commit()
+    _price(fake_exchange, monkeypatch, 0.152)
+    svc.ingest_message_db(db_session, "signal252", 1031, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    _price(fake_exchange, monkeypatch, 0.172)  # T1 first
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.172)
+    leg2 = json.loads(pos.plan_json)["leg2"]
+    assert leg2.get("cancelled") == "first target hit" and not leg2.get("filled")
+    _price(fake_exchange, monkeypatch, 0.148)  # later dip: no second buy (the raised stop exits instead)
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.148)
+    assert len([o for o in fake_exchange.orders if o["side"] == "BUY"]) == 1
+
+
+def test_split_entry_buys_all_when_already_at_bottom(db_session, fake_exchange, tg_pool, monkeypatch):
+    tg_pool.entry_split_pct = 50.0
+    db_session.commit()
+    _price(fake_exchange, monkeypatch, 0.147)  # below the zone bottom
+    svc.ingest_message_db(db_session, "signal252", 1032, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    assert pos.invested_usdt == pytest.approx(20.0)
+    assert "leg2" not in json.loads(pos.plan_json)

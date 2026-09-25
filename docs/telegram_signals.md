@@ -54,3 +54,12 @@ whose symbol is not tradable on the account are recorded but never executed.
 ```bash
 pytest tests/test_telegram_signals.py tests/test_telegram_signal_service.py -q
 ```
+
+## Split entry and target-stop settings (added 2026-09-26)
+
+* `entry_split_pct` (50): share bought immediately inside the zone; the rest waits at the zone bottom and is
+  cancelled once the first target is hit, after 72h, or when the stop fires. Both legs must clear the 5 USDT minimum.
+* `target_lock_pct` (50): after target n the stop = previous level + this % of the leg (never below breakeven).
+  0 = stop exactly at the previous target. The audit page sweeps 0/25/50/75 to pick the value for this channel.
+* `last_target_sell_pct` (50): share of the last slice sold at the last target; the rest is a runner.
+* `runner_giveback_pct` (30): the runner trails this far below its peak.

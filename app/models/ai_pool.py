@@ -58,6 +58,7 @@ class AiPool(Base):
     target_lock_pct = Column(Float, default=50.0)  # signals: after target n, stop = prev level + this % of the leg
     runner_giveback_pct = Column(Float, default=30.0)  # signals: trailing give-back for the runner kept after the last target
     last_target_sell_pct = Column(Float, default=50.0)  # signals: % of the last target's fraction sold at that target (rest = runner)
+    entry_split_pct = Column(Float, default=50.0)  # signals: % bought immediately; the rest waits at the bottom of the entry zone
 
     # ── Stats ────────────────────────────────────────────────────────────
     trades_won = Column(Integer, default=0)

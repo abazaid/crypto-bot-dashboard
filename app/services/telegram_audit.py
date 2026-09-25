@@ -69,9 +69,20 @@ GIVEBACK = 0.50  # between targets
 LAST_TARGET_SELL = 0.5  # half of the last fraction is sold, the rest runs
 
 
-def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float, target_lock: float = TARGET_LOCK, giveback: float = GIVEBACK, runner_giveback: float = RUNNER_GIVEBACK, last_target_sell: float = LAST_TARGET_SELL) -> dict:
-    """Replay one signal over candles [open_time, open, high, low, close, ...] under OUR rules. Returns a result dict."""
+ENTRY_SPLIT = 0.5  # half at first touch of the zone, half at the zone bottom (before T1, within 72h)
+
+
+def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float, target_lock: float = TARGET_LOCK, giveback: float = GIVEBACK, runner_giveback: float = RUNNER_GIVEBACK, last_target_sell: float = LAST_TARGET_SELL, entry_split: float = ENTRY_SPLIT) -> dict:
+    """
+    Replay one signal over candles [open_time, open, high, low, close, ...] under OUR rules.
+    PnL is expressed on the FULL allocated amount: if the second leg never fills, only the first
+    leg's share of capital was at work.
+    """
     entry: Optional[float] = None
+    leg2_price = float(sig.entry_low)
+    leg2_pending = False
+    leg2_deadline = 0
+    invested_share = 1.0
     entry_ms: Optional[int] = None
     stop = float(sig.stop_price)
     remaining = 1.0
@@ -105,8 +116,21 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
             if entry is not None:
                 entry_ms = t
                 max_high = max(max_high, h)
+                if 0.0 < entry_split < 1.0 and entry > leg2_price * 1.002:
+                    leg2_pending = True
+                    invested_share = entry_split
+                    leg2_deadline = t + 72 * 3600 * 1000
                 # do not evaluate targets on the entry candle (ambiguous ordering)
             continue
+
+        if leg2_pending:
+            if next_target == 0 and t <= leg2_deadline and lo <= leg2_price * 1.002 and lo > stop:
+                # merge the second leg at the zone bottom: new average entry, full capital at work
+                entry = entry * entry_split + leg2_price * (1.0 - entry_split)
+                invested_share = 1.0
+                leg2_pending = False
+            elif next_target > 0 or t > leg2_deadline:
+                leg2_pending = False
 
         max_high = max(max_high, h)
         if lo <= stop:
@@ -145,7 +169,7 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
     else:
         realized_total = realized
         note = {"stop": "stopped out before any target", "trail": "raised stop hit after targets", "done": "all targets reached"}.get(result, "")
-    pnl_pct = realized_total * 100.0 - FEE_RT_PCT
+    pnl_pct = (realized_total * 100.0 - FEE_RT_PCT) * invested_share
     end_ms = exit_ms or int(klines[-1][0]) if klines else posted_ms
     return {
         "status": result,
