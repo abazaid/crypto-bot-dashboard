@@ -44,7 +44,7 @@
     {% if report.sweep %}
     <section class="card">
       <h2>Which settings fit this channel? (same signals, different exit rules)</h2>
-      <p class="muted-line">Lock = how much of each target-to-target leg the stop locks after a target (0% = stop at the previous target). Give-back = max share of the peak profit the trade may return (100% = off). The runner after the last target always trails at 30%. Best row first. Set the winning values in the Signals pool settings.</p>
+      <p class="muted-line">Lock = how much of each target-to-target leg the stop locks after a target (0% = stop at the previous target, 100% = at the target itself with a 0.3% buffer). Give-back = max share of the peak profit the trade may return (100% = off). The runner after the last target always trails at 30%. Best row first. Set the winning values in the Signals pool settings.</p>
       <div class="table-scroll">
         <table class="campaigns-table">
           <thead><tr><th>Lock % of leg</th><th>Give-back %</th><th>Trades</th><th>Sum PnL</th><th>Avg PnL</th><th>Win rate (closed)</th></tr></thead>

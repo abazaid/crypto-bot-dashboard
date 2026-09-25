@@ -103,7 +103,7 @@
           <label>Max drawdown %<input type="number" name="max_drawdown_pct" step="0.5" value="{{ summary.settings.max_drawdown_pct }}"></label>
           <label>Max profit give-back (%)<input type="number" name="profit_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.profit_giveback_pct }}"></label>
           <label>Entry split: % bought now (rest waits at zone bottom)<input type="number" name="entry_split_pct" step="5" min="0" max="100" value="{{ summary.settings.entry_split_pct }}"></label>
-          <label>Stop after target n: lock % of the leg<input type="number" name="target_lock_pct" step="5" min="0" max="90" value="{{ summary.settings.target_lock_pct }}"></label>
+          <label>Stop after target n: lock % of the leg (100 = at the target itself)<input type="number" name="target_lock_pct" step="5" min="0" max="100" value="{{ summary.settings.target_lock_pct }}"></label>
           <label>Last target: sell % of its fraction (rest = runner)<input type="number" name="last_target_sell_pct" step="5" min="0" max="100" value="{{ summary.settings.last_target_sell_pct }}"></label>
           <label>Runner give-back (%)<input type="number" name="runner_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.runner_giveback_pct }}"></label>
           <div class="full"><button type="submit" class="soft-btn">Save settings</button></div>

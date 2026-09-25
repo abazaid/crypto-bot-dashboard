@@ -21,9 +21,9 @@ def test_simulate_all_targets_done():
         _k(60, 0.214, 0.240, 0.213, 0.238),  # T4 -> done
     ]
     res = simulate(sig, kl, posted_ms=0, window_hours=12, entry_split=0.0)
-    # all four targets touched; half of the last slice sold, 15% runner still open at the last close
+    # all four targets touched; nothing sold at the last one, the 30% runner is still open at the last close
     assert res["status"] == "open" and res["targets_hit"] == 4
-    expected = (0.2 * (0.171 / 0.150 - 1) + 0.25 * (0.187 / 0.150 - 1) + 0.25 * (0.210 / 0.150 - 1) + 0.15 * (0.233 / 0.150 - 1) + 0.15 * (0.238 / 0.150 - 1)) * 100 - 0.2
+    expected = (0.2 * (0.171 / 0.150 - 1) + 0.25 * (0.187 / 0.150 - 1) + 0.25 * (0.210 / 0.150 - 1) + 0.30 * (0.238 / 0.150 - 1)) * 100 - 0.2
     assert res["pnl_pct"] == pytest.approx(expected, abs=0.05)
 
 

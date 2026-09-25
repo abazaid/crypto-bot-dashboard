@@ -230,6 +230,7 @@ def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced",
         _apply_profile(pool, risk_profile)
         if kind == "telegram":
             pool.max_positions = 5  # slots: capital is split evenly across concurrent signals
+            pool.last_target_sell_pct = 0.0  # the last slice runs with the coin behind a trailing stop
             pool.time_stop_hours = 720.0  # signals can take weeks; no time stop in practice
         pool.allocated_usdt = amount
         pool.cash_usdt = amount
@@ -323,7 +324,7 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "breakeven_at_r": (0.3, 1.5),
         "tp1_r": (0.8, 3.0),
         "tp1_fraction": (0.2, 0.8),
-        "target_lock_pct": (0.0, 90.0),
+        "target_lock_pct": (0.0, 100.0),
         "runner_giveback_pct": (10.0, 100.0),
         "last_target_sell_pct": (0.0, 100.0),
         "entry_split_pct": (0.0, 100.0),

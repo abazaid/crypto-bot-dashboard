@@ -412,6 +412,8 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
             prev_level = float(pos.avg_entry) if i == 0 else float(targets[i - 1]["price"])
             lock = float(pool.target_lock_pct if pool.target_lock_pct is not None else 50.0) / 100.0
             new_stop = prev_level + lock * (float(t["price"]) - prev_level)
+            if lock >= 0.999:
+                new_stop = float(t["price"]) * 0.997  # "at the target": 0.3% buffer so the touch itself never triggers it
             new_stop = max(new_stop, pools.breakeven_price(float(pos.avg_entry), settings.trading_fee_pct))
             if new_stop > float(pos.stop_price):
                 pos.stop_price = new_stop

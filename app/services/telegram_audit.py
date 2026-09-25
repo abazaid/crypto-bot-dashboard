@@ -66,7 +66,7 @@ def _interval_for_age(age_hours: float) -> str:
 TARGET_LOCK = 0.5  # stop after target n = prev level + 50% of the leg
 RUNNER_GIVEBACK = 0.30  # runner after the last target trails 30% below its peak
 GIVEBACK = 0.50  # between targets
-LAST_TARGET_SELL = 0.5  # half of the last fraction is sold, the rest runs
+LAST_TARGET_SELL = 0.0  # nothing sold at the last target: the whole last slice runs behind the trailing stop
 
 
 ENTRY_SPLIT = 0.5  # half at first touch of the zone, half at the zone bottom (before T1, within 72h)
@@ -148,7 +148,8 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
             remaining -= frac
             hits.append(f"T{next_target + 1}")
             prev_level = entry if next_target == 0 else float(targets[next_target - 1].price)
-            stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0), prev_level + target_lock * (float(tg.price) - prev_level))
+            lock_stop = float(tg.price) * 0.997 if target_lock >= 0.999 else prev_level + target_lock * (float(tg.price) - prev_level)
+            stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0), lock_stop)
             next_target += 1
         # give-back guard from the peak (tighter for the runner after the last target)
         if next_target > 0:
@@ -353,7 +354,7 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
     }
     # Parameter sweep: which lock / give-back combination would have done best on THIS channel.
     sweep = []
-    for lock in (0.0, 0.25, 0.5, 0.75):
+    for lock in (0.0, 0.25, 0.5, 0.75, 1.0):
         for gb in (0.5, 1.0):
             pn = []
             wins = 0

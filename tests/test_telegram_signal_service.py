@@ -205,8 +205,8 @@ def test_last_target_keeps_a_runner_with_tight_giveback(db_session, fake_exchang
     _price(fake_exchange, monkeypatch, 0.240)  # gaps through all four targets
     svc.manage_signal_position(db_session, tg_pool, pos, 0.240)
     assert pos.status == "open"
-    # sold 20+25+25 + half of 30 = 85% -> 15% runner left
-    assert pos.qty == pytest.approx(q0 * 0.15, rel=0.05)
+    # sold 20+25+25 = 70%; the whole last slice (30%) runs behind the trailing stop
+    assert pos.qty == pytest.approx(q0 * 0.30, rel=0.05)
     assert all(t["done"] for t in json.loads(pos.plan_json)["targets"])
     # runner: the higher of (T3 + 50% of the T3->T4 leg = 0.2215) and (peak give-back 30% -> 0.213)
     assert pos.stop_price == pytest.approx(0.210 + 0.5 * (0.233 - 0.210), rel=0.01)
@@ -262,3 +262,15 @@ def test_split_entry_buys_all_when_already_at_bottom(db_session, fake_exchange, 
     pos = db_session.query(AiPoolPosition).first()
     assert pos.invested_usdt == pytest.approx(20.0)
     assert "leg2" not in json.loads(pos.plan_json)
+
+
+def test_lock_100_puts_stop_just_under_the_reached_target(db_session, fake_exchange, tg_pool, monkeypatch):
+    tg_pool.target_lock_pct = 100.0
+    db_session.commit()
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1040, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    _price(fake_exchange, monkeypatch, 0.172)
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.172)
+    assert pos.stop_price == pytest.approx(0.171 * 0.997)
+    assert pos.status == "open"
