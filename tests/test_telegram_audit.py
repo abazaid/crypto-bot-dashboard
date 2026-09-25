@@ -32,7 +32,7 @@ def test_simulate_split_entry_scales_pnl_by_invested_share():
     # enters at 0.152 (half), never dips to 0.148, then stops out: loss only on half the capital
     kl = [_k(0, 0.152, 0.153, 0.151, 0.152), _k(15, 0.152, 0.153, 0.130, 0.135)]
     full = simulate(sig, kl, 0, 12, entry_split=0.0)
-    half = simulate(sig, kl, 0, 12, entry_split=0.5)
+    half = simulate(sig, kl, 0, 12, entry_split=0.5, leg2_level="bottom", leg2_fallback_hours=0.0)
     assert half["status"] == "stop" and half["pnl_pct"] == pytest.approx(full["pnl_pct"] * 0.5, rel=0.01)
 
 

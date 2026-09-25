@@ -232,15 +232,19 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
     leg1 = round(amount, 2)
     leg2: Optional[dict] = None
     at_bottom = price <= float(row.entry_low) * 1.002
-    if 0.0 < split < 1.0 and not at_bottom and amount * split >= min_notional and amount * (1.0 - split) >= min_notional:
+    leg2_price = second_leg_price(pool, price, float(row.entry_low), float(row.entry_high))
+    if 0.0 < split < 1.0 and not at_bottom and price > leg2_price * 1.002 and amount * split >= min_notional and amount * (1.0 - split) >= min_notional:
         leg1 = round(amount * split, 2)
+        fallback_h = float(pool.leg2_fallback_hours if pool.leg2_fallback_hours is not None else 24.0)
         leg2 = {
             "amount": round(amount - leg1, 2),
-            "price": float(row.entry_low),
+            "price": leg2_price,
+            "level": str(pool.leg2_level or "mid"),
             "expires_at": (datetime.utcnow() + timedelta(hours=72)).isoformat(timespec="seconds"),
+            "fallback_at": (datetime.utcnow() + timedelta(hours=fallback_h)).isoformat(timespec="seconds") if fallback_h > 0 else None,
             "filled": False,
         }
-    plan = {"targets": targets, "stop_level": float(row.stop_price), "channel": row.channel, "msg_id": row.msg_id}
+    plan = {"targets": targets, "stop_level": float(row.stop_price), "channel": row.channel, "msg_id": row.msg_id, "entry_low": float(row.entry_low), "entry_high": float(row.entry_high)}
     if leg2:
         plan["leg2"] = leg2
     extra = {
@@ -261,8 +265,19 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
     return True
 
 
+def second_leg_price(pool: AiPool, leg1_price: float, entry_low: float, entry_high: float) -> float:
+    """Where the second entry leg waits, per pool setting. Never below the zone bottom."""
+    level = str(pool.leg2_level or "mid")
+    if level == "bottom":
+        return float(entry_low)
+    if level == "below_pct":
+        pct = float(pool.leg2_below_pct if pool.leg2_below_pct is not None else 3.0)
+        return max(float(entry_low), leg1_price * (1.0 - pct / 100.0))
+    return (float(entry_low) + float(entry_high)) / 2.0  # mid
+
+
 def _fill_second_leg(db: Session, pool: AiPool, pos: AiPoolPosition, plan: dict, price: float) -> None:
-    """Buy the waiting half at the bottom of the zone (called from the tick; cancels itself after T1 or 72h)."""
+    """Buy the waiting half at its level, or at market once the fallback time passes while still in zone (no target yet)."""
     leg2 = plan.get("leg2") or {}
     if not leg2 or leg2.get("filled") or leg2.get("cancelled"):
         return
@@ -280,9 +295,21 @@ def _fill_second_leg(db: Session, pool: AiPool, pos: AiPoolPosition, plan: dict,
         pos.plan_json = json.dumps(plan)
         pools._log(db, pool.id, "LEG2_CANCELLED", "second entry leg expired unfilled", pos.symbol)
         return
-    if price > float(leg2["price"]) * 1.002 or price <= float(pos.stop_price):
+    if price <= float(pos.stop_price):
         return
-    sig = Signal(symbol=pos.symbol, strategy="telegram", score=0.0, price=price, atr_4h=0.0, stop_price=float(pos.stop_price), tp1_price=float(pos.tp1_price or price), tp1_fraction=0.0, trail_mult=0.0, reasons=["second entry leg at zone bottom"], metrics={})
+    at_level = price <= float(leg2["price"]) * 1.002
+    fallback_due = False
+    if leg2.get("fallback_at"):
+        try:
+            fallback_due = datetime.utcnow() >= datetime.fromisoformat(str(leg2["fallback_at"]))
+        except ValueError:
+            fallback_due = False
+    entry_high = float(plan.get("entry_high") or 0.0)
+    in_zone = entry_high <= 0 or price <= entry_high * 1.002
+    if not at_level and not (fallback_due and in_zone):
+        return
+    reason = "second entry leg at its level" if at_level else "second entry leg: fallback at market (still in zone, no target yet)"
+    sig = Signal(symbol=pos.symbol, strategy="telegram", score=0.0, price=price, atr_4h=0.0, stop_price=float(pos.stop_price), tp1_price=float(pos.tp1_price or price), tp1_fraction=0.0, trail_mult=0.0, reasons=[reason], metrics={})
     res = pools._buy(db, pool, sig, float(leg2["amount"]), merge_into=pos)
     if res is None:
         return
@@ -527,5 +554,6 @@ def plan_for_position(pos: AiPoolPosition) -> dict:
         elif leg2.get("cancelled"):
             leg2_text = f"2nd leg cancelled ({leg2.get('cancelled')})"
         else:
-            leg2_text = f"2nd leg {float(leg2.get('amount', 0.0)):.2f} USDT waiting at {float(leg2.get('price', 0.0)):.6g} until {str(leg2.get('expires_at', ''))[:16].replace('T', ' ')} UTC"
+            fb = str(leg2.get("fallback_at") or "")[:16].replace("T", " ")
+            leg2_text = f"2nd leg {float(leg2.get('amount', 0.0)):.2f} USDT waiting at {float(leg2.get('price', 0.0)):.6g} ({leg2.get('level', 'mid')})" + (f", or at market after {fb} UTC if still in zone" if fb else "")
     return {"targets": targets, "stop_level": plan.get("stop_level"), "msg_id": plan.get("msg_id"), "leg2": leg2, "leg2_text": leg2_text}

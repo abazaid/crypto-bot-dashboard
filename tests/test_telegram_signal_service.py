@@ -220,6 +220,8 @@ def test_split_entry_half_now_half_at_zone_bottom(db_session, fake_exchange, tg_
     tg_pool.allocated_usdt = 300.0
     tg_pool.entry_split_pct = 50.0
     db_session.commit()
+    tg_pool.leg2_level = "bottom"
+    db_session.commit()
     _price(fake_exchange, monkeypatch, 0.152)  # inside the zone, above the bottom (0.148)
     svc.ingest_message_db(db_session, "signal252", 1030, ALICE, datetime.utcnow())
     pos = db_session.query(AiPoolPosition).first()
@@ -241,6 +243,7 @@ def test_split_entry_cancelled_after_first_target(db_session, fake_exchange, tg_
     tg_pool.cash_usdt = 300.0
     tg_pool.allocated_usdt = 300.0
     tg_pool.entry_split_pct = 50.0
+    tg_pool.leg2_level = "bottom"
     db_session.commit()
     _price(fake_exchange, monkeypatch, 0.152)
     svc.ingest_message_db(db_session, "signal252", 1031, ALICE, datetime.utcnow())
@@ -274,3 +277,36 @@ def test_lock_100_puts_stop_just_under_the_reached_target(db_session, fake_excha
     svc.manage_signal_position(db_session, tg_pool, pos, 0.172)
     assert pos.stop_price == pytest.approx(0.171 * 0.997)
     assert pos.status == "open"
+
+
+def test_second_leg_levels_and_fallback(db_session, fake_exchange, tg_pool, monkeypatch):
+    tg_pool.cash_usdt = 300.0
+    tg_pool.allocated_usdt = 300.0
+    tg_pool.entry_split_pct = 50.0
+    tg_pool.leg2_level = "mid"
+    tg_pool.leg2_fallback_hours = 24.0
+    db_session.commit()
+    assert svc.second_leg_price(tg_pool, 0.155, 0.148, 0.1556) == pytest.approx((0.148 + 0.1556) / 2)
+    tg_pool.leg2_level = "below_pct"
+    tg_pool.leg2_below_pct = 3.0
+    assert svc.second_leg_price(tg_pool, 0.155, 0.148, 0.1556) == pytest.approx(0.155 * 0.97)
+    assert svc.second_leg_price(tg_pool, 0.150, 0.148, 0.1556) == pytest.approx(0.148)  # never below the bottom
+    tg_pool.leg2_level = "mid"
+    db_session.commit()
+    _price(fake_exchange, monkeypatch, 0.155)
+    svc.ingest_message_db(db_session, "signal252", 1050, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    plan = json.loads(pos.plan_json)
+    assert plan["leg2"]["price"] == pytest.approx(0.1518) and plan["leg2"]["fallback_at"]
+    # price stays at 0.154 (above mid): no fill yet
+    _price(fake_exchange, monkeypatch, 0.154)
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.154)
+    assert json.loads(pos.plan_json)["leg2"]["filled"] is False
+    # 24h later, still in zone, no target: fallback buys at market
+    plan = json.loads(pos.plan_json)
+    plan["leg2"]["fallback_at"] = (datetime.utcnow() - timedelta(minutes=1)).isoformat(timespec="seconds")
+    pos.plan_json = json.dumps(plan)
+    db_session.commit()
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.154)
+    assert json.loads(pos.plan_json)["leg2"]["filled"] is True
+    assert pos.invested_usdt == pytest.approx(60.0)

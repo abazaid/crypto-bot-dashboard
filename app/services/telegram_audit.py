@@ -75,7 +75,7 @@ LAST_TARGET_SELL = 0.0  # nothing sold at the last target: the whole last slice 
 ENTRY_SPLIT = 0.5  # half at first touch of the zone, half at the zone bottom (before T1, within 72h)
 
 
-def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float, target_lock: float = TARGET_LOCK, giveback: float = GIVEBACK, runner_giveback: float = RUNNER_GIVEBACK, last_target_sell: float = LAST_TARGET_SELL, entry_split: float = ENTRY_SPLIT) -> dict:
+def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float, target_lock: float = TARGET_LOCK, giveback: float = GIVEBACK, runner_giveback: float = RUNNER_GIVEBACK, last_target_sell: float = LAST_TARGET_SELL, entry_split: float = ENTRY_SPLIT, leg2_level: str = "mid", leg2_below_pct: float = 3.0, leg2_fallback_hours: float = 24.0) -> dict:
     """
     Replay one signal over candles [open_time, open, high, low, close, ...] under OUR rules.
     PnL is expressed on the FULL allocated amount: if the second leg never fills, only the first
@@ -85,6 +85,7 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
     leg2_price = float(sig.entry_low)
     leg2_pending = False
     leg2_deadline = 0
+    leg2_fallback: Optional[int] = None
     invested_share = 1.0
     entry_ms: Optional[int] = None
     stop = float(sig.stop_price)
@@ -119,17 +120,26 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
             if entry is not None:
                 entry_ms = t
                 max_high = max(max_high, h)
+                if leg2_level == "mid":
+                    leg2_price = (float(sig.entry_low) + float(sig.entry_high)) / 2.0
+                elif leg2_level == "below_pct":
+                    leg2_price = max(float(sig.entry_low), entry * (1.0 - leg2_below_pct / 100.0))
                 if 0.0 < entry_split < 1.0 and entry > leg2_price * 1.002:
                     leg2_pending = True
                     invested_share = entry_split
                     leg2_deadline = t + 72 * 3600 * 1000
+                    leg2_fallback = t + int(leg2_fallback_hours * 3600 * 1000) if leg2_fallback_hours > 0 else None
                 # do not evaluate targets on the entry candle (ambiguous ordering)
             continue
 
         if leg2_pending:
             if next_target == 0 and t <= leg2_deadline and lo <= leg2_price * 1.002 and lo > stop:
-                # merge the second leg at the zone bottom: new average entry, full capital at work
+                # merge the second leg at its level: new average entry, full capital at work
                 entry = entry * entry_split + leg2_price * (1.0 - entry_split)
+                invested_share = 1.0
+                leg2_pending = False
+            elif next_target == 0 and leg2_fallback is not None and t >= leg2_fallback and o <= sig.entry_high * 1.002 and o > stop:
+                entry = entry * entry_split + o * (1.0 - entry_split)  # fallback: at market while still in zone
                 invested_share = 1.0
                 leg2_pending = False
             elif next_target > 0 or t > leg2_deadline:
@@ -393,4 +403,25 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
                 "win_rate_pct": (100.0 * wins / closed) if closed else None,
             })
     sweep.sort(key=lambda x: x["sum_pnl_pct"], reverse=True)
-    return {"rows": [r.__dict__ for r in rows], "summary": summary, "sweep": sweep}
+    # Entry variants under the best exit settings found above (how to deploy the second half).
+    best_lock = (sweep[0]["target_lock_pct"] / 100.0) if sweep else 0.0
+    best_gb = (sweep[0]["giveback_pct"] / 100.0) if sweep else 1.0
+    entry_variants = [
+        ("all at once", dict(entry_split=0.0)),
+        ("50% now + 50% at zone bottom", dict(entry_split=0.5, leg2_level="bottom", leg2_fallback_hours=0.0)),
+        ("50% now + 50% at mid-zone", dict(entry_split=0.5, leg2_level="mid", leg2_fallback_hours=0.0)),
+        ("50% now + 50% at mid-zone, market after 24h", dict(entry_split=0.5, leg2_level="mid", leg2_fallback_hours=24.0)),
+        ("50% now + 50% at -3%, market after 24h", dict(entry_split=0.5, leg2_level="below_pct", leg2_below_pct=3.0, leg2_fallback_hours=24.0)),
+    ]
+    entry_sweep = []
+    for label, kw in entry_variants:
+        pn = []
+        deployed = []
+        for sig, kl, pm in replay:
+            r = simulate(sig, kl, pm, window, target_lock=best_lock, giveback=best_gb, **kw)
+            if r.get("pnl_pct") is None:
+                continue
+            pn.append(r["pnl_pct"])
+        entry_sweep.append({"label": label, "trades": len(pn), "sum_pnl_pct": sum(pn) if pn else 0.0, "avg_pnl_pct": (sum(pn) / len(pn)) if pn else None})
+    entry_sweep.sort(key=lambda x: x["sum_pnl_pct"], reverse=True)
+    return {"rows": [r.__dict__ for r in rows], "summary": summary, "sweep": sweep, "entry_sweep": entry_sweep, "best_exit": {"target_lock_pct": best_lock * 100.0, "giveback_pct": best_gb * 100.0}}

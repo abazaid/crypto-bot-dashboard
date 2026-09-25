@@ -786,6 +786,9 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE ai_pools ADD COLUMN runner_giveback_pct FLOAT DEFAULT 30.0",
         "ALTER TABLE ai_pools ADD COLUMN last_target_sell_pct FLOAT DEFAULT 50.0",
         "ALTER TABLE ai_pools ADD COLUMN entry_split_pct FLOAT DEFAULT 50.0",
+        "ALTER TABLE ai_pools ADD COLUMN leg2_level VARCHAR(12) DEFAULT 'mid'",
+        "ALTER TABLE ai_pools ADD COLUMN leg2_below_pct FLOAT DEFAULT 3.0",
+        "ALTER TABLE ai_pools ADD COLUMN leg2_fallback_hours FLOAT DEFAULT 24.0",
         "ALTER TABLE ai_pool_positions ADD COLUMN plan_json TEXT",
         "ALTER TABLE ai_pool_positions ADD COLUMN signal_id INTEGER",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_signal_channel_msg ON telegram_signals(channel, msg_id)",
@@ -4065,6 +4068,7 @@ async def ai_trader_settings(request: Request, pool_id: int) -> RedirectResponse
             "daily_loss_limit_pct", "max_drawdown_pct", "symbol_cooldown_hours", "max_entries_per_hour", "time_stop_hours",
             "max_portfolio_risk_pct", "breaker_cooldown_hours", "profit_giveback_pct",
             "breakeven_at_r", "tp1_r", "tp1_fraction", "target_lock_pct", "runner_giveback_pct", "last_target_sell_pct", "entry_split_pct",
+            "leg2_level", "leg2_below_pct", "leg2_fallback_hours",
         )
         kwargs = {k: form.get(k) for k in keys}
         kwargs["avoid_account_holdings"] = form.get("avoid_account_holdings") == "1"

@@ -63,6 +63,23 @@
     </section>
     {% endif %}
 
+    {% if report.entry_sweep %}
+    <section class="card">
+      <h2>How to deploy the capital? (entry variants, using the best exit row above: lock {{ "%.0f"|format(report.best_exit.target_lock_pct) }}%, give-back {{ "%.0f"|format(report.best_exit.giveback_pct) }}%)</h2>
+      <p class="muted-line">PnL is on the full amount per signal; when the second half never fills, only half the capital worked.</p>
+      <div class="table-scroll">
+        <table class="campaigns-table">
+          <thead><tr><th>Entry</th><th>Trades</th><th>Sum PnL</th><th>Avg PnL</th></tr></thead>
+          <tbody>
+            {% for w in report.entry_sweep %}
+            <tr class="{{ 'tab-active' if loop.first else '' }}"><td>{{ w.label }}</td><td>{{ w.trades }}</td><td class="{{ 'pnl-pos' if w.sum_pnl_pct >= 0 else 'pnl-neg' }}">{{ "%+.1f"|format(w.sum_pnl_pct) }}%</td><td>{% if w.avg_pnl_pct is not none %}{{ "%+.2f"|format(w.avg_pnl_pct) }}%{% else %}-{% endif %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
     <section class="card">
       <h2>Signal by signal</h2>
       <div class="table-scroll">

@@ -328,6 +328,8 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "runner_giveback_pct": (10.0, 100.0),
         "last_target_sell_pct": (0.0, 100.0),
         "entry_split_pct": (0.0, 100.0),
+        "leg2_below_pct": (0.5, 15.0),
+        "leg2_fallback_hours": (0.0, 168.0),
     }
     changed: list[str] = []
     for key, (lo, hi) in allowed.items():
@@ -339,6 +341,9 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
             val = int(val)
         setattr(pool, key, val)
         changed.append(f"{key}={val}")
+    if kwargs.get("leg2_level") in {"bottom", "mid", "below_pct"}:
+        pool.leg2_level = str(kwargs["leg2_level"])
+        changed.append(f"leg2_level={pool.leg2_level}")
     if "avoid_account_holdings" in kwargs:
         pool.avoid_account_holdings = bool(kwargs["avoid_account_holdings"])
         changed.append(f"avoid_account_holdings={pool.avoid_account_holdings}")
@@ -1409,6 +1414,9 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             "runner_giveback_pct": float(pool.runner_giveback_pct if pool.runner_giveback_pct is not None else 30.0),
             "last_target_sell_pct": float(pool.last_target_sell_pct if pool.last_target_sell_pct is not None else 50.0),
             "entry_split_pct": float(pool.entry_split_pct if pool.entry_split_pct is not None else 50.0),
+            "leg2_level": str(pool.leg2_level or "mid"),
+            "leg2_below_pct": float(pool.leg2_below_pct if pool.leg2_below_pct is not None else 3.0),
+            "leg2_fallback_hours": float(pool.leg2_fallback_hours if pool.leg2_fallback_hours is not None else 24.0),
         },
         "open_risk_usdt": open_risk_usdt(positions, prices),
         "last_scan": scan,
