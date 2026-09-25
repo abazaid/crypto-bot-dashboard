@@ -401,7 +401,9 @@ def test_profit_ladder_protects_winner_before_tp1(db_session, fake_exchange):
 
 
 def test_profit_ladder_pure():
-    assert svc.profit_ladder_stop(100.0, 5.0, 104.0, 0.1) is None
+    assert svc.profit_ladder_stop(100.0, 5.0, 102.0, 0.1) is None  # 0.4R < 0.6R default
+    assert svc.profit_ladder_stop(100.0, 5.0, 103.0, 0.1) == pytest.approx(svc.breakeven_price(100.0, 0.1))  # 0.6R
+    assert svc.profit_ladder_stop(100.0, 5.0, 104.0, 0.1, breakeven_at_r=1.0) is None
     assert svc.profit_ladder_stop(100.0, 5.0, 105.0, 0.1) == pytest.approx(svc.breakeven_price(100.0, 0.1))
     assert svc.profit_ladder_stop(100.0, 5.0, 110.0, 0.1) == pytest.approx(105.0)
     assert svc.profit_ladder_stop(100.0, 5.0, 119.0, 0.1) == pytest.approx(110.0)
@@ -434,3 +436,23 @@ def test_capture_stats_after_trailing_exit(db_session, fake_exchange):
     assert 60.0 < c["capture_pct"] < 100.0
     s = svc.pool_summary(db_session, pool, refresh_prices=False)
     assert s["capture_samples"] == 1 and s["big_winners_3r"] == 1
+
+
+def test_protective_mode_secures_small_profit_before_1r(db_session, fake_exchange, monkeypatch):
+    """The user's rule: a trade that showed a profit must not turn into a loss, even under 1R."""
+    pool = svc.create_pool(db_session, 100.0)  # balanced: breakeven at 0.6R, TP1 at 1.2R sells 40%
+    pos = svc._buy(db_session, pool, _signal(stop=92.0), 30.0)  # R = 8
+    assert pos.tp1_price == pytest.approx(100.0 + 1.2 * 8.0)
+    svc._manage_position(db_session, pool, pos, 103.0, "bullish")  # 0.375R: no protection yet
+    assert pos.stop_price == pytest.approx(92.0)
+    svc._manage_position(db_session, pool, pos, 105.0, "bullish")  # 0.625R: breakeven + guard (keep 50% of +5)
+    assert pos.stop_price == pytest.approx(102.5)
+    # BTC turns weak: guard tightens to 30% give-back -> keep 70% of the +5 peak
+    monkeypatch.setattr(svc, "btc_short_term_bias", lambda force_refresh=False: "weak")
+    svc._manage_position(db_session, pool, pos, 104.0, "bullish")
+    assert pos.stop_price == pytest.approx(103.5)
+    # TP1 at 1.2R = 109.6 sells 40%
+    fake_exchange.price = 110.0
+    qty0 = pos.qty
+    svc._manage_position(db_session, pool, pos, 110.0, "bullish")
+    assert pos.tp1_done and pos.qty == pytest.approx(qty0 * 0.6, abs=0.001)

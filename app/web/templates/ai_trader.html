@@ -88,7 +88,7 @@
         </form>
       </div>
       <p class="muted-line">Capture ratio (realized ÷ peak paper profit): <strong>{% if summary.capture_avg_pct is not none %}{{ "%.0f"|format(summary.capture_avg_pct) }}%{% else %}n/a{% endif %}</strong> over {{ summary.capture_samples }} trades that showed a profit · trades that reached 3R: {{ summary.big_winners_3r }} of {{ summary.closed_total }} closed. Rule of thumb after 30 trades: under 40% → tighten give-back; over 70% with no 3R winners → loosen it.</p>
-      <p class="muted-line">Profile: <strong>{{ summary.risk_profile }}</strong> · risk/trade {{ summary.settings.risk_per_trade_pct }}% · max position {{ summary.settings.max_position_pct }}% · min score {{ summary.settings.min_entry_score }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · cooldown {{ summary.settings.symbol_cooldown_hours }}h · time stop {{ summary.settings.time_stop_hours }}h · portfolio risk cap {{ summary.settings.max_portfolio_risk_pct }}% (open now {{ "%.2f"|format(summary.open_risk_usdt) }} USDT) · breaker cooldown {{ summary.settings.breaker_cooldown_hours }}h · profit give-back max {{ summary.settings.profit_giveback_pct }}%</p>
+      <p class="muted-line">Profile: <strong>{{ summary.risk_profile }}</strong> · risk/trade {{ summary.settings.risk_per_trade_pct }}% · max position {{ summary.settings.max_position_pct }}% · min score {{ summary.settings.min_entry_score }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · cooldown {{ summary.settings.symbol_cooldown_hours }}h · time stop {{ summary.settings.time_stop_hours }}h · portfolio risk cap {{ summary.settings.max_portfolio_risk_pct }}% (open now {{ "%.2f"|format(summary.open_risk_usdt) }} USDT) · breaker cooldown {{ summary.settings.breaker_cooldown_hours }}h · profit give-back max {{ summary.settings.profit_giveback_pct }}% (30% while BTC is weak) · breakeven at {{ summary.settings.breakeven_at_r }}R · TP1 at {{ summary.settings.tp1_r }}R sells {{ (summary.settings.tp1_fraction * 100)|round|int }}%</p>
       <details>
         <summary>Edit risk settings</summary>
         <form method="post" action="/live/ai-trader/{{ pool.id }}/settings" class="form-grid" style="margin-top:8px;">
@@ -111,7 +111,10 @@
           <label>Time stop (h)<input type="number" name="time_stop_hours" step="1" value="{{ summary.settings.time_stop_hours }}"></label>
           <label>Portfolio risk cap % of equity<input type="number" name="max_portfolio_risk_pct" step="0.5" value="{{ summary.settings.max_portfolio_risk_pct }}"></label>
           <label>Cooldown after daily-loss breaker (h)<input type="number" name="breaker_cooldown_hours" step="1" value="{{ summary.settings.breaker_cooldown_hours }}"></label>
-          <label>Max profit give-back after 1R (%)<input type="number" name="profit_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.profit_giveback_pct }}"></label>
+          <label>Max profit give-back (%)<input type="number" name="profit_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.profit_giveback_pct }}"></label>
+          <label>Breakeven + guard armed at (R)<input type="number" name="breakeven_at_r" step="0.1" min="0.3" max="1.5" value="{{ summary.settings.breakeven_at_r }}"></label>
+          <label>TP1 at (R)<input type="number" name="tp1_r" step="0.1" min="0.8" max="3" value="{{ summary.settings.tp1_r }}"></label>
+          <label>TP1 sell fraction<input type="number" name="tp1_fraction" step="0.05" min="0.2" max="0.8" value="{{ summary.settings.tp1_fraction }}"></label>
           <label class="inline-check"><input type="checkbox" name="avoid_account_holdings" value="1" {% if summary.settings.avoid_account_holdings %}checked{% endif %}> Skip coins the account already holds</label>
           <div class="full"><button type="submit" class="soft-btn">Save settings</button></div>
         </form>
@@ -141,7 +144,7 @@
               <td style="font-size:12px; white-space:nowrap">
                 <strong>TP1</strong> {{ "%.6g"|format(p.tp1_price) }} (+{{ "%.1f"|format(p.targets.tp1_pct) }}%){% if p.tp1_done %} <span class="badge">done</span>{% endif %}<br>
                 <span class="muted-line">R = {{ "%.1f"|format(p.targets.r_pct) }}% · reached {{ "%.1f"|format(p.targets.reached_r) }}R</span><br>
-                {% for l in p.targets.ladder %}<span class="{{ 'pnl-pos' if l.reached else 'muted-line' }}">{{ l.k }}R +{{ "%.1f"|format(l.trigger_pct) }}% → lock {{ "%+.1f"|format(l.lock_pct) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}
+                {% for l in p.targets.ladder %}<span class="{{ 'pnl-pos' if l.reached else 'muted-line' }}">{% if l.k == 1 %}{{ "%.1f"|format(l.trigger_pct / p.targets.r_pct) }}R{% else %}{{ l.k }}R{% endif %} +{{ "%.1f"|format(l.trigger_pct) }}% → lock {{ "%+.1f"|format(l.lock_pct) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}
               </td>
               <td title="{{ p.entry_reason }}">{{ "%.0f"|format(p.entry_score) }}</td>
               <td>{{ p.opened_at }}</td>
@@ -281,7 +284,7 @@
                 <td style="font-size:12px; white-space:nowrap">
                   <strong>TP1</strong> ${Number(p.tp1_price).toPrecision(6)} (+${fmt(p.targets.tp1_pct, 1)}%)${p.tp1_done ? ' <span class="badge">done</span>' : ''}<br>
                   <span class="muted-line">R = ${fmt(p.targets.r_pct, 1)}% · reached ${fmt(p.targets.reached_r, 1)}R</span><br>
-                  ${p.targets.ladder.map(l => `<span class="${l.reached ? 'pnl-pos' : 'muted-line'}">${l.k}R +${fmt(l.trigger_pct, 1)}% → lock ${l.lock_pct >= 0 ? '+' : ''}${fmt(l.lock_pct, 1)}%</span>`).join(' · ')}
+                  ${p.targets.ladder.map(l => `<span class="${l.reached ? 'pnl-pos' : 'muted-line'}">${l.k === 1 ? fmt(l.trigger_pct / p.targets.r_pct, 1) : l.k}R +${fmt(l.trigger_pct, 1)}% → lock ${l.lock_pct >= 0 ? '+' : ''}${fmt(l.lock_pct, 1)}%</span>`).join(' · ')}
                 </td>
                 <td title="${(p.entry_reason || '').replace(/"/g, '&quot;')}">${fmt(p.entry_score, 0)}</td>
                 <td>${p.opened_at}</td>

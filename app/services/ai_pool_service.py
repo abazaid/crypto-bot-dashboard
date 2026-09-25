@@ -44,11 +44,15 @@ RECONCILE_EVERY_SECONDS = 60
 SUPPORTED_ACCOUNTS = {"binance_1": "Binance 1 (All Coins)"}
 EXCLUDED_SYMBOLS_SETTING_KEY = "ai_pool_excluded_symbols"
 WEAK_BTC_RISK_MULTIPLIER = 0.5
+WEAK_BTC_MAX_GIVEBACK_PCT = 30.0  # when BTC turns weak intraday, protect open profit harder
+DEFAULT_BREAKEVEN_AT_R = 0.6
+DEFAULT_TP1_R = 1.2
+DEFAULT_TP1_FRACTION = 0.4
 
 RISK_PROFILES: dict[str, dict[str, float]] = {
-    "conservative": dict(risk_per_trade_pct=1.0, max_position_pct=25.0, max_positions=3, min_entry_score=75.0, daily_loss_limit_pct=3.0, max_drawdown_pct=10.0, symbol_cooldown_hours=24.0, max_entries_per_hour=1, time_stop_hours=72.0, max_portfolio_risk_pct=2.5, breaker_cooldown_hours=24.0),
-    "balanced": dict(risk_per_trade_pct=1.5, max_position_pct=35.0, max_positions=4, min_entry_score=65.0, daily_loss_limit_pct=4.0, max_drawdown_pct=15.0, symbol_cooldown_hours=12.0, max_entries_per_hour=2, time_stop_hours=72.0, max_portfolio_risk_pct=4.0, breaker_cooldown_hours=12.0),
-    "aggressive": dict(risk_per_trade_pct=2.5, max_position_pct=45.0, max_positions=5, min_entry_score=55.0, daily_loss_limit_pct=6.0, max_drawdown_pct=20.0, symbol_cooldown_hours=6.0, max_entries_per_hour=3, time_stop_hours=96.0, max_portfolio_risk_pct=7.0, breaker_cooldown_hours=6.0),
+    "conservative": dict(risk_per_trade_pct=1.0, max_position_pct=25.0, max_positions=3, min_entry_score=75.0, daily_loss_limit_pct=3.0, max_drawdown_pct=10.0, symbol_cooldown_hours=24.0, max_entries_per_hour=1, time_stop_hours=72.0, max_portfolio_risk_pct=2.5, breaker_cooldown_hours=24.0, breakeven_at_r=0.5, tp1_r=1.0, tp1_fraction=0.5, profit_giveback_pct=40.0),
+    "balanced": dict(risk_per_trade_pct=1.5, max_position_pct=35.0, max_positions=4, min_entry_score=65.0, daily_loss_limit_pct=4.0, max_drawdown_pct=15.0, symbol_cooldown_hours=12.0, max_entries_per_hour=2, time_stop_hours=72.0, max_portfolio_risk_pct=4.0, breaker_cooldown_hours=12.0, breakeven_at_r=0.6, tp1_r=1.2, tp1_fraction=0.4, profit_giveback_pct=50.0),
+    "aggressive": dict(risk_per_trade_pct=2.5, max_position_pct=45.0, max_positions=5, min_entry_score=55.0, daily_loss_limit_pct=6.0, max_drawdown_pct=20.0, symbol_cooldown_hours=6.0, max_entries_per_hour=3, time_stop_hours=96.0, max_portfolio_risk_pct=7.0, breaker_cooldown_hours=6.0, breakeven_at_r=1.0, tp1_r=1.5, tp1_fraction=0.4, profit_giveback_pct=60.0),
 }
 
 _LAST_SCAN: dict[int, dict[str, Any]] = {}
@@ -166,15 +170,15 @@ def breakeven_price(avg_entry: float, fee_pct: float) -> float:
     return avg_entry * (1.0 + 2.0 * fee_pct / 100.0 + 0.001)
 
 
-def profit_ladder_stop(avg_entry: float, r: float, highest_price: float, fee_pct: float) -> float | None:
+def profit_ladder_stop(avg_entry: float, r: float, highest_price: float, fee_pct: float, breakeven_at_r: float = DEFAULT_BREAKEVEN_AT_R) -> float | None:
     """
     Minimum stop implied by how many R the trade has already reached (using the highest price):
-    1R reached -> breakeven+fees; kR reached (k >= 2) -> lock (k-1)R. None when under 1R.
+    breakeven_at_r reached -> breakeven+fees; kR reached (k >= 2) -> lock (k-1)R. None when under the threshold.
     """
     if r <= 0 or avg_entry <= 0 or highest_price <= avg_entry:
         return None
     reached = (highest_price - avg_entry) / r
-    if reached < 1.0:
+    if reached < max(0.1, breakeven_at_r):
         return None
     k = int(reached)
     if k < 2:
@@ -198,6 +202,10 @@ def _apply_profile(pool: AiPool, profile: str) -> None:
     pool.time_stop_hours = float(p["time_stop_hours"])
     pool.max_portfolio_risk_pct = float(p.get("max_portfolio_risk_pct", 4.0))
     pool.breaker_cooldown_hours = float(p.get("breaker_cooldown_hours", 12.0))
+    pool.breakeven_at_r = float(p.get("breakeven_at_r", DEFAULT_BREAKEVEN_AT_R))
+    pool.tp1_r = float(p.get("tp1_r", DEFAULT_TP1_R))
+    pool.tp1_fraction = float(p.get("tp1_fraction", DEFAULT_TP1_FRACTION))
+    pool.profit_giveback_pct = float(p.get("profit_giveback_pct", 50.0))
 
 
 def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced", account: str = "binance_1", name: str = "AI Trader") -> AiPool:
@@ -307,6 +315,9 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "max_portfolio_risk_pct": (1.0, 20.0),
         "breaker_cooldown_hours": (0.0, 168.0),
         "profit_giveback_pct": (10.0, 100.0),
+        "breakeven_at_r": (0.3, 1.5),
+        "tp1_r": (0.8, 3.0),
+        "tp1_fraction": (0.2, 0.8),
     }
     changed: list[str] = []
     for key, (lo, hi) in allowed.items():
@@ -556,7 +567,7 @@ def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float) -> Opt
         entry_fee_usdt=fee_usdt,
         stop_price=sig.stop_price,
         initial_stop_price=sig.stop_price,
-        tp1_price=avg + max(0.0, r) * 1.5,
+        tp1_price=avg + max(0.0, r) * float(pool.tp1_r or DEFAULT_TP1_R),
         tp1_done=False,
         trail_atr=sig.atr_4h,
         trail_mult=sig.trail_mult,
@@ -815,7 +826,7 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
 
     # 2) Partial take-profit at TP1, then move stop to breakeven
     if not pos.tp1_done and float(pos.tp1_price) > 0 and price >= float(pos.tp1_price):
-        fraction = 0.5 if pos.strategy == "pullback" else 0.4
+        fraction = float(pool.tp1_fraction or DEFAULT_TP1_FRACTION)
         res = _sell(db, pool, pos, float(pos.qty) * fraction, "tp1", price, balances)
         if res is not None or pos.status == "closed":
             pos.tp1_done = True
@@ -832,7 +843,8 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
     #      >= 2R profit -> stop locks +1R
     #      >= 3R profit -> stop locks +2R, and so on
     #    Trailing (ATR chandelier) runs alongside; the higher of the two wins.
-    floor = profit_ladder_stop(float(pos.avg_entry), r, float(pos.highest_price), settings.trading_fee_pct)
+    be_r = float(pool.breakeven_at_r or DEFAULT_BREAKEVEN_AT_R)
+    floor = profit_ladder_stop(float(pos.avg_entry), r, float(pos.highest_price), settings.trading_fee_pct, be_r)
     if floor is not None and floor > float(pos.stop_price):
         old_stop = float(pos.stop_price)
         pos.stop_price = floor
@@ -840,8 +852,10 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
     # Give-back guard: once past 1R, never hand back more than profit_giveback_pct of the peak open profit.
     # (50% default: a trade that reached +8% cannot close below +4%.) Set to 100 to disable.
     giveback = float(pool.profit_giveback_pct if pool.profit_giveback_pct is not None else 50.0)
+    if btc_short_term_bias() == "weak":
+        giveback = min(giveback, WEAK_BTC_MAX_GIVEBACK_PCT)  # sudden BTC weakness: hold profit tighter
     peak_gain = float(pos.highest_price) - float(pos.avg_entry)
-    if r > 0 and peak_gain >= r and giveback < 100.0:
+    if r > 0 and peak_gain >= be_r * r and giveback < 100.0:
         guard = float(pos.avg_entry) + peak_gain * (1.0 - giveback / 100.0)
         if guard > float(pos.stop_price):
             pos.stop_price = guard
@@ -1165,8 +1179,9 @@ def _targets_for(p: AiPoolPosition, price: float) -> dict:
     r_pct = r / entry * 100.0
     highest = max(float(p.highest_price or 0.0), price)
     ladder = []
+    be_r = float(p.pool.breakeven_at_r or DEFAULT_BREAKEVEN_AT_R) if p.pool is not None else DEFAULT_BREAKEVEN_AT_R
     for k in (1, 2, 3, 4):
-        trigger = entry + k * r
+        trigger = entry + (be_r if k == 1 else k) * r
         lock = breakeven_price(entry, settings.trading_fee_pct) if k == 1 else entry + (k - 1) * r
         ladder.append({
             "k": k,
@@ -1304,6 +1319,9 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             "max_portfolio_risk_pct": float(pool.max_portfolio_risk_pct or 4.0),
             "breaker_cooldown_hours": float(pool.breaker_cooldown_hours or 12.0),
             "profit_giveback_pct": float(pool.profit_giveback_pct if pool.profit_giveback_pct is not None else 50.0),
+            "breakeven_at_r": float(pool.breakeven_at_r or DEFAULT_BREAKEVEN_AT_R),
+            "tp1_r": float(pool.tp1_r or DEFAULT_TP1_R),
+            "tp1_fraction": float(pool.tp1_fraction or DEFAULT_TP1_FRACTION),
         },
         "open_risk_usdt": open_risk_usdt(positions, prices),
         "last_scan": scan,
