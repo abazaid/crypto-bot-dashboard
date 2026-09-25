@@ -69,7 +69,7 @@ GIVEBACK = 0.50  # between targets
 LAST_TARGET_SELL = 0.5  # half of the last fraction is sold, the rest runs
 
 
-def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float) -> dict:
+def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float, target_lock: float = TARGET_LOCK, giveback: float = GIVEBACK, runner_giveback: float = RUNNER_GIVEBACK, last_target_sell: float = LAST_TARGET_SELL) -> dict:
     """Replay one signal over candles [open_time, open, high, low, close, ...] under OUR rules. Returns a result dict."""
     entry: Optional[float] = None
     entry_ms: Optional[int] = None
@@ -119,17 +119,18 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
         while next_target < len(targets) and h >= float(targets[next_target].price):
             tg = targets[next_target]
             is_last = next_target == len(targets) - 1
-            frac = min(remaining, float(tg.sell_fraction) * (LAST_TARGET_SELL if is_last else 1.0))
+            frac = min(remaining, float(tg.sell_fraction) * (last_target_sell if is_last else 1.0))
             realized += frac * (float(tg.price) / entry - 1.0)
             remaining -= frac
             hits.append(f"T{next_target + 1}")
             prev_level = entry if next_target == 0 else float(targets[next_target - 1].price)
-            stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0), prev_level + TARGET_LOCK * (float(tg.price) - prev_level))
+            stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0), prev_level + target_lock * (float(tg.price) - prev_level))
             next_target += 1
         # give-back guard from the peak (tighter for the runner after the last target)
         if next_target > 0:
-            gb = RUNNER_GIVEBACK if next_target >= len(targets) else GIVEBACK
-            stop = max(stop, entry + (max_high - entry) * (1.0 - gb))
+            gb = runner_giveback if next_target >= len(targets) else giveback
+            if gb < 1.0:
+                stop = max(stop, entry + (max_high - entry) * (1.0 - gb))
         if remaining <= 1e-9:
             break
 
@@ -238,6 +239,7 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
     """
     window = float(window_hours or settings.telegram_entry_window_hours)
     rows: list[AuditRow] = []
+    replay: list[tuple] = []
     now_ms = int(time.time() * 1000)
     for p in sorted(posts, key=lambda x: x["id"], reverse=True):
         text = p.get("text") or ""
@@ -283,6 +285,7 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
         row.ch_hits = list(ch.get("hits", []))
         row.ch_pnl_pct = ch.get("pnl_pct")
         row.ch_note = ch.get("note", "")
+        replay.append((sig, klines, posted_ms))
         res = simulate(sig, klines, posted_ms, window)
         row.status = res["status"]
         row.note = (res.get("note", "") + wide_note).strip(" |")
@@ -324,4 +327,28 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
         "win_rate_pct": (100.0 * sum(1 for r in closed if (r.pnl_pct or 0) > 0) / len(closed)) if closed else None,
         "per_30_usdt": (sum(pnls) / 100.0 * 30.0) if pnls else 0.0,
     }
-    return {"rows": [r.__dict__ for r in rows], "summary": summary}
+    # Parameter sweep: which lock / give-back combination would have done best on THIS channel.
+    sweep = []
+    for lock in (0.0, 0.25, 0.5, 0.75):
+        for gb in (0.5, 1.0):
+            pn = []
+            wins = 0
+            closed = 0
+            for sig, kl, pm in replay:
+                r = simulate(sig, kl, pm, window, target_lock=lock, giveback=gb, runner_giveback=min(gb, 0.3) if gb < 1.0 else 0.3)
+                if r.get("pnl_pct") is None:
+                    continue
+                pn.append(r["pnl_pct"])
+                if r["status"] != "open":
+                    closed += 1
+                    wins += 1 if r["pnl_pct"] > 0 else 0
+            sweep.append({
+                "target_lock_pct": lock * 100.0,
+                "giveback_pct": gb * 100.0,
+                "trades": len(pn),
+                "sum_pnl_pct": sum(pn) if pn else 0.0,
+                "avg_pnl_pct": (sum(pn) / len(pn)) if pn else None,
+                "win_rate_pct": (100.0 * wins / closed) if closed else None,
+            })
+    sweep.sort(key=lambda x: x["sum_pnl_pct"], reverse=True)
+    return {"rows": [r.__dict__ for r in rows], "summary": summary, "sweep": sweep}

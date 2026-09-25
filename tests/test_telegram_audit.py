@@ -74,3 +74,17 @@ def test_channel_rules_market_entry_and_4h_close_stop():
     fine2 = fine + [_k(8 * 60, 0.125, 0.126, 0.124, 0.125)]
     res2 = simulate_channel_rules(sig, fine2, k4h2, 0)
     assert res2["status"] == "stop_after_targets" and res2["exit_price"] == 0.125
+
+
+def test_simulate_lock_zero_means_previous_target():
+    sig = parse_signal(ALICE)
+    kl = [
+        _k(0, 0.150, 0.152, 0.149, 0.151),
+        _k(15, 0.151, 0.190, 0.150, 0.189),  # T1 + T2
+        _k(30, 0.189, 0.191, 0.175, 0.176),  # dips to 0.175: above T1 (0.171) but below T1+50% leg (0.179)
+        _k(45, 0.176, 0.215, 0.175, 0.214),  # T3
+    ]
+    tight = simulate(sig, kl, 0, 12, target_lock=0.5, giveback=1.0)
+    loose = simulate(sig, kl, 0, 12, target_lock=0.0, giveback=1.0)
+    assert tight["status"] == "trail" and tight["hits"] == ["T1", "T2"]
+    assert loose["hits"] == ["T1", "T2", "T3"] and loose["pnl_pct"] > tight["pnl_pct"]
