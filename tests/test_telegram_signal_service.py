@@ -130,3 +130,65 @@ def test_ai_and_telegram_pools_coexist_and_tick_routes_exits(db_session, fake_ex
     _price(fake_exchange, monkeypatch, 0.172)
     pools._manage_position(db_session, tg_pool, pos, 0.172, "bullish")
     assert json.loads(pos.plan_json)["targets"][0]["done"] is True
+
+
+def test_stop_exit_syncs_signal_status_via_close_hook(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1010, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    _price(fake_exchange, monkeypatch, 0.136)
+    # production path: tick defers the exit and _execute_exits sells; the close hook must sync the row
+    kind = pools._manage_position(db_session, tg_pool, pos, 0.136, "bullish", None, defer_full_exits=True)
+    assert kind == "stop"
+    pools._execute_exits(db_session, tg_pool, [(pos, kind, 0.136)], fake_exchange.get_balances())
+    row = db_session.query(TelegramSignal).first()
+    assert pos.status == "closed" and row.status == "closed" and "stop" in row.status_note
+
+
+def test_plan_is_committed_with_the_position(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1011, ALICE, datetime.utcnow())
+    db_session.rollback()
+    db_session.expire_all()
+    pos = db_session.query(AiPoolPosition).first()
+    assert pos.signal_id is not None and json.loads(pos.plan_json)["targets"]
+
+
+def test_far_price_rejects_misparsed_levels(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 150.0)  # 1000x the parsed zone
+    res = svc.ingest_message_db(db_session, "signal252", 1012, ALICE, datetime.utcnow())
+    assert res["status"] == "invalid" and "far from" in res["note"]
+    assert not [o for o in fake_exchange.orders if o["side"] == "BUY"]
+
+
+def test_gap_through_two_targets_fills_both_in_one_tick(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1013, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    _price(fake_exchange, monkeypatch, 0.190)  # clears 0.171 and 0.187 at once
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.190)
+    plan = json.loads(pos.plan_json)
+    assert plan["targets"][0]["done"] and plan["targets"][1]["done"] and not plan["targets"][2]["done"]
+    assert pos.stop_price == pytest.approx(0.171)
+
+
+def test_duplicate_race_hits_unique_constraint(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1014, ALICE, datetime.utcnow())
+    db_session.add(TelegramSignal(channel="signal252", msg_id=1014, raw_text="x"))
+    with pytest.raises(Exception):
+        db_session.flush()
+    db_session.rollback()
+
+
+def test_lookup_failure_keeps_signal_pending(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 0.150)
+
+    def boom(symbol):
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(fake_exchange, "get_symbol_lot_filters", boom)
+    res = svc.ingest_message_db(db_session, "signal252", 1015, ALICE, datetime.utcnow())
+    assert res["status"] == "pending_entry"
+    monkeypatch.setattr(fake_exchange, "get_symbol_lot_filters", lambda s: dict(fake_exchange.filters))
+    assert svc.check_pending_signals(db_session, tg_pool) == 1

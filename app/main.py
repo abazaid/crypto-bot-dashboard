@@ -784,6 +784,7 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE ai_pools ADD COLUMN kind VARCHAR(16) DEFAULT 'ai'",
         "ALTER TABLE ai_pool_positions ADD COLUMN plan_json TEXT",
         "ALTER TABLE ai_pool_positions ADD COLUMN signal_id INTEGER",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_signal_channel_msg ON telegram_signals(channel, msg_id)",
     ]
     for stmt in stmts:
         try:

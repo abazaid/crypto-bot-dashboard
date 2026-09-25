@@ -104,3 +104,21 @@ def test_validation_catches_bad_levels():
     s = parse_signal(bad)
     assert s is not None
     assert any("stop is not below" in p for p in validate_signal(s))
+
+
+def test_thousands_separator_and_note_on_entry_line():
+    from app.services.telegram_signals import parse_signal, validate_signal
+
+    text = """💎 #BTC | Binance
+📍 الدخول (منطقة 1): 67,100 – 67,900.50
+🎯 الأهداف:
+1️⃣ 69,850 | +3.4% | بيع 20%
+2️⃣ 71,000 | +5.0% | بيع 30%
+3️⃣ 74,500.25 | +10.0% | بيع 50%
+🛑 الستوب: إغلاق 4 ساعات أسفل 65,000"""
+    s = parse_signal(text)
+    assert s is not None
+    assert (s.entry_low, s.entry_high) == (67100.0, 67900.5)
+    assert [t.price for t in s.targets] == [69850.0, 71000.0, 74500.25]
+    assert s.stop_price == 65000.0
+    assert validate_signal(s) == []

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -138,6 +138,7 @@ class AiPoolTrade(Base):
 class TelegramSignal(Base):
     """One row per channel post that looked like a signal (deduplicated by channel + message id)."""
     __tablename__ = "telegram_signals"
+    __table_args__ = (UniqueConstraint("channel", "msg_id", name="uq_telegram_signal_channel_msg"),)
 
     id = Column(Integer, primary_key=True)
     pool_id = Column(Integer, ForeignKey("ai_pools.id"), nullable=True, index=True)

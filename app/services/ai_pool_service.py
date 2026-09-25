@@ -495,10 +495,14 @@ def _record_error(db: Session, pool: AiPool, symbol: str, message: str) -> None:
         _log(db, pool.id, "BREAKER", f"{recent} exchange errors in the last {ERROR_RATE_WINDOW_MIN} min — pool paused. Resume manually after checking the API.")
 
 
-def _buy(db: Session, pool: AiPool, sig: Signal, quote_usdt: float) -> Optional[AiPoolPosition]:
-    """Place one entry and COMMIT it immediately: a real fill must never be lost to a later rollback."""
+def _buy(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra: Optional[dict] = None) -> Optional[AiPoolPosition]:
+    """
+    Place one entry and COMMIT it immediately: a real fill must never be lost to a later rollback.
+    `extra` fields (e.g. a telegram plan) are applied to the position BEFORE the same commit, so a
+    position can never exist without its plan.
+    """
     try:
-        return _buy_inner(db, pool, sig, quote_usdt)
+        return _buy_inner(db, pool, sig, quote_usdt, extra)
     except Exception as exc:
         logger.exception("AI pool: unexpected error during BUY %s", sig.symbol)
         try:
@@ -510,87 +514,126 @@ def _buy(db: Session, pool: AiPool, sig: Signal, quote_usdt: float) -> Optional[
         _commit_quietly(db)
 
 
-def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float) -> Optional[AiPoolPosition]:
+def _buy_inner(db: Session, pool: AiPool, sig: Signal, quote_usdt: float, extra: Optional[dict] = None) -> Optional[AiPoolPosition]:
+    """
+    Cash is RESERVED under the ledger lock, the exchange order is placed WITHOUT the lock (so a slow
+    Binance response never delays stop-loss ticks of any pool), and the fill is recorded under the
+    lock again. Callers must NOT hold _LEDGER_LOCK across this call.
+    """
     ex = _exchange(pool.account)
     symbol = sig.symbol
     quote = round(float(quote_usdt), 2)
-    if quote > float(pool.cash_usdt):
-        _log(db, pool.id, "SKIP_CASH", f"needs {quote:.2f} but pool cash is {pool.cash_usdt:.2f}", symbol)
-        return None
     try:
         free = float(_balances_or_raise(ex).get("USDT", {}).get("free", 0.0))
     except Exception as exc:
-        _record_error(db, pool, symbol, f"balance check failed: {exc}")
+        with _LEDGER_LOCK:
+            _record_error(db, pool, symbol, f"balance check failed: {exc}")
         return None
-    if free < quote:
-        _log(db, pool.id, "SKIP_CASH", f"account free USDT {free:.2f} < {quote:.2f} (pool cash {pool.cash_usdt:.2f} is not fully available)", symbol)
-        return None
+
+    # 1) reserve cash
+    with _LEDGER_LOCK:
+        db.refresh(pool)
+        if quote > float(pool.cash_usdt):
+            _log(db, pool.id, "SKIP_CASH", f"needs {quote:.2f} but pool cash is {pool.cash_usdt:.2f}", symbol)
+            return None
+        if free < quote:
+            _log(db, pool.id, "SKIP_CASH", f"account free USDT {free:.2f} < {quote:.2f} (pool cash {pool.cash_usdt:.2f} is not fully available)", symbol)
+            return None
+        if pool.status != "running":
+            _log(db, pool.id, "SKIP_PAUSED", f"pool is {pool.status}; entry skipped", symbol)
+            return None
+        pool.cash_usdt = float(pool.cash_usdt) - quote
+        _commit_quietly(db)
+
+    # 2) exchange call (no lock)
     cid = _client_id(pool.id, "E")
+    res: Optional[dict] = None
+    failure: Optional[str] = None
+    rejected = False
+    recovered_note: Optional[str] = None
     try:
         res = ex.place_market_buy_quote(symbol, quote, client_order_id=cid)
     except Exception as exc:
         if _is_symbol_rejection(exc):
-            _add_excluded_symbol(db, symbol)
-            _log(db, pool.id, "EXCLUDE", f"exchange rejected this symbol for the account; permanently excluded from scans ({exc})", symbol)
-            return None
-        recovered = _recover_order(ex, symbol, cid)
-        if recovered is None:
-            _record_error(db, pool, symbol, f"BUY failed: {exc}")
-            _LAST_RECONCILE_AT[pool.id] = 0.0  # verify holdings on the very next tick
-            return None
-        res = recovered
-        _log(db, pool.id, "RECOVERED", f"BUY request errored ({exc}) but order {cid} is {res['status']} on the exchange; recorded from lookup", symbol)
-    executed = float(res.get("executed_qty", 0.0))
-    spent = float(res.get("quote_qty", 0.0))
-    avg = float(res.get("avg_price", 0.0))
-    fee_usdt = float(res.get("fee_usdt", 0.0))
-    fee_base = float(res.get("fee_base", 0.0))
-    net_qty = float(res.get("net_qty", executed))
-    if executed <= 0 or avg <= 0 or spent <= 0:
-        _record_error(db, pool, symbol, f"BUY returned empty fill: {res}")
-        return None
-    pool.consecutive_errors = 0
-    pool.cash_usdt = float(pool.cash_usdt) - spent
-    cost_basis = spent
-    if fee_base <= 0 and fee_usdt > 0:
-        # Fee was charged in USDT/BNB rather than the bought asset: pay it from pool cash
-        # and carry it in the cost basis so realized PnL accounts for it.
-        pool.cash_usdt = float(pool.cash_usdt) - fee_usdt
-        cost_basis += fee_usdt
-    pool.fees_paid_usdt = float(pool.fees_paid_usdt) + fee_usdt
+            rejected = True
+            failure = str(exc)
+        else:
+            res = _recover_order(ex, symbol, cid)
+            if res is None:
+                failure = f"BUY failed: {exc}"
+            else:
+                recovered_note = f"BUY request errored ({exc}) but order {cid} is {res['status']} on the exchange; recorded from lookup"
 
-    r = avg - sig.stop_price
-    pos = AiPoolPosition(
-        pool_id=pool.id,
-        symbol=symbol,
-        strategy=sig.strategy,
-        status="open",
-        qty=net_qty,
-        qty_initial=net_qty,
-        avg_entry=avg,
-        invested_usdt=cost_basis,
-        entry_fee_usdt=fee_usdt,
-        stop_price=sig.stop_price,
-        initial_stop_price=sig.stop_price,
-        tp1_price=avg + max(0.0, r) * float(pool.tp1_r or DEFAULT_TP1_R),
-        tp1_done=False,
-        trail_atr=sig.atr_4h,
-        trail_mult=sig.trail_mult,
-        highest_price=avg,
-        entry_score=sig.score,
-        entry_reason=" | ".join(sig.reasons),
-        current_price=avg,
-    )
-    db.add(pos)
-    db.flush()
-    db.add(AiPoolTrade(pool_id=pool.id, position_id=pos.id, symbol=symbol, side="BUY", kind="entry", qty=net_qty, price=avg, quote_usdt=spent, fee_usdt=fee_usdt, order_id=str(int(res.get("order_id", 0) or 0)), client_order_id=cid))
-    _log(
-        db, pool.id, "ENTRY",
-        f"BUY {spent:.2f} USDT @ {avg:.6g} ({net_qty:.8g} {_base_asset(symbol)}) | {sig.strategy} score {sig.score:.0f} | "
-        f"stop {sig.stop_price:.6g} (-{sig.risk_pct:.1f}%) tp1 {pos.tp1_price:.6g} | cash left {pool.cash_usdt:.2f} | {pos.entry_reason}",
-        symbol,
-    )
-    return pos
+    # 3) record under the lock (release the reservation on failure)
+    with _LEDGER_LOCK:
+        db.refresh(pool)
+        if res is None:
+            pool.cash_usdt = float(pool.cash_usdt) + quote
+            if rejected:
+                _add_excluded_symbol(db, symbol)
+                _log(db, pool.id, "EXCLUDE", f"exchange rejected this symbol for the account; permanently excluded from scans ({failure})", symbol)
+            else:
+                _record_error(db, pool, symbol, failure or "BUY failed")
+                _LAST_RECONCILE_AT[pool.id] = 0.0  # verify holdings on the very next tick
+            return None
+        if recovered_note:
+            _log(db, pool.id, "RECOVERED", recovered_note, symbol)
+        executed = float(res.get("executed_qty", 0.0))
+        spent = float(res.get("quote_qty", 0.0))
+        avg = float(res.get("avg_price", 0.0))
+        fee_usdt = float(res.get("fee_usdt", 0.0))
+        fee_base = float(res.get("fee_base", 0.0))
+        net_qty = float(res.get("net_qty", executed))
+        if executed <= 0 or avg <= 0 or spent <= 0:
+            pool.cash_usdt = float(pool.cash_usdt) + quote
+            _record_error(db, pool, symbol, f"BUY returned empty fill: {res}")
+            _LAST_RECONCILE_AT[pool.id] = 0.0
+            return None
+        pool.consecutive_errors = 0
+        # reservation was `quote`; settle to what was actually spent
+        pool.cash_usdt = float(pool.cash_usdt) + quote - spent
+        cost_basis = spent
+        if fee_base <= 0 and fee_usdt > 0:
+            # Fee was charged in USDT/BNB rather than the bought asset: pay it from pool cash
+            # and carry it in the cost basis so realized PnL accounts for it.
+            pool.cash_usdt = float(pool.cash_usdt) - fee_usdt
+            cost_basis += fee_usdt
+        pool.fees_paid_usdt = float(pool.fees_paid_usdt) + fee_usdt
+
+        r = avg - sig.stop_price
+        pos = AiPoolPosition(
+            pool_id=pool.id,
+            symbol=symbol,
+            strategy=sig.strategy,
+            status="open",
+            qty=net_qty,
+            qty_initial=net_qty,
+            avg_entry=avg,
+            invested_usdt=cost_basis,
+            entry_fee_usdt=fee_usdt,
+            stop_price=sig.stop_price,
+            initial_stop_price=sig.stop_price,
+            tp1_price=avg + max(0.0, r) * float(pool.tp1_r or DEFAULT_TP1_R),
+            tp1_done=False,
+            trail_atr=sig.atr_4h,
+            trail_mult=sig.trail_mult,
+            highest_price=avg,
+            entry_score=sig.score,
+            entry_reason=" | ".join(sig.reasons),
+            current_price=avg,
+        )
+        for key, value in (extra or {}).items():
+            setattr(pos, key, value)
+        db.add(pos)
+        db.flush()
+        db.add(AiPoolTrade(pool_id=pool.id, position_id=pos.id, symbol=symbol, side="BUY", kind="entry", qty=net_qty, price=avg, quote_usdt=spent, fee_usdt=fee_usdt, order_id=str(int(res.get("order_id", 0) or 0)), client_order_id=cid))
+        _log(
+            db, pool.id, "ENTRY",
+            f"BUY {spent:.2f} USDT @ {avg:.6g} ({net_qty:.8g} {_base_asset(symbol)}) | {sig.strategy} score {sig.score:.0f} | "
+            f"stop {sig.stop_price:.6g} (-{sig.risk_pct:.1f}%) tp1 {pos.tp1_price:.6g} | cash left {pool.cash_usdt:.2f} | {pos.entry_reason}",
+            symbol,
+        )
+        return pos
 
 
 def _sell(db: Session, pool: AiPool, pos: AiPoolPosition, qty_wanted: float, kind: str, price_hint: float, balances: Optional[dict] = None) -> Optional[dict]:
@@ -724,6 +767,10 @@ def _close_position_record(db: Session, pool: AiPool, pos: AiPoolPosition, price
     else:
         pool.trades_lost = int(pool.trades_lost or 0) + 1
     _log(db, pool.id, "CLOSED", f"position closed ({reason}) total pnl {total:+.2f} USDT {note}".strip(), pos.symbol)
+    if getattr(pos, "signal_id", None):
+        from app.services.telegram_signal_service import sync_signal_status  # lazy: avoids import cycle
+
+        sync_signal_status(db, pos)
 
 
 # ── Tick: exits, reconciliation, breakers ──────────────────────────────────────
@@ -1085,62 +1132,63 @@ def _scan_pool(db: Session, pool: AiPool, regime: str) -> None:
         state["note"] = f"{len(scanned)} symbols scanned, {len(signals)} setups found, none reached the entry score {min_score:.0f}."
         return
 
-    with _LEDGER_LOCK:
-        db.refresh(pool)
-        _enter_signals_locked(db, pool, ex, qualified, state)
+    _enter_signals_locked(db, pool, ex, qualified, state)
 
 
 def _enter_signals_locked(db: Session, pool: AiPool, ex, qualified: list[Signal], state: dict[str, Any]) -> None:
-    """Size and place entries. Ledger state is re-read under the lock (the scan may have taken a while)."""
-    if pool.status != "running":
-        state["note"] = f"Pool is {pool.status}; entries skipped."
-        return
-    positions = _open_positions(db, pool)
-    open_symbols = {p.symbol for p in positions}
-    prices = _prices_for(list(open_symbols))
-    equity = pool_equity(pool, positions, prices)
-    slots = int(pool.max_positions) - len(positions)
-    entries_left = int(pool.max_entries_per_hour) - _entries_last_hour(db, pool)
-    if slots <= 0 or entries_left <= 0:
-        state["note"] = "Slots or hourly entry limit exhausted."
-        return
+    """
+    Size and place entries. Sizing is re-computed under the ledger lock for every signal; the
+    exchange order itself (_buy) runs without the lock so stop checks are never delayed.
+    """
     bias = btc_short_term_bias()
-    risk_pct = float(pool.risk_per_trade_pct)
-    if bias == "weak":
-        risk_pct *= WEAK_BTC_RISK_MULTIPLIER
-        _log_debounced(db, pool.id, "BTC_WEAK", f"BTC below 1h EMA20 or down >1% in 4h: entry risk halved to {risk_pct:.2f}%", every_seconds=1800)
     state["btc_bias"] = bias
-    open_risk = open_risk_usdt(positions, prices)
-    max_heat = float(pool.max_portfolio_risk_pct or 4.0)
-    state["open_risk_usdt"] = round(open_risk, 2)
     opened = 0
     for sig in qualified:
-        if opened >= min(slots, entries_left):
-            break
-        if sig.symbol in open_symbols:
-            continue
-        min_notional = MIN_NOTIONAL_FLOOR
-        try:
-            f = ex.get_symbol_lot_filters(sig.symbol)
-            min_notional = max(MIN_NOTIONAL_FLOOR, float(f.get("min_notional", 0.0) or 0.0) * 1.15)
-        except Exception:
-            pass
-        notional, why = compute_entry_notional(equity, float(pool.cash_usdt), risk_pct, float(pool.max_position_pct), sig.risk_pct, min_notional)
-        if notional <= 0:
-            _log_debounced(db, pool.id, "SKIP_SIZE", f"{why} (equity {equity:.2f}, cash {pool.cash_usdt:.2f}, stop {sig.risk_pct:.1f}%)", sig.symbol, every_seconds=900)
-            continue
-        notional, heat_why = heat_capped_notional(notional, sig.risk_pct, equity, max_heat, open_risk, min_notional)
-        if notional <= 0:
-            _log_debounced(db, pool.id, "SKIP_HEAT", f"{heat_why}: open risk {open_risk:.2f} of cap {equity * max_heat / 100.0:.2f} USDT ({max_heat:.1f}% of equity)", sig.symbol, every_seconds=900)
-            state["note"] = f"portfolio risk cap reached ({open_risk:.2f} USDT open risk)."
-            break
-        pos = _buy(db, pool, sig, notional)
+        with _LEDGER_LOCK:
+            db.refresh(pool)
+            if pool.status != "running":
+                state["note"] = f"Pool is {pool.status}; entries skipped."
+                return
+            positions = _open_positions(db, pool)
+            open_symbols = {p.symbol for p in positions}
+            prices = _prices_for(list(open_symbols))
+            equity = pool_equity(pool, positions, prices)
+            slots = int(pool.max_positions) - len(positions)
+            entries_left = int(pool.max_entries_per_hour) - _entries_last_hour(db, pool)
+            if slots <= 0 or entries_left <= 0:
+                state["note"] = "Slots or hourly entry limit exhausted."
+                return
+            if sig.symbol in open_symbols:
+                continue
+            risk_pct = float(pool.risk_per_trade_pct)
+            if bias == "weak":
+                risk_pct *= WEAK_BTC_RISK_MULTIPLIER
+                _log_debounced(db, pool.id, "BTC_WEAK", f"BTC below 1h EMA20 or down >1% in 4h: entry risk halved to {risk_pct:.2f}%", every_seconds=1800)
+            open_risk = open_risk_usdt(positions, prices)
+            max_heat = float(pool.max_portfolio_risk_pct or 4.0)
+            state["open_risk_usdt"] = round(open_risk, 2)
+            min_notional = MIN_NOTIONAL_FLOOR
+            try:
+                f = ex.get_symbol_lot_filters(sig.symbol)
+                min_notional = max(MIN_NOTIONAL_FLOOR, float(f.get("min_notional", 0.0) or 0.0) * 1.15)
+            except Exception as exc:
+                logger.warning("lot filter lookup failed for %s: %s", sig.symbol, exc)
+            notional, why = compute_entry_notional(equity, float(pool.cash_usdt), risk_pct, float(pool.max_position_pct), sig.risk_pct, min_notional)
+            if notional <= 0:
+                _log_debounced(db, pool.id, "SKIP_SIZE", f"{why} (equity {equity:.2f}, cash {pool.cash_usdt:.2f}, stop {sig.risk_pct:.1f}%)", sig.symbol, every_seconds=900)
+                _commit_quietly(db)
+                continue
+            notional, heat_why = heat_capped_notional(notional, sig.risk_pct, equity, max_heat, open_risk, min_notional)
+            if notional <= 0:
+                _log_debounced(db, pool.id, "SKIP_HEAT", f"{heat_why}: open risk {open_risk:.2f} of cap {equity * max_heat / 100.0:.2f} USDT ({max_heat:.1f}% of equity)", sig.symbol, every_seconds=900)
+                state["note"] = f"portfolio risk cap reached ({open_risk:.2f} USDT open risk)."
+                _commit_quietly(db)
+                return
+            _commit_quietly(db)
+        pos = _buy(db, pool, sig, notional)  # outside the lock: reserves cash itself
         if pos is not None:
             opened += 1
-            positions.append(pos)
-            open_risk += float(pos.qty) * max(0.0, float(pos.avg_entry) - float(pos.stop_price))
-            equity = pool_equity(pool, positions, _prices_for([p.symbol for p in positions]))
-    state["note"] = f"{len(qualified)} qualified, {opened} entered (BTC {bias}, open risk {open_risk:.2f} USDT)."
+    state["note"] = f"{len(qualified)} qualified, {opened} entered (BTC {bias}, open risk {state.get('open_risk_usdt', 0.0)} USDT)."
 
 
 # ── Manual actions ─────────────────────────────────────────────────────────────

@@ -413,10 +413,12 @@ def test_profit_ladder_pure():
 def test_giveback_guard_can_be_disabled(db_session, fake_exchange):
     pool = svc.create_pool(db_session, 100.0)
     pool.profit_giveback_pct = 100.0
+    db_session.commit()  # _buy refreshes the pool from the DB (reservation pattern)
     pos = svc._buy(db_session, pool, _signal(stop=95.0), 30.0)
     svc._manage_position(db_session, pool, pos, 106.0, "bullish")  # 1.2R reached, under TP1 107.5
     assert pos.stop_price == pytest.approx(svc.breakeven_price(100.0, 0.1))  # ladder only
     pool.profit_giveback_pct = 30.0
+    db_session.commit()
     svc._manage_position(db_session, pool, pos, 106.0, "bullish")
     assert pos.stop_price == pytest.approx(104.2)  # keep 70% of +6
 

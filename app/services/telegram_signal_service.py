@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -91,7 +92,12 @@ def ingest_message_db(db: Session, channel: str, msg_id: int, text: str, posted_
     parsed = parse_signal(text or "")
     row = TelegramSignal(channel=channel, msg_id=int(msg_id), posted_at=posted_at, raw_text=text or "")
     db.add(row)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()  # a concurrent ingest of the same post won the race: treat as duplicate
+        existing = db.query(TelegramSignal).filter(TelegramSignal.channel == channel, TelegramSignal.msg_id == int(msg_id)).first()
+        return {"status": existing.status if existing else "duplicate", "note": "duplicate (race)", "id": existing.id if existing else None}
     if parsed is None:
         row.status = "invalid"
         row.status_note = "could not parse entry/targets"
@@ -116,21 +122,23 @@ def ingest_message_db(db: Session, channel: str, msg_id: int, text: str, posted_
         return {"status": row.status, "note": row.status_note, "id": row.id}
     row.pool_id = pool.id
     ex = pools._exchange(pool.account)
+    lookup_failed = False
     try:
         filters = ex.get_symbol_lot_filters(parsed.symbol)
     except Exception as exc:
         filters = {}
-        logger.warning("lot filter lookup failed for %s: %s", parsed.symbol, exc)
-    if not filters:
+        lookup_failed = True
+        logger.error("lot filter lookup failed for %s (will retry while pending): %s", parsed.symbol, exc)
+    if not filters and not lookup_failed:
         row.status = "not_listed"
         row.status_note = f"{parsed.symbol} is not tradable on this account"
         db.commit()
         return {"status": row.status, "note": row.status_note, "id": row.id}
     row.status = "pending_entry"
+    row.status_note = "exchange lookup failed; retrying" if lookup_failed else None
     row.expires_at = datetime.utcnow() + timedelta(hours=float(settings.telegram_entry_window_hours))
     db.commit()
-    with pools._LEDGER_LOCK:
-        db.refresh(pool)
+    if not lookup_failed:
         _try_enter(db, pool, row)
         db.commit()
     return {"status": row.status, "note": row.status_note, "id": row.id}
@@ -139,7 +147,11 @@ def ingest_message_db(db: Session, channel: str, msg_id: int, text: str, posted_
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
 def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[float] = None) -> bool:
-    """Attempt to open the position for a pending signal. Caller holds the ledger lock."""
+    """
+    Attempt to open the position for a pending signal. Decision + sizing happen under the ledger
+    lock; the exchange order (pools._buy) runs without it and reserves cash itself. The plan is
+    written in the same commit as the position (never a position without its targets).
+    """
     if row.status != "pending_entry":
         return False
     if row.expires_at and datetime.utcnow() > row.expires_at:
@@ -147,11 +159,15 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         row.status_note = "price never returned to the entry zone within the window"
         pools._log(db, pool.id, "SIGNAL_MISSED", row.status_note, row.symbol)
         return False
-    if pool.status != "running":
-        return False  # keep pending; the pool may be resumed within the window
     if price is None:
         price = float(pools._prices_for([row.symbol]).get(row.symbol, 0.0))
     if price <= 0:
+        return False
+    # Sanity: a mis-parsed level (thousands separator, wrong decimal) must never reach an order.
+    if price > float(row.entry_high) * 5.0 or price < float(row.entry_low) * 0.2:
+        row.status = "invalid"
+        row.status_note = f"live price {price:.6g} is far from the parsed zone {row.entry_low:.6g}-{row.entry_high:.6g}; parse rejected"
+        pools._log(db, pool.id, "SIGNAL_SKIP", row.status_note, row.symbol)
         return False
     if price <= float(row.stop_price):
         row.status = "invalid"
@@ -161,32 +177,43 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
     if price > float(row.entry_high) * 1.002:
         return False  # above the zone: wait (never chase)
 
-    positions = pools._open_positions(db, pool)
-    if any(p.symbol == row.symbol for p in positions):
-        row.status = "invalid"
-        row.status_note = "already holding this symbol in the pool"
-        return False
-    slots = max(1, int(pool.max_positions or 5))
-    if len(positions) >= slots:
-        row.status_note = "all slots busy; waiting"
-        return False
-    prices = pools._prices_for([p.symbol for p in positions])
-    equity = pools.pool_equity(pool, positions, prices)
-    min_notional = pools.MIN_NOTIONAL_FLOOR
-    try:
-        f = pools._exchange(pool.account).get_symbol_lot_filters(row.symbol)
-        min_notional = max(min_notional, float(f.get("min_notional", 0.0) or 0.0) * 1.15)
-    except Exception:
-        pass
-    spendable = max(0.0, float(pool.cash_usdt) - 0.25)
-    amount = min(spendable, max(min_notional, equity / slots))
-    if amount < min_notional:
-        row.status = "skipped_cash"
-        row.status_note = f"pool cash {pool.cash_usdt:.2f} USDT below the minimum order"
-        pools._log(db, pool.id, "SIGNAL_SKIP", row.status_note, row.symbol)
-        return False
+    with pools._LEDGER_LOCK:
+        db.refresh(pool)
+        if pool.status != "running":
+            return False  # keep pending; the pool may be resumed within the window
+        positions = pools._open_positions(db, pool)
+        if any(p.symbol == row.symbol for p in positions):
+            row.status = "invalid"
+            row.status_note = "already holding this symbol in the pool"
+            return False
+        slots = max(1, int(pool.max_positions or 5))
+        if len(positions) >= slots:
+            row.status_note = "all slots busy; waiting"
+            return False
+        prices = pools._prices_for([p.symbol for p in positions])
+        equity = pools.pool_equity(pool, positions, prices)
+        min_notional = pools.MIN_NOTIONAL_FLOOR
+        try:
+            f = pools._exchange(pool.account).get_symbol_lot_filters(row.symbol)
+            if not f:
+                row.status = "not_listed"
+                row.status_note = f"{row.symbol} is not tradable on this account"
+                return False
+            min_notional = max(min_notional, float(f.get("min_notional", 0.0) or 0.0) * 1.15)
+        except Exception as exc:
+            logger.error("lot filter lookup failed for %s; retrying later: %s", row.symbol, exc)
+            row.status_note = "exchange lookup failed; retrying"
+            return False
+        spendable = max(0.0, float(pool.cash_usdt) - 0.25)
+        amount = min(spendable, max(min_notional, equity / slots))
+        if amount < min_notional:
+            row.status = "skipped_cash"
+            row.status_note = f"pool cash {pool.cash_usdt:.2f} USDT below the minimum order"
+            pools._log(db, pool.id, "SIGNAL_SKIP", row.status_note, row.symbol)
+            return False
+        targets = json.loads(row.targets_json or "[]")
+        pools._commit_quietly(db)
 
-    targets = json.loads(row.targets_json or "[]")
     sig = Signal(
         symbol=row.symbol,
         strategy="telegram",
@@ -200,37 +227,63 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         reasons=[f"Telegram @{row.channel} msg {row.msg_id}", f"zone {row.entry_low:.6g}-{row.entry_high:.6g}", f"{len(targets)} targets"],
         metrics={},
     )
-    pos = pools._buy(db, pool, sig, round(amount, 2))
+    extra = {
+        "tp1_price": sig.tp1_price,
+        "trail_atr": 0.0,
+        "signal_id": row.id,
+        "plan_json": json.dumps({"targets": targets, "stop_level": float(row.stop_price), "channel": row.channel, "msg_id": row.msg_id}),
+    }
+    pos = pools._buy(db, pool, sig, round(amount, 2), extra=extra)  # no lock held here
     if pos is None:
         row.status_note = "buy failed; will retry while pending"
         return False
-    pos.tp1_price = sig.tp1_price
-    pos.trail_atr = 0.0
-    pos.signal_id = row.id
-    pos.plan_json = json.dumps({"targets": targets, "stop_level": float(row.stop_price), "channel": row.channel, "msg_id": row.msg_id})
-    row.status = "entered"
-    row.position_id = pos.id
-    row.status_note = f"bought {amount:.2f} USDT @ {pos.avg_entry:.6g}"
+    with pools._LEDGER_LOCK:
+        row.status = "entered"
+        row.position_id = pos.id
+        row.status_note = f"bought {amount:.2f} USDT @ {pos.avg_entry:.6g}"
+        pools._commit_quietly(db)
     return True
+
+
+def repair_unlinked_positions(db: Session, pool: AiPool) -> int:
+    """Safety net: a telegram position without a plan/signal link (should never happen) is re-linked and logged."""
+    orphans = db.query(AiPoolPosition).filter(AiPoolPosition.pool_id == pool.id, AiPoolPosition.status == "open", AiPoolPosition.strategy == "telegram", AiPoolPosition.signal_id.is_(None)).all()
+    fixed = 0
+    for pos in orphans:
+        row = db.query(TelegramSignal).filter(TelegramSignal.pool_id == pool.id, TelegramSignal.symbol == pos.symbol, TelegramSignal.status.in_(["pending_entry", "entered"])).order_by(desc(TelegramSignal.id)).first()
+        if row is None:
+            pools._log(db, pool.id, "ERROR", f"position {pos.id} has no signal link and no matching signal; target ladder unavailable, stop still active", pos.symbol)
+            continue
+        pos.signal_id = row.id
+        pos.plan_json = json.dumps({"targets": json.loads(row.targets_json or "[]"), "stop_level": float(row.stop_price or pos.stop_price), "channel": row.channel, "msg_id": row.msg_id})
+        row.status = "entered"
+        row.position_id = pos.id
+        pools._log(db, pool.id, "ERROR", f"position {pos.id} was not linked to its signal (msg {row.msg_id}); repaired", pos.symbol)
+        fixed += 1
+    return fixed
 
 
 def check_pending_signals(db: Session, pool: AiPool) -> int:
     """Called by the scan loop (every ~5 min) for telegram pools: retry pending entries, expire old ones."""
+    try:
+        if repair_unlinked_positions(db, pool):
+            db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("repair pass failed: %s", exc)
     rows = db.query(TelegramSignal).filter(TelegramSignal.pool_id == pool.id, TelegramSignal.status == "pending_entry").all()
     if not rows:
         return 0
     prices = pools._prices_for([r.symbol for r in rows])
     entered = 0
-    with pools._LEDGER_LOCK:
-        db.refresh(pool)
-        for row in rows:
-            try:
-                if _try_enter(db, pool, row, float(prices.get(row.symbol, 0.0))):
-                    entered += 1
-                db.commit()
-            except Exception as exc:
-                db.rollback()
-                logger.exception("pending signal %s failed: %s", row.id, exc)
+    for row in rows:
+        try:
+            if _try_enter(db, pool, row, float(prices.get(row.symbol, 0.0))):
+                entered += 1
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.exception("pending signal %s failed: %s", row.id, exc)
     return entered
 
 
@@ -245,7 +298,8 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
 
     try:
         plan = json.loads(pos.plan_json or "{}")
-    except ValueError:
+    except (ValueError, TypeError) as exc:
+        logger.error("position %s (%s): corrupt plan_json, target ladder disabled, stop still active: %s", pos.id, pos.symbol, exc)
         plan = {}
     targets: list[dict] = plan.get("targets", [])
     done_count = sum(1 for t in targets if t.get("done"))
@@ -256,10 +310,9 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
         if defer_full_exits:
             return kind
         pools._sell(db, pool, pos, float(pos.qty), kind, price, balances)
-        _sync_signal_status(db, pos)
-        return None
+        return None  # status sync happens in _close_position_record
 
-    # 2) Targets, one per tick, in order
+    # 2) Targets, in order; every target the price has cleared is filled this tick
     min_notional = _min_notional_for(pool, pos.symbol)
     for i, t in enumerate(targets):
         if t.get("done"):
@@ -281,7 +334,9 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
             continue
         res = pools._sell(db, pool, pos, qty, f"tp{i + 1}", price, balances)
         if res is None and pos.status == "open":
-            break  # could not sell right now; retry next tick
+            _note_signal(db, pos, f"target {i + 1} sell failing; retrying next tick")
+            pools._commit_quietly(db)
+            break
         t["done"] = True
         t["done_at"] = datetime.utcnow().isoformat(timespec="seconds")
         t["fill_price"] = float(res["avg"]) if res else price
@@ -292,9 +347,11 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
                 pools._log(db, pool.id, "STOP_MOVE", f"target {i + 1} hit: stop raised to {new_stop:.6g} ({'breakeven' if i == 0 else 'target ' + str(i)})", pos.symbol)
             pos.tp1_done = True
         pos.plan_json = json.dumps(plan)
-        _sync_signal_status(db, pos)
+        sync_signal_status(db, pos)
         pools._commit_quietly(db)
-        break
+        if pos.status != "open":
+            return None
+        # keep looping: a gap may have cleared several targets at once
 
     if pos.status != "open":
         return None
@@ -315,11 +372,20 @@ def _min_notional_for(pool: AiPool, symbol: str) -> float:
     try:
         f = pools._exchange(pool.account).get_symbol_lot_filters(symbol)
         return max(5.0, float(f.get("min_notional", 0.0) or 0.0))
-    except Exception:
+    except Exception as exc:
+        logger.warning("min_notional lookup failed for %s, using 5 USDT: %s", symbol, exc)
         return 5.0
 
 
-def _sync_signal_status(db: Session, pos: AiPoolPosition) -> None:
+def _note_signal(db: Session, pos: AiPoolPosition, note: str) -> None:
+    if not pos.signal_id:
+        return
+    row = db.query(TelegramSignal).filter(TelegramSignal.id == pos.signal_id).first()
+    if row:
+        row.status_note = note[:240]
+
+
+def sync_signal_status(db: Session, pos: AiPoolPosition) -> None:
     if not pos.signal_id:
         return
     row = db.query(TelegramSignal).filter(TelegramSignal.id == pos.signal_id).first()
@@ -331,7 +397,8 @@ def _sync_signal_status(db: Session, pos: AiPoolPosition) -> None:
     else:
         try:
             targets = json.loads(pos.plan_json or "{}").get("targets", [])
-        except ValueError:
+        except (ValueError, TypeError) as exc:
+            logger.error("position %s: corrupt plan_json while syncing status: %s", pos.id, exc)
             targets = []
         done = sum(1 for t in targets if t.get("done"))
         row.status_note = f"{done}/{len(targets)} targets hit, stop {float(pos.stop_price):.6g}"

@@ -70,7 +70,11 @@ class ParsedSignal:
         }
 
 
+_THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")  # 1,234 / 67,234.50 -> 1234 / 67234.50
+
+
 def _numbers(text: str) -> list[float]:
+    text = _THOUSANDS_RE.sub("", text)
     out = []
     for m in _NUM_RE.finditer(text):
         try:
@@ -121,7 +125,8 @@ def parse_signal(text: str) -> ParsedSignal | None:
     for ln in lines:
         low = ln.lower()
         if any(k in low for k in _ENTRY_KEYS) and entry_low is None:
-            nums = _numbers(ln)
+            # only the part after the label (a "(zone 1)" style note must not become a price)
+            nums = _numbers(ln.split(":", 1)[-1] if ":" in ln else ln)
             if len(nums) >= 2:
                 entry_low, entry_high = min(nums[:2]), max(nums[:2])
             elif len(nums) == 1:
