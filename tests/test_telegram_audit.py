@@ -97,3 +97,18 @@ def test_simulate_lock_zero_means_previous_target():
     loose = simulate(sig, kl, 0, 12, target_lock=0.0, giveback=1.0, entry_split=0.0)
     assert tight["status"] == "trail" and tight["hits"] == ["T1", "T2"]
     assert loose["hits"] == ["T1", "T2", "T3"] and loose["pnl_pct"] > tight["pnl_pct"]
+
+
+def test_audit_marks_enterable_now(monkeypatch):
+    from app.services import telegram_audit as ta
+    from datetime import datetime, timezone
+
+    kl = [_k(m, 0.150, 0.152, 0.149, 0.151) for m in range(0, 60, 15)]  # flat inside the zone, no target
+    monkeypatch.setattr(ta, "get_klines_range", lambda symbol, interval, start_ms, end_ms=None, limit=1000: kl)
+    rep = ta.audit_posts([{"id": 7, "date": datetime.now(timezone.utc), "text": ALICE}])
+    row = rep["rows"][0]
+    assert row["now_status"] == "in_zone" and row["enterable_now"] is True
+    kl2 = [_k(0, 0.150, 0.175, 0.149, 0.174)]  # T1 already touched -> not a fresh entry
+    monkeypatch.setattr(ta, "get_klines_range", lambda symbol, interval, start_ms, end_ms=None, limit=1000: kl2)
+    row2 = ta.audit_posts([{"id": 8, "date": datetime.now(timezone.utc), "text": ALICE}])["rows"][0]
+    assert row2["enterable_now"] is False

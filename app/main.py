@@ -4242,6 +4242,30 @@ async def signals_audit_page(request: Request, limit: int = 30, posts: int = 150
     )
 
 
+@app.post("/live/signals/enter-old")
+async def signals_enter_old(msg_id: str = Form(...)) -> RedirectResponse:
+    """User-requested entry of an OLD channel post (the listener only trades new ones). Same rules apply."""
+    import asyncio as _asyncio
+
+    try:
+        mid = int(msg_id)
+        post = await telegram_listener.fetch_message(mid)
+        if not post:
+            return _ai_trader_redirect(error=f"Post {mid} not found in the channel.", kind="telegram")
+        date = post.get("date")
+        posted_at = date.replace(tzinfo=None) if date is not None and getattr(date, "tzinfo", None) else date
+        result = await _asyncio.to_thread(telegram_signal_service.ingest_message, settings.telegram_signal_channel, mid, post.get("text", ""), posted_at)
+        if not result:
+            return _ai_trader_redirect(error=f"Post {mid} is not a signal.", kind="telegram")
+        status = result.get("status")
+        note = result.get("note") or ""
+        if status == "entered":
+            return _ai_trader_redirect(msg=f"Post {mid}: {note}", kind="telegram")
+        return _ai_trader_redirect(error=f"Post {mid}: {status} — {note}", kind="telegram")
+    except Exception as e:
+        return _ai_trader_redirect(error=f"Enter old post: {e}", kind="telegram")
+
+
 @app.post("/live/signals/test-parse")
 async def signals_test_parse(request: Request) -> RedirectResponse:
     """Paste a channel post to check how it would be parsed (never trades)."""

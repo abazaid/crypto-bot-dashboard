@@ -67,7 +67,7 @@
       <h2>Signal by signal</h2>
       <div class="table-scroll">
         <table class="campaigns-table">
-          <thead><tr><th>Posted (UTC)</th><th>Msg</th><th>Symbol</th><th>Zone</th><th>Stop</th><th>Channel ✅</th><th>Channel rules: entry</th><th>hit</th><th>result</th><th>PnL</th><th>Our rules: entry</th><th>hit</th><th>result</th><th>PnL</th><th>Max gain</th><th>Note</th></tr></thead>
+          <thead><tr><th>Posted (UTC)</th><th>Msg</th><th>Symbol</th><th>Zone</th><th>Stop</th><th>Channel ✅</th><th>Channel rules: entry</th><th>hit</th><th>result</th><th>PnL</th><th>Our rules: entry</th><th>hit</th><th>result</th><th>PnL</th><th>Max gain</th><th>Now</th><th>Note</th></tr></thead>
           <tbody>
             {% for r in report.rows %}
             <tr>
@@ -86,10 +86,19 @@
               <td><span class="badge {{ 'pnl-pos' if r.status in ['done', 'trail'] else ('pnl-neg' if r.status in ['stop', 'invalid', 'not_binance', 'error'] else '') }}">{{ r.status }}</span></td>
               <td class="{{ 'pnl-pos' if (r.pnl_pct or 0) > 0 else ('pnl-neg' if (r.pnl_pct or 0) < 0 else '') }}">{% if r.pnl_pct is not none %}{{ "%+.2f"|format(r.pnl_pct) }}%{% else %}-{% endif %}</td>
               <td>{% if r.max_gain_pct is not none %}{{ "%+.1f"|format(r.max_gain_pct) }}%{% else %}-{% endif %}</td>
+              <td style="font-size:12px; white-space:nowrap">
+                {% if r.now_price %}{{ "%.6g"|format(r.now_price) }} <span class="badge {{ 'pnl-pos' if r.now_status == 'in_zone' else ('pnl-neg' if r.now_status == 'below_stop' else '') }}">{{ r.now_status }}</span>{% endif %}
+                {% if r.enterable_now %}
+                <form method="post" action="/live/signals/enter-old" class="inline-form" style="margin-top:4px" onsubmit="return confirm('Enter this OLD signal now with the Signals pool (same sizing, split, targets and stop)?');">
+                  <input type="hidden" name="msg_id" value="{{ r.msg_id }}">
+                  <button type="submit" class="mini-btn">Enter now</button>
+                </form>
+                {% endif %}
+              </td>
               <td style="font-size:12px" title="{{ r.raw_text|e }}">{{ r.ch_note }}{% if r.note %} | ours: {{ r.note }}{% endif %}</td>
             </tr>
             {% else %}
-            <tr><td colspan="16" class="muted-line">No signals found in the scanned posts.</td></tr>
+            <tr><td colspan="17" class="muted-line">No signals found in the scanned posts.</td></tr>
             {% endfor %}
           </tbody>
         </table>

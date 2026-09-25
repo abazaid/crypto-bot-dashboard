@@ -53,6 +53,9 @@ class AuditRow:
     ch_hits: list[str] = field(default_factory=list)
     ch_pnl_pct: Optional[float] = None
     ch_note: str = ""
+    now_price: Optional[float] = None
+    now_status: str = ""  # in_zone | above_zone | below_zone | below_stop
+    enterable_now: bool = False
 
 
 def _interval_for_age(age_hours: float) -> str:
@@ -311,6 +314,20 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
         row.ch_pnl_pct = ch.get("pnl_pct")
         row.ch_note = ch.get("note", "")
         replay.append((sig, klines, posted_ms))
+        try:
+            last = float(klines[-1][4])
+            row.now_price = last
+            if last <= sig.stop_price:
+                row.now_status = "below_stop"
+            elif last < sig.entry_low:
+                row.now_status = "below_zone"
+            elif last <= sig.entry_high * 1.002:
+                row.now_status = "in_zone"
+            else:
+                row.now_status = "above_zone"
+            row.enterable_now = row.now_status == "in_zone" and row.ch_targets_hit == 0
+        except (IndexError, ValueError, TypeError):
+            pass
         res = simulate(sig, klines, posted_ms, window)
         row.status = res["status"]
         row.note = (res.get("note", "") + wide_note).strip(" |")

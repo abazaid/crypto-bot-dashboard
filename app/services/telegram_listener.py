@@ -150,6 +150,17 @@ async def fetch_history(limit: int = 15) -> list[dict]:
     return [{"id": m.id, "date": m.date, "text": m.message or ""} for m in msgs]
 
 
+async def fetch_message(msg_id: int) -> Optional[dict]:
+    """One channel post by id as {id, date, text}, or None."""
+    if _state.get("status") != "connected" or _client is None:
+        raise RuntimeError("Telegram is not connected")
+    entity = await _client.get_entity(settings.telegram_signal_channel)
+    m = await _client.get_messages(entity, ids=int(msg_id))
+    if m is None:
+        return None
+    return {"id": m.id, "date": m.date, "text": m.message or ""}
+
+
 async def _begin_listening(client) -> None:
     from telethon import events
     from telethon.tl.functions.channels import JoinChannelRequest
