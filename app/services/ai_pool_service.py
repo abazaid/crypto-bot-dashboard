@@ -208,8 +208,10 @@ def _apply_profile(pool: AiPool, profile: str) -> None:
     pool.profit_giveback_pct = float(p.get("profit_giveback_pct", 50.0))
 
 
-def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced", account: str = "binance_1", name: str = "AI Trader") -> AiPool:
+def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced", account: str = "binance_1", name: str = "AI Trader", kind: str = "ai") -> AiPool:
     amount = finite_amount(amount_usdt)
+    if kind not in {"ai", "telegram"}:
+        raise ValueError("Unsupported pool kind")
     if amount < MIN_POOL_CAPITAL:
         raise ValueError(f"Minimum pool capital is {MIN_POOL_CAPITAL:.0f} USDT")
     if account not in SUPPORTED_ACCOUNTS:
@@ -218,14 +220,17 @@ def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced",
     if not ex.is_configured():
         raise RuntimeError("Exchange API keys are not configured for this account")
     with _LEDGER_LOCK:
-        existing = db.query(AiPool).filter(AiPool.account == account, AiPool.status != "deleted").first()
+        existing = db.query(AiPool).filter(AiPool.account == account, AiPool.kind == kind, AiPool.status != "deleted").first()
         if existing:
-            raise ValueError("A pool already exists on this account. Add funds to it instead.")
+            raise ValueError("A pool of this kind already exists on this account. Add funds to it instead.")
         free = float(_balances_or_raise(ex).get("USDT", {}).get("free", 0.0))
         if free < amount:
             raise ValueError(f"Account free USDT ({free:.2f}) is below the requested amount ({amount:.2f})")
-        pool = AiPool(name=name.strip() or "AI Trader", account=account, status="running")
+        pool = AiPool(name=name.strip() or ("Signals" if kind == "telegram" else "AI Trader"), account=account, status="running", kind=kind)
         _apply_profile(pool, risk_profile)
+        if kind == "telegram":
+            pool.max_positions = 5  # slots: capital is split evenly across concurrent signals
+            pool.time_stop_hours = 720.0  # signals can take weeks; no time stop in practice
         pool.allocated_usdt = amount
         pool.cash_usdt = amount
         pool.peak_equity_usdt = amount
@@ -802,6 +807,9 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
     """
     if price <= 0 or float(pos.qty) <= 0:
         return None
+    if (pos.strategy or "") == "telegram":
+        from app.services.telegram_signal_service import manage_signal_position  # lazy: avoids import cycle
+        return manage_signal_position(db, pool, pos, price, balances, defer_full_exits)
     pos.current_price = price
     pos.highest_price = max(float(pos.highest_price or 0.0), price)
     invested = float(pos.invested_usdt)
@@ -1023,6 +1031,12 @@ def run_ai_pool_scan(db: Session) -> None:
         regime = market_regime()
         for pool in pools:
             try:
+                if (pool.kind or "ai") == "telegram":
+                    from app.services.telegram_signal_service import check_pending_signals  # lazy: avoids import cycle
+                    check_pending_signals(db, pool)
+                    pool.last_scan_at = datetime.utcnow()
+                    db.commit()
+                    continue
                 _scan_pool(db, pool, regime)
                 pool.last_scan_at = datetime.utcnow()
                 pool.market_state = regime

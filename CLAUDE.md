@@ -23,6 +23,7 @@ Campaign-based crypto trading automation platform for live trading (real Binance
 | `app/core/config.py` | Settings from environment variables |
 | `app/services/ai_pool_service.py` | AI Trader isolated pool (ledger, exits, breakers) — see `docs/ai_trader.md` |
 | `app/services/ai_strategy.py` | AI Trader strategy ensemble (breakout / pullback / squeeze) |
+| `app/services/telegram_signal_service.py` | Telegram signal follower pool — see `docs/telegram_signals.md` |
 
 ## Available Agents
 

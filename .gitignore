@@ -4,3 +4,7 @@ __pycache__/
 
 # Database backups created by scripts/remove_paper_data.py
 *.db.backup-*
+
+# Telegram user session (never commit)
+*.session
+*.session-journal

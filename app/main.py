@@ -98,8 +98,8 @@ from app.services.live_smart_campaign_service import (
     run_live_smart_cycle,
     stop_live_campaign,
 )
-from app.models.ai_pool import AiPool, AiPoolLog, AiPoolPosition, AiPoolTrade
-from app.services import ai_pool_service
+from app.models.ai_pool import AiPool, AiPoolLog, AiPoolPosition, AiPoolTrade, TelegramSignal
+from app.services import ai_pool_service, telegram_listener, telegram_signal_service
 
 app = FastAPI(title="Crypto Bots - Rebuild")
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
@@ -781,6 +781,9 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE ai_pools ADD COLUMN breakeven_at_r FLOAT DEFAULT 0.6",
         "ALTER TABLE ai_pools ADD COLUMN tp1_r FLOAT DEFAULT 1.2",
         "ALTER TABLE ai_pools ADD COLUMN tp1_fraction FLOAT DEFAULT 0.4",
+        "ALTER TABLE ai_pools ADD COLUMN kind VARCHAR(16) DEFAULT 'ai'",
+        "ALTER TABLE ai_pool_positions ADD COLUMN plan_json TEXT",
+        "ALTER TABLE ai_pool_positions ADD COLUMN signal_id INTEGER",
     ]
     for stmt in stmts:
         try:
@@ -875,7 +878,7 @@ async def on_startup() -> None:
     _LSC.__table__.create(bind=engine, checkfirst=True)
     _LSP.__table__.create(bind=engine, checkfirst=True)
     _LSCL.__table__.create(bind=engine, checkfirst=True)
-    for _tbl in (AiPool, AiPoolPosition, AiPoolTrade, AiPoolLog):
+    for _tbl in (AiPool, AiPoolPosition, AiPoolTrade, AiPoolLog, TelegramSignal):
         _tbl.__table__.create(bind=engine, checkfirst=True)
     _apply_schema_updates()
 
@@ -883,6 +886,8 @@ async def on_startup() -> None:
     import asyncio
     from app.services.price_ws import run_price_stream
     asyncio.create_task(run_price_stream())
+    # Telegram signal listener (no-op until TELEGRAM_API_ID/HASH are set and the account is logged in)
+    asyncio.create_task(telegram_listener.start())
 
     scheduler.add_job(
         _scheduled_live_cycle,
@@ -3868,14 +3873,19 @@ async def api_live_capital(n: int = 5, entry: float = 50.0):
 # AI Trader (isolated pool on Binance 1)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _ai_pool_or_none(db, pool_id: int | None = None):
+def _ai_pool_or_none(db, pool_id: int | None = None, kind: str | None = "ai"):
     q = db.query(AiPool).filter(AiPool.status != "deleted")
     if pool_id is not None:
         q = q.filter(AiPool.id == pool_id)
+    elif kind:
+        q = q.filter(AiPool.kind == kind)
     return q.order_by(AiPool.id.asc()).first()
 
 
-def _ai_trader_redirect(msg: str = "", error: str = "") -> RedirectResponse:
+_POOL_PAGES = {"ai": "/live/ai-trader", "telegram": "/live/signals"}
+
+
+def _ai_trader_redirect(msg: str = "", error: str = "", kind: str = "ai") -> RedirectResponse:
     from urllib.parse import urlencode
 
     params = {}
@@ -3884,7 +3894,11 @@ def _ai_trader_redirect(msg: str = "", error: str = "") -> RedirectResponse:
     if error:
         params["error"] = error
     suffix = f"?{urlencode(params)}" if params else ""
-    return RedirectResponse(url=f"/live/ai-trader{suffix}", status_code=303)
+    return RedirectResponse(url=f"{_POOL_PAGES.get(kind, '/live/ai-trader')}{suffix}", status_code=303)
+
+
+def _pool_kind(pool) -> str:
+    return str(getattr(pool, "kind", None) or "ai")
 
 
 @app.get("/live/ai-trader", response_class=HTMLResponse)
@@ -3967,7 +3981,7 @@ async def ai_trader_pause(pool_id: int) -> RedirectResponse:
         if not pool:
             return _ai_trader_redirect(error="pool not found")
         ai_pool_service.pause_pool(db, pool, "manual")
-        return _ai_trader_redirect(msg="Entries paused. Open positions stay protected by stops.")
+        return _ai_trader_redirect(msg="Entries paused. Open positions stay protected by stops.", kind=_pool_kind(pool))
     finally:
         db.close()
 
@@ -3980,7 +3994,7 @@ async def ai_trader_resume(pool_id: int) -> RedirectResponse:
         if not pool:
             return _ai_trader_redirect(error="pool not found")
         ai_pool_service.resume_pool(db, pool)
-        return _ai_trader_redirect(msg="Pool resumed.")
+        return _ai_trader_redirect(msg="Pool resumed.", kind=_pool_kind(pool))
     finally:
         db.close()
 
@@ -3993,10 +4007,10 @@ async def ai_trader_add_funds(pool_id: int, amount: str = Form(...)) -> Redirect
         if not pool:
             return _ai_trader_redirect(error="pool not found")
         ai_pool_service.add_funds(db, pool, ai_pool_service.finite_amount(amount))
-        return _ai_trader_redirect(msg="Funds added to the pool.")
+        return _ai_trader_redirect(msg="Funds added to the pool.", kind=_pool_kind(pool))
     except (ValueError, RuntimeError) as e:
         db.rollback()
-        return _ai_trader_redirect(error=str(e))
+        return _ai_trader_redirect(error=str(e), kind=_pool_kind(pool) if pool else "ai")
     finally:
         db.close()
 
@@ -4009,10 +4023,10 @@ async def ai_trader_withdraw(pool_id: int, amount: str = Form(...)) -> RedirectR
         if not pool:
             return _ai_trader_redirect(error="pool not found")
         ai_pool_service.withdraw_funds(db, pool, ai_pool_service.finite_amount(amount))
-        return _ai_trader_redirect(msg="Cash released from the pool (it stays in your Binance account).")
+        return _ai_trader_redirect(msg="Cash released from the pool (it stays in your Binance account).", kind=_pool_kind(pool))
     except (ValueError, RuntimeError) as e:
         db.rollback()
-        return _ai_trader_redirect(error=str(e))
+        return _ai_trader_redirect(error=str(e), kind=_pool_kind(pool) if pool else "ai")
     finally:
         db.close()
 
@@ -4025,10 +4039,10 @@ async def ai_trader_close_all(pool_id: int) -> RedirectResponse:
         if not pool:
             return _ai_trader_redirect(error="pool not found")
         n = ai_pool_service.close_all_positions(db, pool)
-        return _ai_trader_redirect(msg=f"Close-all executed: {n} position(s) sold.")
+        return _ai_trader_redirect(msg=f"Close-all executed: {n} position(s) sold.", kind=_pool_kind(pool))
     except Exception as e:
         db.rollback()
-        return _ai_trader_redirect(error=str(e))
+        return _ai_trader_redirect(error=str(e), kind=_pool_kind(pool) if pool else "ai")
     finally:
         db.close()
 
@@ -4050,10 +4064,10 @@ async def ai_trader_settings(request: Request, pool_id: int) -> RedirectResponse
         kwargs = {k: form.get(k) for k in keys}
         kwargs["avoid_account_holdings"] = form.get("avoid_account_holdings") == "1"
         ai_pool_service.update_settings(db, pool, **kwargs)
-        return _ai_trader_redirect(msg="Settings saved.")
+        return _ai_trader_redirect(msg="Settings saved.", kind=_pool_kind(pool))
     except (ValueError, RuntimeError) as e:
         db.rollback()
-        return _ai_trader_redirect(error=str(e))
+        return _ai_trader_redirect(error=str(e), kind=_pool_kind(pool) if pool else "ai")
     finally:
         db.close()
 
@@ -4061,16 +4075,159 @@ async def ai_trader_settings(request: Request, pool_id: int) -> RedirectResponse
 @app.post("/live/ai-trader/positions/{position_id:int}/sell")
 async def ai_trader_sell_position(position_id: int, fraction: str = Form("1")) -> RedirectResponse:
     db = SessionLocal()
+    kind = "ai"
     try:
+        pos = db.query(AiPoolPosition).filter(AiPoolPosition.id == position_id).first()
+        if pos and pos.strategy == "telegram":
+            kind = "telegram"
         res = ai_pool_service.manual_sell_position(db, position_id, fraction)
         if res.get("ok"):
-            return _ai_trader_redirect(msg=f"Sold {res['executed']:.8g} @ {res['avg']:.6g} (pnl {res['pnl']:+.2f} USDT)")
-        return _ai_trader_redirect(error=str(res.get("error", "sell failed")))
+            return _ai_trader_redirect(msg=f"Sold {res['executed']:.8g} @ {res['avg']:.6g} (pnl {res['pnl']:+.2f} USDT)", kind=kind)
+        return _ai_trader_redirect(error=str(res.get("error", "sell failed")), kind=kind)
     except ValueError as e:
         db.rollback()
-        return _ai_trader_redirect(error=str(e))
+        return _ai_trader_redirect(error=str(e), kind=kind)
     except Exception as e:
         db.rollback()
-        return _ai_trader_redirect(error=str(e))
+        return _ai_trader_redirect(error=str(e), kind=kind)
     finally:
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Telegram Signals (isolated pool that follows a channel)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/live/signals", response_class=HTMLResponse)
+async def signals_page(request: Request, notice: str = "", error: str = "") -> HTMLResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, kind="telegram")
+        summary = None
+        logs: list[dict] = []
+        trades: list[dict] = []
+        closed: list[dict] = []
+        plans: dict[int, dict] = {}
+        account_free = 0.0
+        if pool:
+            try:
+                summary = ai_pool_service.pool_summary(db, pool)
+            except Exception as e:
+                error = error or f"summary error: {e}"
+                summary = ai_pool_service.pool_summary(db, pool, refresh_prices=False)
+            for p in db.query(AiPoolPosition).filter(AiPoolPosition.pool_id == pool.id, AiPoolPosition.status == "open").all():
+                plans[p.id] = telegram_signal_service.plan_for_position(p)
+            logs = ai_pool_service.recent_logs(db, pool.id, limit=80)
+            trades = ai_pool_service.recent_trades(db, pool.id, limit=60)
+            closed = ai_pool_service.closed_positions(db, pool.id, limit=40)
+        else:
+            try:
+                account_free = float(get_balances().get("USDT", {}).get("free", 0.0))
+            except Exception as e:
+                error = error or f"Binance balance error: {e}"
+        return templates.TemplateResponse(
+            "signals.html",
+            _context(
+                "signals",
+                request=request,
+                pool=pool,
+                summary=summary,
+                plans=plans,
+                logs=logs,
+                trades=trades,
+                closed=closed,
+                signals=telegram_signal_service.recent_signals(db, limit=60),
+                telegram=telegram_listener.status(),
+                account_free_usdt=account_free,
+                notice=notice[:300],
+                error=error[:300],
+            ),
+        )
+    finally:
+        db.close()
+
+
+@app.get("/live/signals/api/state")
+async def signals_state_api() -> JSONResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, kind="telegram")
+        payload: dict = {"telegram": telegram_listener.status(), "signals": telegram_signal_service.recent_signals(db, limit=30)}
+        if pool:
+            try:
+                payload["pool"] = ai_pool_service.pool_summary(db, pool)
+            except Exception as e:
+                payload["pool_error"] = str(e)
+        return JSONResponse(payload)
+    finally:
+        db.close()
+
+
+@app.post("/live/signals/create")
+async def signals_create(amount: str = Form(...), slots: str = Form("5"), name: str = Form("Signals")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        amt = ai_pool_service.finite_amount(amount)
+        pool = ai_pool_service.create_pool(db, amt, risk_profile="balanced", account="binance_1", name=name, kind="telegram")
+        n = int(max(1, min(10, ai_pool_service.finite_amount(slots, "slots"))))
+        ai_pool_service.update_settings(db, pool, max_positions=n)
+        return _ai_trader_redirect(msg=f"Signals pool #{pool.id} created with {amt:.2f} USDT split across {n} slots. Only NEW channel posts will be traded.", kind="telegram")
+    except (ValueError, RuntimeError) as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e), kind="telegram")
+    finally:
+        db.close()
+
+
+@app.post("/live/signals/telegram/send-code")
+async def signals_telegram_send_code(phone: str = Form(...)) -> RedirectResponse:
+    try:
+        await telegram_listener.send_code(phone)
+        return _ai_trader_redirect(msg="Code sent. Check your Telegram app and enter the code below.", kind="telegram")
+    except Exception as e:
+        return _ai_trader_redirect(error=f"Telegram: {e}", kind="telegram")
+
+
+@app.post("/live/signals/telegram/sign-in")
+async def signals_telegram_sign_in(code: str = Form(""), password: str = Form("")) -> RedirectResponse:
+    try:
+        st = await telegram_listener.sign_in(code, password or None)
+        if st.get("status") == "password_required":
+            return _ai_trader_redirect(error="Two-step verification is enabled: enter your Telegram password below.", kind="telegram")
+        if st.get("status") == "connected":
+            return _ai_trader_redirect(msg=f"Telegram connected as {st.get('user')}; watching @{st.get('channel')}.", kind="telegram")
+        return _ai_trader_redirect(error=f"Telegram status: {st.get('status')} {st.get('error') or ''}", kind="telegram")
+    except Exception as e:
+        return _ai_trader_redirect(error=f"Telegram: {e}", kind="telegram")
+
+
+@app.post("/live/signals/telegram/logout")
+async def signals_telegram_logout() -> RedirectResponse:
+    try:
+        await telegram_listener.logout()
+        return _ai_trader_redirect(msg="Telegram session removed.", kind="telegram")
+    except Exception as e:
+        return _ai_trader_redirect(error=f"Telegram: {e}", kind="telegram")
+
+
+@app.post("/live/signals/telegram/reconnect")
+async def signals_telegram_reconnect() -> RedirectResponse:
+    await telegram_listener.start()
+    return _ai_trader_redirect(msg=f"Telegram status: {telegram_listener.status().get('status')}", kind="telegram")
+
+
+@app.post("/live/signals/test-parse")
+async def signals_test_parse(request: Request) -> RedirectResponse:
+    """Paste a channel post to check how it would be parsed (never trades)."""
+    form = await request.form()
+    text = str(form.get("text") or "")
+    from app.services.telegram_signals import parse_signal, validate_signal
+
+    parsed = parse_signal(text)
+    if parsed is None:
+        return _ai_trader_redirect(error="Test parse: not recognized as a signal.", kind="telegram")
+    problems = validate_signal(parsed)
+    desc = f"{parsed.symbol} zone {parsed.entry_low:.6g}-{parsed.entry_high:.6g} stop {parsed.stop_price:.6g} targets " + ", ".join(f"{t.price:.6g} ({t.sell_fraction * 100:.0f}%)" for t in parsed.targets)
+    if problems:
+        return _ai_trader_redirect(error=f"Test parse: {desc} | problems: {'; '.join(problems)}", kind="telegram")
+    return _ai_trader_redirect(msg=f"Test parse OK: {desc}", kind="telegram")

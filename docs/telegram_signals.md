@@ -1,0 +1,56 @@
+# Telegram Signals pool
+
+Page: `/live/signals`. Follows one public Telegram channel (default `@signal252`,
+"Shaban Signals") with an isolated pool that shares the AI Trader ledger code
+(`ai_pool_service`, pool `kind = "telegram"`).
+
+## Setup
+
+1. Environment (Coolify → Environment Variables, then redeploy):
+   `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` (from https://my.telegram.org → API development tools),
+   `TELEGRAM_SIGNAL_CHANNEL=signal252`. Optional: `TELEGRAM_ENTRY_WINDOW_HOURS` (12),
+   `TELEGRAM_SESSION_PATH` (defaults to next to the SQLite DB, i.e. the persistent volume).
+2. On the page: enter your phone → code from Telegram → (2FA password if enabled).
+   The session file is stored on the server; never commit it (`*.session` is git-ignored).
+3. Create the pool with an amount and a number of slots. **Only posts newer than the
+   moment the listener connects are traded** (last message id is recorded in `app_settings`).
+
+## Signal format understood (see `telegram_signals.py`)
+
+```
+💎 #ALICE | Binance
+📍 الدخول: 0.1480 – 0.1556
+🎯 الأهداف:
+1️⃣ 0.171 | +9.9% | بيع 20%
+...
+🛑 الستوب: إغلاق 4 ساعات أسفل 0.137
+```
+Zone order may be reversed, symbols may start with a digit (`#0G`), edits (✅ marks)
+are ignored because the message id was already processed. Non-Binance posts and posts
+whose symbol is not tradable on the account are recorded but never executed.
+
+## Execution rules
+
+| Rule | Value |
+|------|-------|
+| Entry | market buy when `stop < price <= entry_high` (never chases); otherwise pending up to 12h, then `missed` |
+| Size | `equity / slots`, capped by cash; skipped when cash < min order |
+| Targets | channel fractions (20/25/25/30%); slices under Binance's 5 USDT minimum are raised to the minimum |
+| Stop after target 1 | breakeven + fees |
+| Stop after target n | price of target n-1 |
+| Between targets | give-back guard (`profit_giveback_pct`, default 50%) |
+| Initial stop | channel level, immediate (no waiting for a 4h close) |
+| Breakers | same daily-loss / drawdown / API-error breakers as the AI pool |
+
+## Loops
+
+* Listener (Telethon, asyncio in the FastAPI process): new posts → `ingest_message` in a thread.
+  On (re)connect it catches up on posts missed while down, at most `TELEGRAM_ENTRY_WINDOW_HOURS` old.
+* `ai_pool_tick` (5s): stops / targets / guard for `strategy == "telegram"` positions.
+* `ai_pool_scan` (5min): retries pending entries and expires them.
+
+## Tests
+
+```bash
+pytest tests/test_telegram_signals.py tests/test_telegram_signal_service.py -q
+```

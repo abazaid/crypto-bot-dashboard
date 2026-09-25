@@ -33,6 +33,11 @@ class Settings:
     forecast_horizon_days = int(os.getenv("FORECAST_HORIZON_DAYS", "7"))
     forecast_build_per_request = int(os.getenv("FORECAST_BUILD_PER_REQUEST", "6"))
     trading_fee_pct = float(os.getenv("TRADING_FEE_PCT", "0.1"))
+    telegram_api_id = int(os.getenv("TELEGRAM_API_ID", "0") or 0)
+    telegram_api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
+    telegram_signal_channel = os.getenv("TELEGRAM_SIGNAL_CHANNEL", "").strip().lstrip("@")
+    telegram_entry_window_hours = float(os.getenv("TELEGRAM_ENTRY_WINDOW_HOURS", "12"))
+    telegram_session_path = os.getenv("TELEGRAM_SESSION_PATH", "").strip()
     loop_excluded_symbols = {
         s.strip().upper()
         for s in os.getenv("LOOP_EXCLUDED_SYMBOLS", "BTCUSDT,PAXGUSDT").split(",")

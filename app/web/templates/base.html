@@ -11,11 +11,12 @@
     <div class="wrap topbar-inner">
       <a class="brand" href="/">Crypto Bots v2</a>
       <nav class="nav">
-        <a class="{% if active_page in ['live_home', 'live_create', 'live_smart_create', 'live_campaign', 'live_history', 'live_binance_completed_trades', 'live_all_coins', 'ai_trader', 'live_all_coins_binance_2', 'live_all_coins_kucoin_1', 'smart_backtest'] %}active{% endif %}" href="/live">Live Mode</a>
+        <a class="{% if active_page in ['live_home', 'live_create', 'live_smart_create', 'live_campaign', 'live_history', 'live_binance_completed_trades', 'live_all_coins', 'ai_trader', 'signals', 'live_all_coins_binance_2', 'live_all_coins_kucoin_1', 'smart_backtest'] %}active{% endif %}" href="/live">Live Mode</a>
         <a class="{% if active_page == 'live_create' %}active{% endif %}" href="/live/create">Live Create</a>
         <a class="{% if active_page == 'live_smart_create' %}active{% endif %}" href="/live/smart-create">Live Smart DCA</a>
         <a class="{% if active_page == 'live_all_coins' %}active{% endif %}" href="/live/all-coins">All Coins</a>
         <a class="{% if active_page == 'ai_trader' %}active{% endif %}" href="/live/ai-trader">AI Trader</a>
+        <a class="{% if active_page == 'signals' %}active{% endif %}" href="/live/signals">Signals</a>
         <a class="{% if active_page == 'live_all_coins_binance_2' %}active{% endif %}" href="/live/all-coins-binance-2">ALL coin Binance 2</a>
         <a class="{% if active_page == 'live_all_coins_kucoin_1' %}active{% endif %}" href="/live/all-coins-kucoin-1">ALL coin KuCoin 1</a>
         <a class="{% if active_page in ['live_accumulation', 'live_accumulation_plan', 'live_accumulation_history', 'live_accumulation_calculator'] %}active{% endif %}" href="/live/accumulation">Live Accumulation</a>

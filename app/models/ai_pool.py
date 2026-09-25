@@ -22,6 +22,7 @@ class AiPool(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(80), default="AI Trader")
+    kind = Column(String(16), default="ai", index=True)  # ai (strategy engine) | telegram (signal follower)
     account = Column(String(32), default="binance_1", index=True)  # binance_1 | binance_2 | kucoin_1
     status = Column(String(20), default="running", index=True)  # running | paused | halted
     halt_reason = Column(String(200), nullable=True)
@@ -96,6 +97,8 @@ class AiPoolPosition(Base):
     add_on_done = Column(Boolean, default=False)
     entry_score = Column(Float, default=0.0)
     entry_reason = Column(Text, nullable=True)
+    plan_json = Column(Text, nullable=True)  # telegram positions: {"targets":[{price,fraction,done}], "stop_level":..}
+    signal_id = Column(Integer, nullable=True, index=True)
 
     # ── Live ─────────────────────────────────────────────────────────────
     current_price = Column(Float, nullable=True)
@@ -130,6 +133,30 @@ class AiPoolTrade(Base):
     order_id = Column(String(40), nullable=True)
     client_order_id = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TelegramSignal(Base):
+    """One row per channel post that looked like a signal (deduplicated by channel + message id)."""
+    __tablename__ = "telegram_signals"
+
+    id = Column(Integer, primary_key=True)
+    pool_id = Column(Integer, ForeignKey("ai_pools.id"), nullable=True, index=True)
+    channel = Column(String(64), index=True)
+    msg_id = Column(Integer, index=True)
+    posted_at = Column(DateTime, nullable=True)
+    raw_text = Column(Text)
+    symbol = Column(String(24), nullable=True, index=True)
+    entry_low = Column(Float, nullable=True)
+    entry_high = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    targets_json = Column(Text, nullable=True)
+    # pending_entry | entered | missed | invalid | not_binance | not_listed | skipped_cash | skipped_paused | no_pool | closed
+    status = Column(String(24), default="pending_entry", index=True)
+    status_note = Column(String(240), nullable=True)
+    position_id = Column(Integer, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class AiPoolLog(Base):
