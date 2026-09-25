@@ -422,6 +422,7 @@ def test_giveback_guard_can_be_disabled(db_session, fake_exchange):
 def test_capture_stats_after_trailing_exit(db_session, fake_exchange):
     pool = svc.create_pool(db_session, 100.0)
     pos = svc._buy(db_session, pool, _signal(stop=95.0), 30.0)
+    fake_exchange.price = 120.0
     svc._manage_position(db_session, pool, pos, 120.0, "bullish")  # TP1 at 107.5 sells 40%, peak 120 (4R)
     fake_exchange.price = 114.0
     svc._manage_position(db_session, pool, pos, 114.0, "bullish")  # below locked stop (115) -> trail exit
