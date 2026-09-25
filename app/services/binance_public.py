@@ -27,6 +27,16 @@ def get_klines(symbol: str, interval: str = "5m", limit: int = 250) -> List[list
     return r.json()
 
 
+def get_klines_range(symbol: str, interval: str, start_ms: int, end_ms: int | None = None, limit: int = 1000) -> List[list]:
+    """Klines starting at start_ms (inclusive). Binance caps limit at 1000 per call."""
+    params = {"symbol": symbol, "interval": interval, "startTime": int(start_ms), "limit": max(1, min(1000, int(limit)))}
+    if end_ms:
+        params["endTime"] = int(end_ms)
+    r = requests.get(f"{BASE_URL}/api/v3/klines", params=params, timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+
 def get_prices(symbols: List[str]) -> Dict[str, float]:
     # Use real-time WebSocket cache when available
     try:

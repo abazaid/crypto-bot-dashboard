@@ -141,6 +141,15 @@ async def logout() -> dict[str, Any]:
         return status()
 
 
+async def fetch_history(limit: int = 15) -> list[dict]:
+    """Last `limit` posts of the channel as [{id, date, text}] (newest first). Requires a connected session."""
+    if _state.get("status") != "connected" or _client is None:
+        raise RuntimeError("Telegram is not connected")
+    entity = await _client.get_entity(settings.telegram_signal_channel)
+    msgs = await _client.get_messages(entity, limit=max(1, min(200, int(limit))))
+    return [{"id": m.id, "date": m.date, "text": m.message or ""} for m in msgs]
+
+
 async def _begin_listening(client) -> None:
     from telethon import events
     from telethon.tl.functions.channels import JoinChannelRequest

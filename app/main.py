@@ -4217,6 +4217,27 @@ async def signals_telegram_reconnect() -> RedirectResponse:
     return _ai_trader_redirect(msg=f"Telegram status: {telegram_listener.status().get('status')}", kind="telegram")
 
 
+@app.get("/live/signals/audit", response_class=HTMLResponse)
+async def signals_audit_page(request: Request, limit: int = 15, posts: int = 60) -> HTMLResponse:
+    """Replay the channel's recent posts against real candles under our execution rules (read-only)."""
+    import asyncio as _asyncio
+
+    from app.services.telegram_audit import audit_posts
+
+    error = ""
+    report = {"rows": [], "summary": {}}
+    try:
+        history = await telegram_listener.fetch_history(limit=max(limit, min(200, posts)))
+        report = await _asyncio.to_thread(audit_posts, history)
+        report["rows"] = report["rows"][: max(1, limit)]
+    except Exception as e:
+        error = str(e)
+    return templates.TemplateResponse(
+        "signals_audit.html",
+        _context("signals", request=request, report=report, error=error, limit=limit, posts=posts, telegram=telegram_listener.status()),
+    )
+
+
 @app.post("/live/signals/test-parse")
 async def signals_test_parse(request: Request) -> RedirectResponse:
     """Paste a channel post to check how it would be parsed (never trades)."""

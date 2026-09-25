@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="layout-split">
+  <aside class="layout-side card">
+    <h3>Live Menu</h3>
+    <a class="side-link" href="/live">Campaigns Home</a>
+    <a class="side-link" href="/live/ai-trader">AI Trader</a>
+    <a class="side-link active" href="/live/signals">Signals</a>
+  </aside>
+  <div class="layout-main">
+    <section class="hero">
+      <h1>Channel audit: @{{ telegram.channel }}</h1>
+      <p>Each past signal replayed on real Binance candles under OUR rules: enter inside the zone within 12h, sell the channel's fraction at each target, stop → breakeven after T1 and → previous target afterwards, hard stop at the channel level. Tie-break inside a candle is conservative (stop first). Read-only, no orders.</p>
+      {% if error %}<p class="pnl-neg">{{ error }}</p>{% endif %}
+      <form method="get" action="/live/signals/audit" class="inline-form">
+        <label>Signals <input type="number" name="limit" value="{{ limit }}" min="1" max="100" style="width:70px"></label>
+        <label>Posts to scan <input type="number" name="posts" value="{{ posts }}" min="10" max="200" style="width:80px"></label>
+        <button type="submit" class="soft-btn">Re-run</button>
+        <a class="soft-btn" href="/live/signals">Back</a>
+      </form>
+    </section>
+
+    {% set s = report.summary %}
+    {% if s %}
+    <section class="cards four">
+      <article class="card stat"><h3>Signals found</h3><p>{{ s.signals }}</p><span class="muted-line">in {{ s.posts_scanned }} posts · {{ s.executable }} executable</span></article>
+      <article class="card stat"><h3>Would have traded</h3><p>{{ s.traded }}</p><span class="muted-line">missed (never entered zone): {{ s.missed }}</span></article>
+      <article class="card stat"><h3>Reached T1 / all targets</h3><p>{{ s.hit_t1 }} / {{ s.hit_all }}</p><span class="muted-line">stopped before T1: {{ s.stopped_before_t1 }} · still open: {{ s.open }}</span></article>
+      <article class="card stat"><h3>Result under our rules</h3>
+        <p class="{{ 'pnl-pos' if (s.sum_pnl_pct or 0) >= 0 else 'pnl-neg' }}">{% if s.avg_pnl_pct is not none %}{{ "%+.2f"|format(s.avg_pnl_pct) }}% avg{% else %}n/a{% endif %}</p>
+        <span class="muted-line">sum {{ "%+.1f"|format(s.sum_pnl_pct or 0) }}% · win rate {% if s.win_rate_pct is not none %}{{ "%.0f"|format(s.win_rate_pct) }}%{% else %}n/a{% endif %} · ≈ {{ "%+.2f"|format(s.per_30_usdt or 0) }} USDT at 30 USDT/signal</span>
+      </article>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>Signal by signal</h2>
+      <div class="table-scroll">
+        <table class="campaigns-table">
+          <thead><tr><th>Posted (UTC)</th><th>Msg</th><th>Symbol</th><th>Zone</th><th>Stop</th><th>Entry (sim)</th><th>Targets hit</th><th>Channel ✅</th><th>Max gain</th><th>Result</th><th>PnL (our rules)</th><th>Duration</th><th>Note</th></tr></thead>
+          <tbody>
+            {% for r in report.rows %}
+            <tr>
+              <td>{{ r.posted_at }}</td>
+              <td>{{ r.msg_id }}</td>
+              <td><strong>{{ r.symbol }}</strong></td>
+              <td>{% if r.entry_low %}{{ "%.6g"|format(r.entry_low) }} – {{ "%.6g"|format(r.entry_high) }}{% endif %}</td>
+              <td>{% if r.stop %}{{ "%.6g"|format(r.stop) }}{% endif %}</td>
+              <td>{% if r.entry %}{{ "%.6g"|format(r.entry) }}{% else %}-{% endif %}</td>
+              <td>{{ r.targets_hit }}/{{ r.targets_total }} {% if r.hits %}<span class="muted-line">({{ r.hits|join(' ') }})</span>{% endif %}</td>
+              <td>{{ r.channel_marks }}</td>
+              <td>{% if r.max_gain_pct is not none %}{{ "%+.1f"|format(r.max_gain_pct) }}%{% else %}-{% endif %}</td>
+              <td><span class="badge {{ 'pnl-pos' if r.status in ['done', 'trail'] else ('pnl-neg' if r.status in ['stop', 'invalid', 'not_binance', 'error'] else '') }}">{{ r.status }}</span></td>
+              <td class="{{ 'pnl-pos' if (r.pnl_pct or 0) > 0 else ('pnl-neg' if (r.pnl_pct or 0) < 0 else '') }}">{% if r.pnl_pct is not none %}{{ "%+.2f"|format(r.pnl_pct) }}%{% else %}-{% endif %}</td>
+              <td>{% if r.duration_h is not none %}{{ "%.0f"|format(r.duration_h) }}h{% else %}-{% endif %}</td>
+              <td style="font-size:12px" title="{{ r.raw_text|e }}">{{ r.note }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="13" class="muted-line">No signals found in the scanned posts.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted-line">"Channel ✅" is how many targets the channel itself marked by editing the post; "Targets hit" is what the candles say. Differences usually mean the channel counted a wick we treat as a stop, or a target reached after the audit window.</p>
+    </section>
+  </div>
+</section>
+{% endblock %}
