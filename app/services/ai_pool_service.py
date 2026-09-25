@@ -1184,9 +1184,32 @@ def _targets_for(p: AiPoolPosition, price: float) -> dict:
     }
 
 
+def capture_stats(p: AiPoolPosition) -> dict:
+    """
+    How much of the best paper profit a trade actually banked.
+      peak_pct     = highest price reached vs entry
+      max_r        = that peak in R multiples
+      capture_pct  = realized pnl / peak open profit (100 = banked everything the trade ever showed)
+    Used after ~30 closed trades to tune the give-back guard from data instead of feel.
+    """
+    entry = float(p.avg_entry or 0.0)
+    qty0 = float(p.qty_initial or 0.0)
+    highest = float(p.highest_price or 0.0)
+    r = entry - float(p.initial_stop_price or 0.0)
+    peak_profit = qty0 * max(0.0, highest - entry)
+    realized = float(p.realized_pnl_usdt or 0.0)
+    return {
+        "peak_pct": (highest / entry - 1.0) * 100.0 if entry > 0 else 0.0,
+        "max_r": (highest - entry) / r if r > 0 else 0.0,
+        "peak_profit_usdt": peak_profit,
+        "capture_pct": (realized / peak_profit * 100.0) if peak_profit > 0.05 else None,
+    }
+
+
 def position_to_dict(p: AiPoolPosition) -> dict:
     return {
         "targets": _targets_for(p, float(p.current_price or p.avg_entry or 0.0)),
+        "capture": capture_stats(p),
         "id": p.id,
         "symbol": p.symbol,
         "strategy": p.strategy,
@@ -1234,8 +1257,15 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
     won = int(pool.trades_won or 0)
     lost = int(pool.trades_lost or 0)
     scan = _LAST_SCAN.get(pool.id, {})
+    closed_rows = db.query(AiPoolPosition).filter(AiPoolPosition.pool_id == pool.id, AiPoolPosition.status == "closed").all()
+    captures = [c["capture_pct"] for c in (capture_stats(p) for p in closed_rows) if c["capture_pct"] is not None]
+    big_winners = sum(1 for p in closed_rows if capture_stats(p)["max_r"] >= 3.0)
     return {
         "id": pool.id,
+        "capture_avg_pct": (sum(captures) / len(captures)) if captures else None,
+        "capture_samples": len(captures),
+        "big_winners_3r": big_winners,
+        "closed_total": len(closed_rows),
         "name": pool.name,
         "account": pool.account,
         "account_label": SUPPORTED_ACCOUNTS.get(pool.account, pool.account),

@@ -87,6 +87,7 @@
           <button type="submit" class="sell-btn">Close all pool positions</button>
         </form>
       </div>
+      <p class="muted-line">Capture ratio (realized ÷ peak paper profit): <strong>{% if summary.capture_avg_pct is not none %}{{ "%.0f"|format(summary.capture_avg_pct) }}%{% else %}n/a{% endif %}</strong> over {{ summary.capture_samples }} trades that showed a profit · trades that reached 3R: {{ summary.big_winners_3r }} of {{ summary.closed_total }} closed. Rule of thumb after 30 trades: under 40% → tighten give-back; over 70% with no 3R winners → loosen it.</p>
       <p class="muted-line">Profile: <strong>{{ summary.risk_profile }}</strong> · risk/trade {{ summary.settings.risk_per_trade_pct }}% · max position {{ summary.settings.max_position_pct }}% · min score {{ summary.settings.min_entry_score }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · cooldown {{ summary.settings.symbol_cooldown_hours }}h · time stop {{ summary.settings.time_stop_hours }}h · portfolio risk cap {{ summary.settings.max_portfolio_risk_pct }}% (open now {{ "%.2f"|format(summary.open_risk_usdt) }} USDT) · breaker cooldown {{ summary.settings.breaker_cooldown_hours }}h · profit give-back max {{ summary.settings.profit_giveback_pct }}%</p>
       <details>
         <summary>Edit risk settings</summary>
@@ -227,12 +228,14 @@
       <h2>Closed Positions</h2>
       <div class="table-scroll">
         <table class="campaigns-table">
-          <thead><tr><th>Symbol</th><th>Strategy</th><th>Avg Entry</th><th>Close Price</th><th>Realized PnL</th><th>Reason</th><th>Opened</th><th>Closed</th></tr></thead>
+          <thead><tr><th>Symbol</th><th>Strategy</th><th>Avg Entry</th><th>Close Price</th><th>Realized PnL</th><th>Peak reached</th><th>Captured</th><th>Reason</th><th>Opened</th><th>Closed</th></tr></thead>
           <tbody>
             {% for p in closed %}
             <tr>
               <td>{{ p.symbol }}</td><td>{{ p.strategy }}</td><td>{{ "%.6g"|format(p.avg_entry) }}</td><td>{{ "%.6g"|format(p.current_price) }}</td>
               <td class="{{ 'pnl-pos' if p.realized_pnl_usdt >= 0 else 'pnl-neg' }}">{{ "%+.2f"|format(p.realized_pnl_usdt) }}</td>
+              <td>{{ "%+.1f"|format(p.capture.peak_pct) }}% ({{ "%.1f"|format(p.capture.max_r) }}R)</td>
+              <td>{% if p.capture.capture_pct is not none %}{{ "%.0f"|format(p.capture.capture_pct) }}%{% else %}-{% endif %}</td>
               <td>{{ p.close_reason }}</td><td>{{ p.opened_at }}</td><td>{{ p.closed_at }}</td>
             </tr>
             {% endfor %}

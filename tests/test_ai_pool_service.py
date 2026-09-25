@@ -417,3 +417,19 @@ def test_giveback_guard_can_be_disabled(db_session, fake_exchange):
     pool.profit_giveback_pct = 30.0
     svc._manage_position(db_session, pool, pos, 106.0, "bullish")
     assert pos.stop_price == pytest.approx(104.2)  # keep 70% of +6
+
+
+def test_capture_stats_after_trailing_exit(db_session, fake_exchange):
+    pool = svc.create_pool(db_session, 100.0)
+    pos = svc._buy(db_session, pool, _signal(stop=95.0), 30.0)
+    svc._manage_position(db_session, pool, pos, 120.0, "bullish")  # TP1 at 107.5 sells 40%, peak 120 (4R)
+    fake_exchange.price = 114.0
+    svc._manage_position(db_session, pool, pos, 114.0, "bullish")  # below locked stop (115) -> trail exit
+    db_session.commit()
+    assert pos.status == "closed"
+    c = svc.capture_stats(pos)
+    assert c["max_r"] == pytest.approx(4.0)
+    assert c["peak_pct"] == pytest.approx(20.0)
+    assert 60.0 < c["capture_pct"] < 100.0
+    s = svc.pool_summary(db_session, pool, refresh_prices=False)
+    assert s["capture_samples"] == 1 and s["big_winners_3r"] == 1
