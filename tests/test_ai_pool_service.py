@@ -136,9 +136,9 @@ def test_tp1_partial_then_breakeven_and_trailing(db_session, fake_exchange):
     assert pos.status == "open"
     assert pos.qty == pytest.approx(qty0 * 0.6, abs=0.001)  # lot-step rounding
     assert pos.stop_price >= 100.0  # breakeven
-    # price runs → trailing ratchets up (highest 120 - 3*ATR(2) = 114)
+    # price runs to 120 = 4R reached -> ladder locks +3R (115), above the ATR trail (120 - 3*2 = 114)
     svc._manage_position(db_session, pool, pos, 120.0, "bullish")
-    assert pos.stop_price == pytest.approx(114.0)
+    assert pos.stop_price == pytest.approx(115.0)
     # pullback below trail → exit remainder as 'trail'
     fake_exchange.price = 113.0
     svc._manage_position(db_session, pool, pos, 113.0, "bullish")
@@ -384,3 +384,24 @@ def test_weak_btc_halves_entry_risk(db_session, fake_exchange, monkeypatch):
     # normal: 1.5% of 100 / 5% = 30 ; weak: 0.75 / 5% = 15
     assert buys[0]["quote"] == pytest.approx(15.0)
     assert state["btc_bias"] == "weak"
+
+
+def test_profit_ladder_protects_winner_before_tp1(db_session, fake_exchange):
+    """A trade up 1R must never turn into a loser, even before TP1 (the FET case)."""
+    pool = svc.create_pool(db_session, 100.0)
+    pos = svc._buy(db_session, pool, _signal(stop=91.4), 30.0)  # wide breakout stop: R = 8.6, TP1 at 112.9
+    svc._manage_position(db_session, pool, pos, 108.6, "bullish")  # exactly 1R, below TP1
+    assert pos.tp1_done is False
+    assert pos.stop_price >= 100.0  # breakeven locked
+    svc._manage_position(db_session, pool, pos, 104.0, "bullish")  # pullback: stop must not move down
+    assert pos.stop_price >= 100.0
+    svc._manage_position(db_session, pool, pos, 117.5, "bullish")  # 2R reached (TP1 sells half at >= 112.9)
+    assert pos.stop_price >= 108.6 - 1e-6  # +1R locked
+
+
+def test_profit_ladder_pure():
+    assert svc.profit_ladder_stop(100.0, 5.0, 104.0, 0.1) is None
+    assert svc.profit_ladder_stop(100.0, 5.0, 105.0, 0.1) == pytest.approx(svc.breakeven_price(100.0, 0.1))
+    assert svc.profit_ladder_stop(100.0, 5.0, 110.0, 0.1) == pytest.approx(105.0)
+    assert svc.profit_ladder_stop(100.0, 5.0, 119.0, 0.1) == pytest.approx(110.0)
+    assert svc.profit_ladder_stop(100.0, 0.0, 119.0, 0.1) is None

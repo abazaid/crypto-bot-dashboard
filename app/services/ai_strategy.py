@@ -275,7 +275,9 @@ def evaluate_symbol(symbol: str, regime: str, kl4h: list[list] | None = None, kl
         extension = (live_price - upper) / atr_4 if atr_4 > 0 else 99.0
         vol_needed = 1.8 if regime == "bearish" else 1.3
         if close_4 > upper and 0.0 <= extension <= 1.5 and adx_4 >= 20 and vol_ratio_4 >= vol_needed and rsi_4 < 78:
-            stop = live_price - 2.0 * atr_4
+            # 1.5 ATR (was 2.0): a valid breakout should not revisit 2 ATR below; a tighter stop
+            # keeps the dollar risk identical (size adapts) and brings TP1 closer.
+            stop = live_price - 1.5 * atr_4
             dc10 = donchian(c4.highs, c4.lows, 10, exclude_last=True)
             if dc10:
                 stop = max(stop, dc10[1])

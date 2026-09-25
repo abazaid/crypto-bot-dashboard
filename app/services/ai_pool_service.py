@@ -166,6 +166,22 @@ def breakeven_price(avg_entry: float, fee_pct: float) -> float:
     return avg_entry * (1.0 + 2.0 * fee_pct / 100.0 + 0.001)
 
 
+def profit_ladder_stop(avg_entry: float, r: float, highest_price: float, fee_pct: float) -> float | None:
+    """
+    Minimum stop implied by how many R the trade has already reached (using the highest price):
+    1R reached -> breakeven+fees; kR reached (k >= 2) -> lock (k-1)R. None when under 1R.
+    """
+    if r <= 0 or avg_entry <= 0 or highest_price <= avg_entry:
+        return None
+    reached = (highest_price - avg_entry) / r
+    if reached < 1.0:
+        return None
+    k = int(reached)
+    if k < 2:
+        return breakeven_price(avg_entry, fee_pct)
+    return max(breakeven_price(avg_entry, fee_pct), avg_entry + (k - 1) * r)
+
+
 # ── Pool lifecycle ─────────────────────────────────────────────────────────────
 
 def _apply_profile(pool: AiPool, profile: str) -> None:
@@ -805,10 +821,22 @@ def _manage_position(db: Session, pool: AiPool, pos: AiPoolPosition, price: floa
             if pos.status == "open":
                 pos.stop_price = max(float(pos.stop_price), breakeven_price(float(pos.avg_entry), settings.trading_fee_pct))
                 _log(db, pool.id, "STOP_MOVE", f"TP1 hit: stop moved to breakeven {pos.stop_price:.6g}", pos.symbol)
-        return None
+        if pos.status != "open":
+            return None
+        # fall through: the ladder/trail below only moves the stop, it never sells again in this tick
 
-    # 3) Trailing stop ratchet (activates after TP1 or once price is 1R in profit)
-    activated = pos.tp1_done or (r > 0 and price >= float(pos.avg_entry) + r)
+    # 3) Profit-protection ladder + trailing stop. The stop only ever moves up.
+    #    Ladder (based on the HIGHEST price reached, so it ratchets):
+    #      >= 1R profit -> stop at breakeven + fees (a winner must never turn into a loser)
+    #      >= 2R profit -> stop locks +1R
+    #      >= 3R profit -> stop locks +2R, and so on
+    #    Trailing (ATR chandelier) runs alongside; the higher of the two wins.
+    floor = profit_ladder_stop(float(pos.avg_entry), r, float(pos.highest_price), settings.trading_fee_pct)
+    if floor is not None and floor > float(pos.stop_price):
+        old_stop = float(pos.stop_price)
+        pos.stop_price = floor
+        _log(db, pool.id, "STOP_MOVE", f"profit ladder: stop {old_stop:.6g} -> {floor:.6g} (reached {(float(pos.highest_price) - float(pos.avg_entry)) / r:.1f}R)", pos.symbol)
+    activated = pos.tp1_done or (r > 0 and float(pos.highest_price) >= float(pos.avg_entry) + r)
     if activated and float(pos.trail_atr) > 0:
         new_stop = trailing_stop_price(float(pos.highest_price), float(pos.trail_atr), trail_mult)
         if new_stop > float(pos.stop_price):
