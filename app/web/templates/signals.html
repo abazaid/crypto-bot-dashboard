@@ -120,7 +120,7 @@
             {% for p in summary.positions %}
             {% set plan = plans.get(p.id, {}) %}
             <tr>
-              <td><strong>{{ p.symbol }}</strong>{% if plan.msg_id %}<br><span class="muted-line" style="font-size:11px">msg {{ plan.msg_id }}</span>{% endif %}</td>
+              <td><strong>{{ p.symbol }}</strong>{% if plan.msg_id %}<br><span class="muted-line" style="font-size:11px">msg {{ plan.msg_id }}</span>{% endif %}{% if plan.leg2_text %}<br><span class="{{ 'pnl-pos' if plan.leg2 and plan.leg2.filled else 'muted-line' }}" style="font-size:11px">{{ plan.leg2_text }}</span>{% endif %}</td>
               <td>{{ "%.8g"|format(p.qty) }}</td>
               <td>{{ "%.6g"|format(p.avg_entry) }}</td>
               <td>{{ "%.6g"|format(p.current_price) }}</td>

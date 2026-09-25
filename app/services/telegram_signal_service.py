@@ -519,4 +519,13 @@ def plan_for_position(pos: AiPoolPosition) -> dict:
     targets = plan.get("targets", [])
     for t in targets:
         t["pct_from_entry"] = (float(t["price"]) / entry - 1.0) * 100.0 if entry > 0 else 0.0
-    return {"targets": targets, "stop_level": plan.get("stop_level"), "msg_id": plan.get("msg_id")}
+    leg2 = plan.get("leg2") or None
+    leg2_text = ""
+    if leg2:
+        if leg2.get("filled"):
+            leg2_text = f"2nd leg filled @ {float(leg2.get('fill_price', 0.0)):.6g}"
+        elif leg2.get("cancelled"):
+            leg2_text = f"2nd leg cancelled ({leg2.get('cancelled')})"
+        else:
+            leg2_text = f"2nd leg {float(leg2.get('amount', 0.0)):.2f} USDT waiting at {float(leg2.get('price', 0.0)):.6g} until {str(leg2.get('expires_at', ''))[:16].replace('T', ' ')} UTC"
+    return {"targets": targets, "stop_level": plan.get("stop_level"), "msg_id": plan.get("msg_id"), "leg2": leg2, "leg2_text": leg2_text}
