@@ -1366,7 +1366,8 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
     lost = int(pool.trades_lost or 0)
     scan = _LAST_SCAN.get(pool.id, {})
     closed_rows = db.query(AiPoolPosition).filter(AiPoolPosition.pool_id == pool.id, AiPoolPosition.status == "closed").all()
-    captures = [c["capture_pct"] for c in (capture_stats(p) for p in closed_rows) if c["capture_pct"] is not None]
+    # Capture ratio is only meaningful for trades that banked a profit (a loser's ratio is negative noise).
+    captures = [c["capture_pct"] for c in (capture_stats(p) for p in closed_rows) if c["capture_pct"] is not None and c["capture_pct"] > 0]
     big_winners = sum(1 for p in closed_rows if capture_stats(p)["max_r"] >= 3.0)
     return {
         "id": pool.id,
