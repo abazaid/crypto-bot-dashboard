@@ -4271,6 +4271,22 @@ async def signals_enter_old(msg_id: str = Form(...)) -> RedirectResponse:
         return _ai_trader_redirect(error=f"Enter old post: {e}", kind="telegram")
 
 
+@app.get("/live/signals/preview")
+async def signals_channel_preview(channel: str, limit: int = 40) -> JSONResponse:
+    """Peek at a channel's recent posts and how the current parser would read each (read-only, never trades)."""
+    from app.services.telegram_signals import parse_signal, validate_signal
+
+    try:
+        data = await telegram_listener.fetch_channel_posts(channel, limit)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    for p in data["posts"]:
+        sig = parse_signal(p.get("text") or "")
+        p["parsed"] = sig.to_dict() if sig else None
+        p["problems"] = validate_signal(sig) if sig else None
+    return JSONResponse(data)
+
+
 @app.post("/live/signals/test-parse")
 async def signals_test_parse(request: Request) -> RedirectResponse:
     """Paste a channel post to check how it would be parsed (never trades)."""

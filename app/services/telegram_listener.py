@@ -161,6 +161,19 @@ async def fetch_message(msg_id: int) -> Optional[dict]:
     return {"id": m.id, "date": m.date, "text": m.message or ""}
 
 
+async def fetch_channel_posts(channel: str, limit: int = 40) -> dict:
+    """Read-only peek at ANY public channel (to learn a new channel's format). Requires a connected session."""
+    if _state.get("status") != "connected" or _client is None:
+        raise RuntimeError("Telegram is not connected")
+    entity = await _client.get_entity(str(channel).strip().lstrip("@"))
+    msgs = await _client.get_messages(entity, limit=max(1, min(200, int(limit))))
+    return {
+        "channel": str(channel).strip().lstrip("@"),
+        "title": getattr(entity, "title", None),
+        "posts": [{"id": m.id, "date": m.date.isoformat(timespec="minutes") if m.date else None, "text": m.message or "", "has_media": bool(m.media)} for m in msgs],
+    }
+
+
 async def _begin_listening(client) -> None:
     from telethon import events
     from telethon.tl.functions.channels import JoinChannelRequest
