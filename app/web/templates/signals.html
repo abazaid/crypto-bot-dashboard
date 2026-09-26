@@ -13,7 +13,12 @@
   <div class="layout-main">
     <section class="hero">
       <h1>Telegram Signals (Binance 1)</h1>
-      <p>Isolated pool that follows <strong>@{{ telegram.channel or '?' }}</strong>. Only NEW posts after activation are traded. Enters inside the entry zone (never chases) in two legs (part now, the rest lower or at market after a fallback time), sells the channel's fraction at each target, locks part of every leg with the stop, and keeps a trailing runner after the last target.</p>
+      {% if channels and channels|length > 1 %}
+      <div class="chips" style="margin-bottom:8px;">
+        {% for c in channels %}<a class="chip {{ 'tab-active' if c.active else '' }}" href="/live/signals?channel={{ c.name }}">@{{ c.name }}{% if c.title and c.title != c.name %} · {{ c.title }}{% endif %}{% if not c.pool_id %} (no pool){% endif %}</a>{% endfor %}
+      </div>
+      {% endif %}
+      <p>Isolated pool that follows <strong>@{{ channel or telegram.channel or '?' }}</strong>. Only NEW posts after activation are traded. Enters inside the entry zone (never chases) in two legs (part now, the rest lower or at market after a fallback time), sells the channel's fraction at each target, locks part of every leg with the stop, and keeps a trailing runner after the last target.</p>
       {% if error %}<p class="pnl-neg">{{ error }}</p>{% endif %}
       {% if notice %}<p class="pnl-pos">{{ notice }}</p>{% endif %}
     </section>
@@ -50,6 +55,7 @@
         <form method="post" action="/live/signals/telegram/logout" class="inline-form" onsubmit="return confirm('Remove the Telegram session from the server?');"><button type="submit" class="soft-btn">Log out of Telegram</button></form>
       {% endif %}
       <form method="get" action="/live/signals/audit" class="inline-form" style="margin-top:8px;">
+        <input type="hidden" name="channel" value="{{ channel }}">
         <label>Audit the channel's last <input type="number" name="limit" value="30" min="1" max="100" style="width:70px"> signals against real candles</label>
         <button type="submit" class="soft-btn">Run audit (read-only)</button>
       </form>
@@ -67,6 +73,7 @@
       <h2>Create Signals Pool</h2>
       <p class="muted-line">Account free USDT: <strong>{{ "%.2f"|format(account_free_usdt) }}</strong>. The amount is reserved for signals only; the capital is split evenly across the slots and grows with profits.</p>
       <form method="post" action="/live/signals/create" class="form-grid">
+        <input type="hidden" name="channel" value="{{ channel }}">
         <label>Amount (USDT)<input type="number" name="amount" step="0.01" min="10" value="50" required></label>
         <label>Concurrent slots<input type="number" name="slots" min="1" max="10" value="5"></label>
         <label>Name<input type="text" name="name" value="Signals" maxlength="80"></label>
@@ -166,7 +173,7 @@
             <tr>
               <td>{{ s.created_at }}</td>
               <td>{{ s.msg_id }}</td>
-              <td><strong>{{ s.symbol }}</strong></td>
+              <td><strong>{{ s.symbol }}</strong>{% if s.entry_kind == 'market' %}<br><span class="muted-line" style="font-size:11px">market entry{% if s.leg2_price %} · 2nd @ {{ "%.6g"|format(s.leg2_price) }}{% endif %}</span>{% endif %}</td>
               <td>{% if s.entry_low %}{{ "%.6g"|format(s.entry_low) }} – {{ "%.6g"|format(s.entry_high) }}{% else %}-{% endif %}</td>
               <td>{% if s.stop_price %}{{ "%.6g"|format(s.stop_price) }}{% else %}-{% endif %}</td>
               <td style="font-size:12px">{% for t in s.targets %}{{ "%.6g"|format(t.price) }} ({{ (t.fraction * 100)|round|int }}%){% if t.done %}✅{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</td>

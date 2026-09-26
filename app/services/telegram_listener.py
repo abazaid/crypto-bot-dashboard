@@ -32,10 +32,11 @@ _state: dict[str, Any] = {
     "messages_seen": 0,
 }
 _lock = asyncio.Lock()
+_ENTITY_TO_CHANNEL: dict[int, str] = {}
 
 
 def is_configured() -> bool:
-    return bool(settings.telegram_api_id and settings.telegram_api_hash and settings.telegram_signal_channel)
+    return bool(settings.telegram_api_id and settings.telegram_api_hash and settings.telegram_signal_channels)
 
 
 def session_path() -> Path:
@@ -52,7 +53,9 @@ def session_path() -> Path:
 def status() -> dict[str, Any]:
     out = dict(_state)
     out["configured"] = is_configured()
-    out["channel"] = settings.telegram_signal_channel
+    out["channel"] = settings.telegram_signal_channels[0] if settings.telegram_signal_channels else ""
+    out["channels"] = list(settings.telegram_signal_channels)
+    out["channel_titles"] = dict(_state.get("channel_titles") or {})
     out["session_path"] = str(session_path())
     out.pop("phone_code_hash", None)
     return out
@@ -91,7 +94,7 @@ async def start() -> None:
 
 async def send_code(phone: str) -> dict[str, Any]:
     if not is_configured():
-        raise RuntimeError("TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_SIGNAL_CHANNEL are not set")
+        raise RuntimeError("TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_SIGNAL_CHANNELS are not set")
     async with _lock:
         client = await _ensure_client()
         phone = phone.strip()
@@ -141,20 +144,24 @@ async def logout() -> dict[str, Any]:
         return status()
 
 
-async def fetch_history(limit: int = 15) -> list[dict]:
-    """Last `limit` posts of the channel as [{id, date, text}] (newest first). Requires a connected session."""
+def default_channel() -> str:
+    return settings.telegram_signal_channels[0] if settings.telegram_signal_channels else ""
+
+
+async def fetch_history(limit: int = 15, channel: str | None = None) -> list[dict]:
+    """Last `limit` posts of a followed channel as [{id, date, text}] (newest first). Requires a connected session."""
     if _state.get("status") != "connected" or _client is None:
         raise RuntimeError("Telegram is not connected")
-    entity = await _client.get_entity(settings.telegram_signal_channel)
+    entity = await _client.get_entity((channel or default_channel()).lstrip("@"))
     msgs = await _client.get_messages(entity, limit=max(1, min(200, int(limit))))
     return [{"id": m.id, "date": m.date, "text": m.message or ""} for m in msgs]
 
 
-async def fetch_message(msg_id: int) -> Optional[dict]:
+async def fetch_message(msg_id: int, channel: str | None = None) -> Optional[dict]:
     """One channel post by id as {id, date, text}, or None."""
     if _state.get("status") != "connected" or _client is None:
         raise RuntimeError("Telegram is not connected")
-    entity = await _client.get_entity(settings.telegram_signal_channel)
+    entity = await _client.get_entity((channel or default_channel()).lstrip("@"))
     m = await _client.get_messages(entity, ids=int(msg_id))
     if m is None:
         return None
@@ -177,60 +184,75 @@ async def fetch_channel_posts(channel: str, limit: int = 40) -> dict:
 async def _begin_listening(client) -> None:
     from telethon import events
     from telethon.tl.functions.channels import JoinChannelRequest
-
-    me = await client.get_me()
-    _state["user"] = f"{me.first_name or ''} {me.last_name or ''}".strip() or (me.username or str(me.id))
-    channel = settings.telegram_signal_channel
-    try:
-        entity = await client.get_entity(channel)
-    except Exception as exc:
-        _state["status"] = "error"
-        _state["error"] = f"channel @{channel} not found: {exc}"[:300]
-        return
-    try:
-        await client(JoinChannelRequest(entity))  # public channel: harmless if already joined
-    except Exception as exc:
-        logger.info("join channel skipped: %s", exc)
-    _state["channel_title"] = getattr(entity, "title", channel)
-
-    # Only NEW posts are traded: on first connect, record the latest message id and skip history.
     from app.core.database import SessionLocal
     from app.services import telegram_signal_service as svc
 
-    db = SessionLocal()
-    try:
-        last_seen = svc.get_last_msg_id(db, channel)
-        latest = await client.get_messages(entity, limit=1)
-        latest_id = latest[0].id if latest else 0
-        if last_seen <= 0 and latest_id > 0:
-            svc.set_last_msg_id(db, channel, latest_id)
-            db.commit()
-            last_seen = latest_id
-    finally:
-        db.close()
-
-    # Catch up on posts missed while the server was down (at most the entry window old).
-    if last_seen > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=float(settings.telegram_entry_window_hours))
+    me = await client.get_me()
+    _state["user"] = f"{me.first_name or ''} {me.last_name or ''}".strip() or (me.username or str(me.id))
+    entities = []
+    titles: dict[str, str] = {}
+    errors: list[str] = []
+    for channel in settings.telegram_signal_channels:
         try:
-            missed = await client.get_messages(entity, min_id=last_seen, limit=50)
-            for m in reversed(list(missed)):
-                if m.date and m.date < cutoff:
-                    continue
-                await _handle(channel, m.id, m.message or "", m.date)
+            entity = await client.get_entity(channel)
         except Exception as exc:
-            logger.warning("telegram catch-up failed: %s", exc)
+            errors.append(f"@{channel}: {exc}")
+            continue
+        try:
+            await client(JoinChannelRequest(entity))  # public channel: harmless if already joined
+        except Exception as exc:
+            logger.info("join channel @%s skipped: %s", channel, exc)
+        titles[channel] = getattr(entity, "title", channel)
+        entities.append((channel, entity))
+        _ENTITY_TO_CHANNEL[int(getattr(entity, "id", 0) or 0)] = channel
 
+        # Only NEW posts are traded: on first connect, record the latest message id and skip history.
+        db = SessionLocal()
+        try:
+            last_seen = svc.get_last_msg_id(db, channel)
+            latest = await client.get_messages(entity, limit=1)
+            latest_id = latest[0].id if latest else 0
+            if last_seen <= 0 and latest_id > 0:
+                svc.set_last_msg_id(db, channel, latest_id)
+                db.commit()
+                last_seen = latest_id
+        finally:
+            db.close()
+
+        # Catch up on posts missed while the server was down (at most the entry window old).
+        if last_seen > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=float(settings.telegram_entry_window_hours))
+            try:
+                missed = await client.get_messages(entity, min_id=last_seen, limit=50)
+                for m in reversed(list(missed)):
+                    if m.date and m.date < cutoff:
+                        continue
+                    await _handle(channel, m.id, m.message or "", m.date)
+            except Exception as exc:
+                logger.warning("telegram catch-up failed for @%s: %s", channel, exc)
+
+    _state["channel_titles"] = titles
+    _state["channel_title"] = ", ".join(titles.values()) if titles else None
+    if not entities:
+        _state["status"] = "error"
+        _state["error"] = "; ".join(errors)[:300] or "no channel could be resolved"
+        return
     client.remove_event_handler(_on_new_message)
-    client.add_event_handler(_on_new_message, events.NewMessage(chats=entity))
+    client.add_event_handler(_on_new_message, events.NewMessage(chats=[e for _c, e in entities]))
     _state["status"] = "connected"
-    _state["error"] = None
-    logger.info("Telegram listener connected as %s, watching @%s", _state["user"], channel)
+    _state["error"] = "; ".join(errors)[:300] if errors else None
+    logger.info("Telegram listener connected as %s, watching %s", _state["user"], ", ".join("@" + c for c, _e in entities))
 
 
 async def _on_new_message(event) -> None:
     msg = event.message
-    await _handle(settings.telegram_signal_channel, msg.id, msg.message or "", msg.date)
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    # Telethon exposes channel ids as -100<id>; normalise both forms.
+    raw_id = abs(chat_id)
+    if str(raw_id).startswith("100") and len(str(raw_id)) > 3:
+        raw_id = int(str(raw_id)[3:])
+    channel = _ENTITY_TO_CHANNEL.get(raw_id) or _ENTITY_TO_CHANNEL.get(abs(chat_id)) or default_channel()
+    await _handle(channel, msg.id, msg.message or "", msg.date)
 
 
 async def _handle(channel: str, msg_id: int, text: str, date) -> None:

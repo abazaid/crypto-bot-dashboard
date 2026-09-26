@@ -13,10 +13,11 @@
       <p>Each past signal replayed on real Binance candles under OUR rules: enter inside the zone within 12h, sell the channel's fraction at each target, stop → breakeven after T1 and → previous target afterwards, hard stop at the channel level. Tie-break inside a candle is conservative (stop first). Read-only, no orders.</p>
       {% if error %}<p class="pnl-neg">{{ error }}</p>{% endif %}
       <form method="get" action="/live/signals/audit" class="inline-form">
+        <input type="hidden" name="channel" value="{{ channel }}">
         <label>Signals <input type="number" name="limit" value="{{ limit }}" min="1" max="100" style="width:70px"></label>
         <label>Posts to scan <input type="number" name="posts" value="{{ posts }}" min="10" max="200" style="width:80px"></label>
         <button type="submit" class="soft-btn">Re-run</button>
-        <a class="soft-btn" href="/live/signals">Back</a>
+        <a class="soft-btn" href="/live/signals?channel={{ channel }}">Back</a>
       </form>
     </section>
 
@@ -108,6 +109,7 @@
                 {% if r.enterable_now %}
                 <form method="post" action="/live/signals/enter-old" class="inline-form" style="margin-top:4px" onsubmit="return confirm('Enter this OLD signal now with the Signals pool (same sizing, split, targets and stop)?');">
                   <input type="hidden" name="msg_id" value="{{ r.msg_id }}">
+                  <input type="hidden" name="channel" value="{{ channel }}">
                   <button type="submit" class="mini-btn">Enter now</button>
                 </form>
                 {% endif %}

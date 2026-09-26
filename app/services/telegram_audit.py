@@ -19,11 +19,12 @@ from typing import Optional
 
 from app.core.config import settings
 from app.services.binance_public import get_klines_range
-from app.services.telegram_signals import ParsedSignal, parse_signal, validate_signal
+from app.services.telegram_signals import ParsedSignal, parse_any, validate_signal
 
 logger = logging.getLogger(__name__)
 
 FEE_RT_PCT = 2.0 * float(settings.trading_fee_pct)
+MARKET_TOL = 0.015  # v2 "immediate entry" posts: accept up to 1.5% above the posted price
 
 
 @dataclass
@@ -113,14 +114,17 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
                 if o <= sig.entry_high:
                     return {"status": "invalid", "note": "opened inside the zone but the same candle hit the stop"}
                 continue
-            if o <= sig.entry_high:
+            top = sig.entry_high * (1.0 + MARKET_TOL) if getattr(sig, "entry_kind", "zone") == "market" else sig.entry_high
+            if o <= top:
                 entry = o
-            elif lo <= sig.entry_high:
-                entry = sig.entry_high
+            elif lo <= top:
+                entry = top
             if entry is not None:
                 entry_ms = t
                 max_high = max(max_high, h)
-                if leg2_level == "mid":
+                if getattr(sig, "leg2_price", None):
+                    leg2_price = float(sig.leg2_price)
+                elif leg2_level == "mid":
                     leg2_price = (float(sig.entry_low) + float(sig.entry_high)) / 2.0
                 elif leg2_level == "below_pct":
                     leg2_price = max(float(sig.entry_low), entry * (1.0 - leg2_below_pct / 100.0))
@@ -285,7 +289,7 @@ def audit_posts(posts: list[dict], window_hours: Optional[float] = None) -> dict
         posted_ms = int(date.timestamp() * 1000) if isinstance(date, datetime) else now_ms
         posted_at = date.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M") if isinstance(date, datetime) else ""
         marks = text.count("✅")
-        sig = parse_signal(text)
+        sig = parse_any(text)
         if sig is None:
             continue  # chatter / results posts are not signals
         row = AuditRow(msg_id=int(p["id"]), posted_at=posted_at, symbol=sig.symbol, status="", entry_low=sig.entry_low, entry_high=sig.entry_high, stop=sig.stop_price, targets_total=len(sig.targets), channel_marks=marks, raw_text=text)

@@ -208,7 +208,7 @@ def _apply_profile(pool: AiPool, profile: str) -> None:
     pool.profit_giveback_pct = float(p.get("profit_giveback_pct", 50.0))
 
 
-def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced", account: str = "binance_1", name: str = "AI Trader", kind: str = "ai") -> AiPool:
+def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced", account: str = "binance_1", name: str = "AI Trader", kind: str = "ai", channel: Optional[str] = None) -> AiPool:
     amount = finite_amount(amount_usdt)
     if kind not in {"ai", "telegram"}:
         raise ValueError("Unsupported pool kind")
@@ -220,13 +220,16 @@ def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced",
     if not ex.is_configured():
         raise RuntimeError("Exchange API keys are not configured for this account")
     with _LEDGER_LOCK:
-        existing = db.query(AiPool).filter(AiPool.account == account, AiPool.kind == kind, AiPool.status != "deleted").first()
+        q = db.query(AiPool).filter(AiPool.account == account, AiPool.kind == kind, AiPool.status != "deleted")
+        if kind == "telegram" and channel:
+            q = q.filter(AiPool.channel == channel)
+        existing = q.first()
         if existing:
-            raise ValueError("A pool of this kind already exists on this account. Add funds to it instead.")
+            raise ValueError("A pool of this kind already exists on this account (for this channel). Add funds to it instead.")
         free = float(_balances_or_raise(ex).get("USDT", {}).get("free", 0.0))
         if free < amount:
             raise ValueError(f"Account free USDT ({free:.2f}) is below the requested amount ({amount:.2f})")
-        pool = AiPool(name=name.strip() or ("Signals" if kind == "telegram" else "AI Trader"), account=account, status="running", kind=kind)
+        pool = AiPool(name=name.strip() or ("Signals" if kind == "telegram" else "AI Trader"), account=account, status="running", kind=kind, channel=(channel or None) if kind == "telegram" else None)
         _apply_profile(pool, risk_profile)
         if kind == "telegram":
             pool.max_positions = 5  # slots: capital is split evenly across concurrent signals

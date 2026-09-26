@@ -36,6 +36,11 @@ class Settings:
     telegram_api_id = int(os.getenv("TELEGRAM_API_ID", "0") or 0)
     telegram_api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
     telegram_signal_channel = os.getenv("TELEGRAM_SIGNAL_CHANNEL", "").strip().lstrip("@")
+    telegram_signal_channels = [
+        c.strip().lstrip("@")
+        for c in (os.getenv("TELEGRAM_SIGNAL_CHANNELS", "") or os.getenv("TELEGRAM_SIGNAL_CHANNEL", "")).split(",")
+        if c.strip()
+    ]
     telegram_entry_window_hours = float(os.getenv("TELEGRAM_ENTRY_WINDOW_HOURS", "12"))
     telegram_session_path = os.getenv("TELEGRAM_SESSION_PATH", "").strip()
     loop_excluded_symbols = {

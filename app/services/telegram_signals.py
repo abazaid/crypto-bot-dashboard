@@ -51,6 +51,9 @@ class ParsedSignal:
     stop_on_4h_close: bool
     targets: list[ParsedTarget] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    entry_kind: str = "zone"  # zone (buy anywhere inside low..high) | market (buy now at ~entry_high)
+    leg2_price: float | None = None  # explicit second-entry price when the channel gives one
+    risk_note: str | None = None
 
     @property
     def is_binance(self) -> bool:
@@ -67,6 +70,9 @@ class ParsedSignal:
             "stop_on_4h_close": self.stop_on_4h_close,
             "targets": [{"price": t.price, "pct": t.pct, "sell_fraction": t.sell_fraction} for t in self.targets],
             "warnings": list(self.warnings),
+            "entry_kind": self.entry_kind,
+            "leg2_price": self.leg2_price,
+            "risk_note": self.risk_note,
         }
 
 
@@ -220,3 +226,19 @@ def validate_signal(sig: ParsedSignal) -> list[str]:
         if risk_pct > 25.0:
             problems.append(f"stop {risk_pct:.0f}% away is too wide")
     return problems
+
+
+def parse_any(text: str) -> ParsedSignal | None:
+    """Try every known channel format (v1 zone-style first, then v2 market-entry style)."""
+    sig = parse_signal(text)
+    if sig is not None:
+        return sig
+    from app.services.telegram_signals_v2 import parse_signal_v2  # local import: v2 depends on this module
+
+    return parse_signal_v2(text)
+
+
+def looks_like_any_signal(text: str) -> bool:
+    from app.services.telegram_signals_v2 import looks_like_signal_v2
+
+    return looks_like_signal(text) or looks_like_signal_v2(text)

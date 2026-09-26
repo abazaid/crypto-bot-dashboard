@@ -29,7 +29,8 @@ from app.models.ai_pool import AiPool, AiPoolPosition, TelegramSignal
 from app.models.trading import AppSetting
 from app.services import ai_pool_service as pools
 from app.services.ai_strategy import Signal
-from app.services.telegram_signals import ParsedSignal, looks_like_signal, parse_signal, validate_signal
+from app.services.telegram_signals import ParsedSignal, looks_like_any_signal, parse_any, validate_signal
+from app.services.telegram_signals_v2 import MARKET_ENTRY_TOLERANCE
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +62,19 @@ def set_last_msg_id(db: Session, channel: str, msg_id: int) -> None:
 
 # ── Pool lookup ────────────────────────────────────────────────────────────────
 
-def telegram_pool(db: Session) -> Optional[AiPool]:
-    return db.query(AiPool).filter(AiPool.kind == "telegram", AiPool.status != "deleted").order_by(AiPool.id.asc()).first()
+def telegram_pool(db: Session, channel: Optional[str] = None) -> Optional[AiPool]:
+    """The pool following `channel`; a pool without a channel is the legacy/default one."""
+    q = db.query(AiPool).filter(AiPool.kind == "telegram", AiPool.status != "deleted")
+    if channel:
+        exact = q.filter(AiPool.channel == channel).order_by(AiPool.id.asc()).first()
+        if exact:
+            return exact
+        return q.filter(AiPool.channel.is_(None)).order_by(AiPool.id.asc()).first()
+    return q.order_by(AiPool.id.asc()).first()
+
+
+def telegram_pools(db: Session) -> list[AiPool]:
+    return db.query(AiPool).filter(AiPool.kind == "telegram", AiPool.status != "deleted").order_by(AiPool.id.asc()).all()
 
 
 # ── Ingest ─────────────────────────────────────────────────────────────────────
@@ -86,10 +98,10 @@ def ingest_message_db(db: Session, channel: str, msg_id: int, text: str, posted_
     if existing:
         return {"status": existing.status, "note": "duplicate (edit ignored)", "id": existing.id}
     set_last_msg_id(db, channel, int(msg_id))
-    if not looks_like_signal(text or ""):
+    if not looks_like_any_signal(text or ""):
         db.commit()
         return None
-    parsed = parse_signal(text or "")
+    parsed = parse_any(text or "")
     row = TelegramSignal(channel=channel, msg_id=int(msg_id), posted_at=posted_at, raw_text=text or "")
     db.add(row)
     try:
@@ -107,6 +119,8 @@ def ingest_message_db(db: Session, channel: str, msg_id: int, text: str, posted_
     row.entry_low = parsed.entry_low
     row.entry_high = parsed.entry_high
     row.stop_price = parsed.stop_price
+    row.entry_kind = getattr(parsed, "entry_kind", "zone") or "zone"
+    row.leg2_price = getattr(parsed, "leg2_price", None)
     row.targets_json = json.dumps([{"price": t.price, "pct": t.pct, "fraction": t.sell_fraction, "done": False} for t in parsed.targets])
     problems = validate_signal(parsed)
     if problems:
@@ -114,10 +128,10 @@ def ingest_message_db(db: Session, channel: str, msg_id: int, text: str, posted_
         row.status_note = "; ".join(problems)[:240]
         db.commit()
         return {"status": row.status, "note": row.status_note, "id": row.id}
-    pool = telegram_pool(db)
+    pool = telegram_pool(db, channel)
     if pool is None:
         row.status = "no_pool"
-        row.status_note = "no Signals pool exists"
+        row.status_note = f"no Signals pool follows @{channel}"
         db.commit()
         return {"status": row.status, "note": row.status_note, "id": row.id}
     row.pool_id = pool.id
@@ -174,8 +188,9 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         row.status_note = f"price {price:.6g} already below the signal stop {row.stop_price:.6g}"
         pools._log(db, pool.id, "SIGNAL_SKIP", row.status_note, row.symbol)
         return False
-    if price > float(row.entry_high) * 1.002:
-        return False  # above the zone: wait (never chase)
+    tolerance = 1.0 + (MARKET_ENTRY_TOLERANCE if (row.entry_kind or "zone") == "market" else 0.002)
+    if price > float(row.entry_high) * tolerance:
+        return False  # above the entry: wait (never chase)
 
     with pools._LEDGER_LOCK:
         db.refresh(pool)
@@ -232,14 +247,14 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
     leg1 = round(amount, 2)
     leg2: Optional[dict] = None
     at_bottom = price <= float(row.entry_low) * 1.002
-    leg2_price = second_leg_price(pool, price, float(row.entry_low), float(row.entry_high))
+    leg2_price = float(row.leg2_price) if row.leg2_price else second_leg_price(pool, price, float(row.entry_low), float(row.entry_high))
     if 0.0 < split < 1.0 and not at_bottom and price > leg2_price * 1.002 and amount * split >= min_notional and amount * (1.0 - split) >= min_notional:
         leg1 = round(amount * split, 2)
         fallback_h = float(pool.leg2_fallback_hours if pool.leg2_fallback_hours is not None else 24.0)
         leg2 = {
             "amount": round(amount - leg1, 2),
             "price": leg2_price,
-            "level": str(pool.leg2_level or "mid"),
+            "level": "channel" if row.leg2_price else str(pool.leg2_level or "mid"),
             "expires_at": (datetime.utcnow() + timedelta(hours=72)).isoformat(timespec="seconds"),
             "fallback_at": (datetime.utcnow() + timedelta(hours=fallback_h)).isoformat(timespec="seconds") if fallback_h > 0 else None,
             "filled": False,
@@ -511,8 +526,11 @@ def sync_signal_status(db: Session, pos: AiPoolPosition) -> None:
 
 # ── Read models ────────────────────────────────────────────────────────────────
 
-def recent_signals(db: Session, limit: int = 60) -> list[dict]:
-    rows = db.query(TelegramSignal).order_by(desc(TelegramSignal.id)).limit(limit).all()
+def recent_signals(db: Session, limit: int = 60, channel: Optional[str] = None) -> list[dict]:
+    q = db.query(TelegramSignal)
+    if channel:
+        q = q.filter(TelegramSignal.channel == channel)
+    rows = q.order_by(desc(TelegramSignal.id)).limit(limit).all()
     out = []
     for r in rows:
         try:
@@ -525,6 +543,9 @@ def recent_signals(db: Session, limit: int = 60) -> list[dict]:
             "posted_at": r.posted_at.strftime("%m-%d %H:%M") if r.posted_at else "",
             "created_at": r.created_at.strftime("%m-%d %H:%M") if r.created_at else "",
             "symbol": r.symbol or "-",
+            "channel": r.channel,
+            "entry_kind": r.entry_kind or "zone",
+            "leg2_price": r.leg2_price,
             "entry_low": r.entry_low,
             "entry_high": r.entry_high,
             "stop_price": r.stop_price,

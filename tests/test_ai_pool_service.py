@@ -332,12 +332,14 @@ def test_daily_loss_breaker_needs_cooldown_and_new_day(db_session, fake_exchange
     pool.day_key = "2000-01-01"
     svc._apply_breakers(db_session, pool, 95.0)
     assert pool.status == "paused"
-    # cooldown elapsed but breaker fired today -> still paused
-    pool.breaker_at = datetime.utcnow() - timedelta(hours=13)
+    # cooldown elapsed but breaker fired today -> still paused (clock-independent: fired at today's 00:00, cooldown 0)
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    pool.breaker_cooldown_hours = 0.0
+    pool.breaker_at = today_start
     svc._apply_breakers(db_session, pool, 95.0)
     assert pool.status == "paused"
     # cooldown elapsed AND fired on a previous day -> lifted, baseline reset
-    pool.breaker_at = datetime.utcnow() - timedelta(hours=30)
+    pool.breaker_at = today_start - timedelta(days=1)
     svc._apply_breakers(db_session, pool, 95.0)
     assert pool.status == "running" and pool.day_start_equity_usdt == pytest.approx(95.0)
 

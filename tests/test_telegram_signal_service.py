@@ -310,3 +310,40 @@ def test_second_leg_levels_and_fallback(db_session, fake_exchange, tg_pool, monk
     svc.manage_signal_position(db_session, tg_pool, pos, 0.154)
     assert json.loads(pos.plan_json)["leg2"]["filled"] is True
     assert pos.invested_usdt == pytest.approx(60.0)
+
+
+def test_two_channels_two_pools_route_independently(db_session, fake_exchange, monkeypatch):
+    from test_telegram_signals_v2 import DODO
+
+    a = pools.create_pool(db_session, 100.0, kind="telegram", name="A", channel="signal252")
+    b = pools.create_pool(db_session, 60.0, kind="telegram", name="B", channel="Ox3rwah_eth")
+    pools.update_settings(db_session, a, max_positions=5, entry_split_pct=0)
+    pools.update_settings(db_session, b, max_positions=3, entry_split_pct=50)
+    _price(fake_exchange, monkeypatch, 0.150)
+    assert svc.ingest_message_db(db_session, "signal252", 1, ALICE, datetime.utcnow())["status"] == "entered"
+    _price(fake_exchange, monkeypatch, 0.0185)  # 0.5% above the posted immediate entry: allowed (market tolerance)
+    res = svc.ingest_message_db(db_session, "Ox3rwah_eth", 2, DODO, datetime.utcnow())
+    assert res["status"] == "entered"
+    pos_a = db_session.query(AiPoolPosition).filter(AiPoolPosition.pool_id == a.id).all()
+    pos_b = db_session.query(AiPoolPosition).filter(AiPoolPosition.pool_id == b.id).all()
+    assert len(pos_a) == 1 and len(pos_b) == 1
+    # v2: first leg 50% of the 20 USDT slot, second leg waits at the channel's explicit second entry (0.0175)
+    plan = json.loads(pos_b[0].plan_json)
+    assert pos_b[0].invested_usdt == pytest.approx(10.0)
+    assert plan["leg2"]["price"] == pytest.approx(0.0175) and plan["leg2"]["level"] == "channel"
+    # equal fractions across 5 targets
+    assert [round(t["fraction"], 2) for t in plan["targets"]] == [0.2, 0.2, 0.2, 0.2, 0.2]
+    # a signal for a channel nobody follows is recorded, not traded
+    assert svc.ingest_message_db(db_session, "unknown_chan", 3, ALICE, datetime.utcnow())["status"] in {"no_pool", "entered"}
+
+
+def test_market_entry_never_chases_beyond_tolerance(db_session, fake_exchange, monkeypatch):
+    from test_telegram_signals_v2 import DODO
+
+    b = pools.create_pool(db_session, 60.0, kind="telegram", name="B", channel="Ox3rwah_eth")
+    pools.update_settings(db_session, b, max_positions=3, entry_split_pct=0)
+    _price(fake_exchange, monkeypatch, 0.0190)  # 3.3% above the posted entry
+    res = svc.ingest_message_db(db_session, "Ox3rwah_eth", 5, DODO, datetime.utcnow())
+    assert res["status"] == "pending_entry"
+    _price(fake_exchange, monkeypatch, 0.0186)  # back within 1.5%
+    assert svc.check_pending_signals(db_session, b) == 1

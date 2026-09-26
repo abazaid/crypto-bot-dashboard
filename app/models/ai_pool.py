@@ -23,6 +23,7 @@ class AiPool(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(80), default="AI Trader")
     kind = Column(String(16), default="ai", index=True)  # ai (strategy engine) | telegram (signal follower)
+    channel = Column(String(64), nullable=True, index=True)  # telegram pools: the channel this pool follows
     account = Column(String(32), default="binance_1", index=True)  # binance_1 | binance_2 | kucoin_1
     status = Column(String(20), default="running", index=True)  # running | paused | halted
     halt_reason = Column(String(200), nullable=True)
@@ -158,6 +159,8 @@ class TelegramSignal(Base):
     entry_high = Column(Float, nullable=True)
     stop_price = Column(Float, nullable=True)
     targets_json = Column(Text, nullable=True)
+    entry_kind = Column(String(12), default="zone")  # zone | market
+    leg2_price = Column(Float, nullable=True)  # explicit second-entry price from the channel (v2 format)
     # pending_entry | entered | missed | invalid | not_binance | not_listed | skipped_cash | skipped_paused | no_pool | closed
     status = Column(String(24), default="pending_entry", index=True)
     status_note = Column(String(240), nullable=True)

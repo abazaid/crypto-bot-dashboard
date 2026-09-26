@@ -63,3 +63,14 @@ pytest tests/test_telegram_signals.py tests/test_telegram_signal_service.py -q
   0 = stop exactly at the previous target. The audit page sweeps 0/25/50/75 to pick the value for this channel.
 * `last_target_sell_pct` (50): share of the last slice sold at the last target; the rest is a runner.
 * `runner_giveback_pct` (30): the runner trails this far below its peak.
+
+## Several channels (added 2026-09-26)
+
+* `TELEGRAM_SIGNAL_CHANNELS=signal252,Ox3rwah_eth` (comma list; `TELEGRAM_SIGNAL_CHANNEL` still works for one).
+* One pool per channel (`ai_pools.channel`); the page shows a tab per channel (`/live/signals?channel=...`).
+  A pool created before this change follows the first channel in the list.
+* Formats: v1 (zone entry, `telegram_signals.py`) and v2 (`telegram_signals_v2.py`: "دخول فوري" price,
+  optional "دخول ثاني" price, N targets without sell fractions -> equal split, "وقف"). `parse_any` tries both.
+* v2 execution: market entry accepted up to 1.5% above the posted price (never chases further); the second
+  leg waits exactly at the channel's second-entry price; progress/average/level posts are ignored.
+* `/live/signals/preview?channel=<name>&limit=40` shows any public channel's posts with the parser verdict.
