@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import desc
@@ -35,6 +35,9 @@ from app.services.telegram_signals_v2 import MARKET_ENTRY_TOLERANCE
 logger = logging.getLogger(__name__)
 
 LAST_MSG_KEY_PREFIX = "tg_last_msg_id:"
+
+# Symbols whose entry is between the sizing decision and the exchange fill (guarded by the ledger lock).
+_ENTERING_SYMBOLS: set[str] = set()
 
 
 # ── Last-seen message bookkeeping (so restarts never replay old posts) ───────────
@@ -176,6 +179,8 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
     if price is None:
         price = float(pools._prices_for([row.symbol]).get(row.symbol, 0.0))
     if price <= 0:
+        row.status_note = "no live price (exchange unreachable or rate-limited); retrying"
+        logger.warning("no price for pending signal %s (%s); retrying", row.id, row.symbol)
         return False
     # Sanity: a mis-parsed level (thousands separator, wrong decimal) must never reach an order.
     if price > float(row.entry_high) * 5.0 or price < float(row.entry_low) * 0.2:
@@ -188,18 +193,32 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         row.status_note = f"price {price:.6g} already below the signal stop {row.stop_price:.6g}"
         pools._log(db, pool.id, "SIGNAL_SKIP", row.status_note, row.symbol)
         return False
+    reached = _first_target_reached(row, price)
+    if reached:
+        row.status = "missed"
+        row.status_note = reached
+        pools._log(db, pool.id, "SIGNAL_MISSED", row.status_note, row.symbol)
+        return False
     tolerance = 1.0 + (MARKET_ENTRY_TOLERANCE if (row.entry_kind or "zone") == "market" else 0.002)
     if price > float(row.entry_high) * tolerance:
-        return False  # above the entry: wait (never chase)
+        row.status_note = f"price {price:.6g} above the entry zone; waiting (never chase)"
+        return False
 
     with pools._LEDGER_LOCK:
         db.refresh(pool)
         if pool.status != "running":
+            row.status_note = f"pool is {pool.status}; waiting (resume it to enter)"
             return False  # keep pending; the pool may be resumed within the window
         positions = pools._open_positions(db, pool)
         if any(p.symbol == row.symbol for p in positions):
             row.status = "invalid"
             row.status_note = "already holding this symbol in the pool"
+            return False
+        other = _held_by_other_signal_pool(db, pool, row.symbol)
+        if other:
+            row.status = "duplicate"
+            row.status_note = f"{row.symbol} already held by the @{other} signals pool; one position per coin"
+            pools._log(db, pool.id, "SIGNAL_SKIP", row.status_note, row.symbol)
             return False
         slots = max(1, int(pool.max_positions or 5))
         if len(positions) >= slots:
@@ -227,6 +246,7 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
             pools._log(db, pool.id, "SIGNAL_SKIP", row.status_note, row.symbol)
             return False
         targets = json.loads(row.targets_json or "[]")
+        _ENTERING_SYMBOLS.add(row.symbol)  # held until the buy settles, so another channel can't race in
         pools._commit_quietly(db)
 
     sig = Signal(
@@ -268,7 +288,11 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         "signal_id": row.id,
         "plan_json": json.dumps(plan),
     }
-    pos = pools._buy(db, pool, sig, leg1, extra=extra)  # no lock held here
+    try:
+        pos = pools._buy(db, pool, sig, leg1, extra=extra)  # no lock held here
+    finally:
+        with pools._LEDGER_LOCK:
+            _ENTERING_SYMBOLS.discard(row.symbol)
     if pos is None:
         row.status_note = "buy failed; will retry while pending"
         return False
@@ -278,6 +302,62 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         row.status_note = f"bought {leg1:.2f} USDT @ {pos.avg_entry:.6g}" + (f"; {leg2['amount']:.2f} USDT waits at {leg2['price']:.6g}" if leg2 else "")
         pools._commit_quietly(db)
     return True
+
+
+def _held_by_other_signal_pool(db: Session, pool: AiPool, symbol: str) -> Optional[str]:
+    """Channel of another signals pool that already holds (or is buying) `symbol`, else None. Call under the ledger lock."""
+    if symbol in _ENTERING_SYMBOLS:
+        return "another channel (entry in progress)"
+    hit = (
+        db.query(AiPool)
+        .join(AiPoolPosition, AiPoolPosition.pool_id == AiPool.id)
+        .filter(AiPool.kind == "telegram", AiPool.id != pool.id, AiPool.status != "deleted", AiPoolPosition.status == "open", AiPoolPosition.symbol == symbol)
+        .first()
+    )
+    if hit is None:
+        return None
+    return hit.channel or hit.name or f"pool {hit.id}"
+
+
+def _first_target_reached(row: TelegramSignal, price: float) -> Optional[str]:
+    """
+    Reason text when the move already happened before we entered (target 1 touched since the post),
+    else None. Uses 5m candle highs so a spike between two 5-minute checks is not missed; falls back
+    to the live price when candles are unavailable.
+    """
+    try:
+        targets = json.loads(row.targets_json or "[]")
+    except ValueError:
+        return None
+    if not targets:
+        return None
+    t1 = float(targets[0]["price"])
+    if price >= t1:
+        return f"target 1 ({t1:.6g}) already reached before entry (price {price:.6g}); the move is over"
+    since = row.posted_at or row.created_at
+    if since is None:
+        return None
+    high = _high_since(row.symbol, since)
+    if high is not None and high >= t1:
+        return f"target 1 ({t1:.6g}) already reached before entry (high {high:.6g} since the post); the move is over"
+    return None
+
+
+def _high_since(symbol: str, since: datetime) -> Optional[float]:
+    """Highest 5m candle high from `since` (naive UTC) until now; None when candles can't be fetched."""
+    from app.services import binance_ratelimit
+    from app.services.binance_public import get_klines_range
+
+    if binance_ratelimit.is_banned():
+        return None
+    start_ms = int(since.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    try:
+        klines = get_klines_range(symbol, "5m", start_ms, limit=1000)
+    except Exception as exc:  # network / HTTP errors: the live-price check still applies
+        logger.warning("candle fetch failed for pending %s: %s", symbol, exc)
+        return None
+    highs = [float(k[2]) for k in klines if len(k) > 2]
+    return max(highs) if highs else None
 
 
 def second_leg_price(pool: AiPool, leg1_price: float, entry_low: float, entry_high: float) -> float:

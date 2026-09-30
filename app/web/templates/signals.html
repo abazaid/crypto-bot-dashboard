@@ -167,17 +167,17 @@
       <h2>Incoming signals</h2>
       <div class="table-scroll">
         <table class="campaigns-table">
-          <thead><tr><th>Seen</th><th>Msg</th><th>Symbol</th><th>Entry zone</th><th>Stop</th><th>Targets</th><th>Status</th><th>Note</th></tr></thead>
+          <thead><tr><th>Seen (UTC)</th><th>Msg</th><th>Symbol</th><th>Entry zone</th><th>Stop</th><th>Targets</th><th>Status</th><th>Note</th></tr></thead>
           <tbody>
             {% for s in signals %}
             <tr>
-              <td>{{ s.created_at }}</td>
+              <td>{{ s.created_at }}{% if s.posted_at and s.posted_at != s.created_at %}<br><span class="muted-line" style="font-size:11px">posted {{ s.posted_at }}</span>{% endif %}</td>
               <td>{{ s.msg_id }}</td>
               <td><strong>{{ s.symbol }}</strong>{% if s.entry_kind == 'market' %}<br><span class="muted-line" style="font-size:11px">market entry{% if s.leg2_price %} · 2nd @ {{ "%.6g"|format(s.leg2_price) }}{% endif %}</span>{% endif %}</td>
               <td>{% if s.entry_low %}{{ "%.6g"|format(s.entry_low) }} – {{ "%.6g"|format(s.entry_high) }}{% else %}-{% endif %}</td>
               <td>{% if s.stop_price %}{{ "%.6g"|format(s.stop_price) }}{% else %}-{% endif %}</td>
               <td style="font-size:12px">{% for t in s.targets %}{{ "%.6g"|format(t.price) }} ({{ (t.fraction * 100)|round|int }}%){% if t.done %}✅{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</td>
-              <td><span class="badge {{ 'pnl-pos' if s.status in ['entered', 'closed'] else ('pnl-neg' if s.status in ['invalid', 'missed', 'skipped_cash', 'not_binance', 'not_listed'] else '') }}">{{ s.status }}</span></td>
+              <td><span class="badge {{ 'pnl-pos' if s.status in ['entered', 'closed'] else ('pnl-neg' if s.status in ['invalid', 'missed', 'skipped_cash', 'not_binance', 'not_listed', 'duplicate'] else '') }}">{{ s.status }}</span></td>
               <td style="font-size:12px" title="{{ s.raw_text|e }}">{{ s.status_note }}</td>
             </tr>
             {% else %}

@@ -14,6 +14,12 @@ from test_telegram_signals import ALICE
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def no_candles(monkeypatch):
+    """Never hit Binance for the target-1 candle check; tests opt in by overriding _high_since."""
+    monkeypatch.setattr(svc, "_high_since", lambda symbol, since: None)
+
+
 @pytest.fixture()
 def tg_pool(db_session, fake_exchange):
     pool = pools.create_pool(db_session, 100.0, kind="telegram", name="Signals")
@@ -347,3 +353,76 @@ def test_market_entry_never_chases_beyond_tolerance(db_session, fake_exchange, m
     assert res["status"] == "pending_entry"
     _price(fake_exchange, monkeypatch, 0.0186)  # back within 1.5%
     assert svc.check_pending_signals(db_session, b) == 1
+
+
+def test_pending_signal_is_missed_once_target1_spiked_between_checks(db_session, fake_exchange, tg_pool, monkeypatch):
+    # NMR case: pending, price runs to target 1 and back into the zone between two 5-minute checks.
+    _price(fake_exchange, monkeypatch, 0.165)
+    svc.ingest_message_db(db_session, "signal252", 1101, ALICE, datetime.utcnow())
+    row = db_session.query(TelegramSignal).filter(TelegramSignal.msg_id == 1101).first()
+    assert row.status == "pending_entry"
+    monkeypatch.setattr(svc, "_high_since", lambda symbol, since: 0.172)  # touched T1 0.171
+    _price(fake_exchange, monkeypatch, 0.150)  # back inside the zone
+    assert svc.check_pending_signals(db_session, tg_pool) == 0
+    assert row.status == "missed"
+    assert "target 1" in row.status_note
+    assert not [o for o in fake_exchange.orders if o["side"] == "BUY"]
+
+
+def test_late_post_is_missed_when_live_price_already_past_target1(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 0.180)
+    res = svc.ingest_message_db(db_session, "signal252", 1102, ALICE, datetime.utcnow() - timedelta(hours=2))
+    assert res["status"] == "missed"
+    assert "target 1" in res["note"]
+
+
+def test_candle_high_below_target1_still_enters(db_session, fake_exchange, tg_pool, monkeypatch):
+    monkeypatch.setattr(svc, "_high_since", lambda symbol, since: 0.168)
+    _price(fake_exchange, monkeypatch, 0.150)
+    res = svc.ingest_message_db(db_session, "signal252", 1103, ALICE, datetime.utcnow())
+    assert res["status"] == "entered"
+
+
+def test_waiting_reasons_are_always_written(db_session, fake_exchange, tg_pool, monkeypatch):
+    # above the zone
+    _price(fake_exchange, monkeypatch, 0.165)
+    res = svc.ingest_message_db(db_session, "signal252", 1104, ALICE, datetime.utcnow())
+    assert res["status"] == "pending_entry" and "above the entry zone" in res["note"]
+    row = db_session.query(TelegramSignal).filter(TelegramSignal.msg_id == 1104).first()
+    # no live price
+    monkeypatch.setattr(pools, "_prices_for", lambda symbols: {})
+    svc.check_pending_signals(db_session, tg_pool)
+    assert row.status == "pending_entry" and "no live price" in row.status_note
+    # pool paused while the price is in the zone
+    tg_pool.status = "paused"
+    db_session.commit()
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.check_pending_signals(db_session, tg_pool)
+    assert row.status == "pending_entry" and "pool is paused" in row.status_note
+    assert not [o for o in fake_exchange.orders if o["side"] == "BUY"]
+
+
+def test_same_coin_from_a_second_channel_is_not_bought_twice(db_session, fake_exchange, monkeypatch):
+    a = pools.create_pool(db_session, 100.0, kind="telegram", name="A", channel="signal252")
+    b = pools.create_pool(db_session, 100.0, kind="telegram", name="B", channel="other_chan")
+    for p in (a, b):
+        pools.update_settings(db_session, p, max_positions=5, entry_split_pct=0)
+    _price(fake_exchange, monkeypatch, 0.150)
+    assert svc.ingest_message_db(db_session, "signal252", 1, ALICE, datetime.utcnow())["status"] == "entered"
+    res = svc.ingest_message_db(db_session, "other_chan", 2, ALICE, datetime.utcnow())
+    assert res["status"] == "duplicate" and "@signal252" in res["note"]
+    assert db_session.query(AiPoolPosition).filter(AiPoolPosition.pool_id == b.id).count() == 0
+    assert len([o for o in fake_exchange.orders if o["side"] == "BUY"]) == 1
+    # once the first position is closed, the coin is free again for any channel
+    pos = db_session.query(AiPoolPosition).filter(AiPoolPosition.pool_id == a.id).first()
+    pos.status = "closed"
+    db_session.commit()
+    assert svc.ingest_message_db(db_session, "other_chan", 3, ALICE, datetime.utcnow())["status"] == "entered"
+
+
+def test_coin_being_bought_by_another_channel_is_blocked(db_session, fake_exchange, tg_pool, monkeypatch):
+    _price(fake_exchange, monkeypatch, 0.150)
+    monkeypatch.setattr(svc, "_ENTERING_SYMBOLS", {"ALICEUSDT"})
+    res = svc.ingest_message_db(db_session, "signal252", 4, ALICE, datetime.utcnow())
+    assert res["status"] == "duplicate"
+    assert not [o for o in fake_exchange.orders if o["side"] == "BUY"]

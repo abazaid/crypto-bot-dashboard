@@ -8,3 +8,6 @@ __pycache__/
 # Telegram user session (never commit)
 *.session
 *.session-journal
+
+# Local SQLite database (production DB lives on the /data volume)
+*.db

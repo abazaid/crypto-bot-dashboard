@@ -161,7 +161,7 @@ class TelegramSignal(Base):
     targets_json = Column(Text, nullable=True)
     entry_kind = Column(String(12), default="zone")  # zone | market
     leg2_price = Column(Float, nullable=True)  # explicit second-entry price from the channel (v2 format)
-    # pending_entry | entered | missed | invalid | not_binance | not_listed | skipped_cash | skipped_paused | no_pool | closed
+    # pending_entry | entered | missed | invalid | not_binance | not_listed | skipped_cash | skipped_paused | no_pool | duplicate | closed
     status = Column(String(24), default="pending_entry", index=True)
     status_note = Column(String(240), nullable=True)
     position_id = Column(Integer, nullable=True)
