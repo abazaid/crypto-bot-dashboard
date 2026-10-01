@@ -783,6 +783,7 @@ def _apply_schema_updates() -> None:
         "ALTER TABLE ai_pools ADD COLUMN tp1_fraction FLOAT DEFAULT 0.4",
         "ALTER TABLE ai_pools ADD COLUMN kind VARCHAR(16) DEFAULT 'ai'",
         "ALTER TABLE ai_pools ADD COLUMN target_lock_pct FLOAT DEFAULT 50.0",
+        "ALTER TABLE ai_pools ADD COLUMN stop_from_target INTEGER DEFAULT 1",
         "ALTER TABLE ai_pools ADD COLUMN runner_giveback_pct FLOAT DEFAULT 30.0",
         "ALTER TABLE ai_pools ADD COLUMN last_target_sell_pct FLOAT DEFAULT 50.0",
         "ALTER TABLE ai_pools ADD COLUMN entry_split_pct FLOAT DEFAULT 50.0",
@@ -4085,7 +4086,7 @@ async def ai_trader_settings(request: Request, pool_id: int) -> RedirectResponse
             "risk_profile", "risk_per_trade_pct", "max_position_pct", "max_positions", "min_entry_score",
             "daily_loss_limit_pct", "max_drawdown_pct", "symbol_cooldown_hours", "max_entries_per_hour", "time_stop_hours",
             "max_portfolio_risk_pct", "breaker_cooldown_hours", "profit_giveback_pct",
-            "breakeven_at_r", "tp1_r", "tp1_fraction", "target_lock_pct", "runner_giveback_pct", "last_target_sell_pct", "entry_split_pct",
+            "breakeven_at_r", "tp1_r", "tp1_fraction", "target_lock_pct", "stop_from_target", "runner_giveback_pct", "last_target_sell_pct", "entry_split_pct",
             "leg2_level", "leg2_below_pct", "leg2_fallback_hours",
         )
         kwargs = {k: form.get(k) for k in keys}

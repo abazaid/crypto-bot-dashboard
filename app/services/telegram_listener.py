@@ -32,6 +32,9 @@ _state: dict[str, Any] = {
     "messages_seen": 0,
 }
 _lock = asyncio.Lock()
+_retry_task: Optional[asyncio.Task] = None
+RETRY_BASE_DELAY_S = 20.0
+RETRY_MAX_DELAY_S = 300.0
 _ENTITY_TO_CHANNEL: dict[int, str] = {}
 
 
@@ -64,6 +67,8 @@ def status() -> dict[str, Any]:
 async def _ensure_client():
     global _client
     if _client is not None:
+        if not _client.is_connected():
+            await _client.connect()
         return _client
     from telethon import TelegramClient
 
@@ -90,6 +95,30 @@ async def start() -> None:
             _state["status"] = "error"
             _state["error"] = str(exc)[:300]
             logger.warning("telegram listener start failed: %s", exc)
+    if _state["status"] == "error":
+        _schedule_retry()
+    else:
+        _state["retry_attempt"] = 0
+
+
+def _schedule_retry() -> None:
+    """
+    A failed start (e.g. "database is locked" while the previous container still holds the session
+    during a redeploy) must not leave the bot deaf: retry with backoff until it connects.
+    """
+    global _retry_task
+    if _retry_task is not None and not _retry_task.done():
+        return
+    attempt = int(_state.get("retry_attempt") or 0) + 1
+    _state["retry_attempt"] = attempt
+    delay = min(RETRY_MAX_DELAY_S, RETRY_BASE_DELAY_S * attempt)
+
+    async def _later() -> None:
+        await asyncio.sleep(delay)
+        logger.info("telegram listener retry #%d", attempt)
+        await start()
+
+    _retry_task = asyncio.get_running_loop().create_task(_later())
 
 
 async def send_code(phone: str) -> dict[str, Any]:
@@ -152,7 +181,7 @@ async def fetch_history(limit: int = 15, channel: str | None = None) -> list[dic
     """Last `limit` posts of a followed channel as [{id, date, text}] (newest first). Requires a connected session."""
     if _state.get("status") != "connected" or _client is None:
         raise RuntimeError("Telegram is not connected")
-    entity = await _client.get_entity((channel or default_channel()).lstrip("@"))
+    entity = await _resolve_joined_entity((channel or default_channel()).lstrip("@"))
     msgs = await _client.get_messages(entity, limit=max(1, min(200, int(limit))))
     return [{"id": m.id, "date": m.date, "text": m.message or ""} for m in msgs]
 
@@ -161,7 +190,7 @@ async def fetch_message(msg_id: int, channel: str | None = None) -> Optional[dic
     """One channel post by id as {id, date, text}, or None."""
     if _state.get("status") != "connected" or _client is None:
         raise RuntimeError("Telegram is not connected")
-    entity = await _client.get_entity((channel or default_channel()).lstrip("@"))
+    entity = await _resolve_joined_entity((channel or default_channel()).lstrip("@"))
     m = await _client.get_messages(entity, ids=int(msg_id))
     if m is None:
         return None
@@ -222,7 +251,7 @@ async def _begin_listening(client) -> None:
     errors: list[str] = []
     for channel in settings.telegram_signal_channels:
         try:
-            entity = await client.get_entity(channel)
+            entity = await _resolve_joined_entity(channel)
         except Exception as exc:
             errors.append(f"@{channel}: {exc}")
             continue

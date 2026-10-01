@@ -328,6 +328,7 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
         "tp1_r": (0.8, 3.0),
         "tp1_fraction": (0.2, 0.8),
         "target_lock_pct": (0.0, 100.0),
+        "stop_from_target": (0, 10),
         "runner_giveback_pct": (10.0, 100.0),
         "last_target_sell_pct": (0.0, 100.0),
         "entry_split_pct": (0.0, 100.0),
@@ -340,7 +341,7 @@ def _update_settings_locked(db: Session, pool: AiPool, **kwargs: Any) -> None:
             continue
         val = finite_amount(kwargs[key], key)
         val = max(lo, min(hi, val))
-        if key in {"max_positions", "max_entries_per_hour"}:
+        if key in {"max_positions", "max_entries_per_hour", "stop_from_target"}:
             val = int(val)
         setattr(pool, key, val)
         changed.append(f"{key}={val}")
@@ -1417,6 +1418,7 @@ def pool_summary(db: Session, pool: AiPool, refresh_prices: bool = True) -> dict
             "tp1_r": float(pool.tp1_r or DEFAULT_TP1_R),
             "tp1_fraction": float(pool.tp1_fraction or DEFAULT_TP1_FRACTION),
             "target_lock_pct": float(pool.target_lock_pct if pool.target_lock_pct is not None else 50.0),
+            "stop_from_target": int(pool.stop_from_target if pool.stop_from_target is not None else 1),
             "runner_giveback_pct": float(pool.runner_giveback_pct if pool.runner_giveback_pct is not None else 30.0),
             "last_target_sell_pct": float(pool.last_target_sell_pct if pool.last_target_sell_pct is not None else 50.0),
             "entry_split_pct": float(pool.entry_split_pct if pool.entry_split_pct is not None else 50.0),

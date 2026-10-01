@@ -229,16 +229,18 @@ def validate_signal(sig: ParsedSignal) -> list[str]:
 
 
 def parse_any(text: str) -> ParsedSignal | None:
-    """Try every known channel format (v1 zone-style first, then v2 market-entry style)."""
+    """Try every known channel format (v1 zone-style, v2 market-entry style, v3 "Buy Zone" bot style)."""
     sig = parse_signal(text)
     if sig is not None:
         return sig
-    from app.services.telegram_signals_v2 import parse_signal_v2  # local import: v2 depends on this module
+    from app.services.telegram_signals_v2 import parse_signal_v2  # local import: v2/v3 depend on this module
+    from app.services.telegram_signals_v3 import parse_signal_v3
 
-    return parse_signal_v2(text)
+    return parse_signal_v2(text) or parse_signal_v3(text)
 
 
 def looks_like_any_signal(text: str) -> bool:
     from app.services.telegram_signals_v2 import looks_like_signal_v2
+    from app.services.telegram_signals_v3 import looks_like_signal_v3
 
-    return looks_like_signal(text) or looks_like_signal_v2(text)
+    return looks_like_signal(text) or looks_like_signal_v2(text) or looks_like_signal_v3(text)

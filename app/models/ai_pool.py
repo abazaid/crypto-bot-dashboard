@@ -57,6 +57,7 @@ class AiPool(Base):
     tp1_r = Column(Float, default=1.2)  # first partial take-profit at this many R
     tp1_fraction = Column(Float, default=0.4)  # fraction sold at TP1
     target_lock_pct = Column(Float, default=50.0)  # signals: after target n, stop = prev level + this % of the leg
+    stop_from_target = Column(Integer, default=1)  # signals: stop starts moving once this target is hit (0 = never: keep the channel stop)
     runner_giveback_pct = Column(Float, default=30.0)  # signals: trailing give-back for the runner kept after the last target
     last_target_sell_pct = Column(Float, default=50.0)  # signals: % of the last target's fraction sold at that target (rest = runner)
     entry_split_pct = Column(Float, default=50.0)  # signals: % bought immediately; the rest waits lower

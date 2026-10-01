@@ -426,3 +426,34 @@ def test_coin_being_bought_by_another_channel_is_blocked(db_session, fake_exchan
     res = svc.ingest_message_db(db_session, "signal252", 4, ALICE, datetime.utcnow())
     assert res["status"] == "duplicate"
     assert not [o for o in fake_exchange.orders if o["side"] == "BUY"]
+
+
+def test_stop_from_target_zero_keeps_the_channel_stop(db_session, fake_exchange, tg_pool, monkeypatch):
+    pools.update_settings(db_session, tg_pool, stop_from_target=0, profit_giveback_pct=100)
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1201, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    for px in (0.172, 0.188):  # targets 1 and 2 sell their slices, the stop stays at the channel's 0.137
+        _price(fake_exchange, monkeypatch, px)
+        svc.manage_signal_position(db_session, tg_pool, pos, px)
+        assert pos.stop_price == pytest.approx(0.137)
+    _price(fake_exchange, monkeypatch, 0.160)  # a pullback that would have stopped the default pool out
+    assert svc.manage_signal_position(db_session, tg_pool, pos, 0.160) is None
+    assert pos.status == "open"
+
+
+def test_stop_from_target_two_waits_for_the_second_target(db_session, fake_exchange, tg_pool, monkeypatch):
+    pools.update_settings(db_session, tg_pool, stop_from_target=2, profit_giveback_pct=100)
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1202, ALICE, datetime.utcnow())
+    pos = db_session.query(AiPoolPosition).first()
+    _price(fake_exchange, monkeypatch, 0.172)
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.172)
+    assert pos.stop_price == pytest.approx(0.137)  # target 1: stop not moved yet
+    _price(fake_exchange, monkeypatch, 0.188)
+    svc.manage_signal_position(db_session, tg_pool, pos, 0.188)
+    assert pos.stop_price >= 0.171 + 0.5 * (0.187 - 0.171) - 1e-9  # target 2: ladder applies
+
+
+def test_stop_from_target_default_is_unchanged_for_existing_pools(db_session, tg_pool):
+    assert pools.pool_summary(db_session, tg_pool)["settings"]["stop_from_target"] == 1

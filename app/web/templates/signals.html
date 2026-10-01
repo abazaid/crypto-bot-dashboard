@@ -101,7 +101,7 @@
         <form method="post" action="/live/ai-trader/{{ pool.id }}/withdraw" class="inline-form"><input type="number" name="amount" step="0.01" min="1" placeholder="USDT" style="width:110px" required><button type="submit" class="soft-btn-gold">Withdraw cash</button></form>
         <form method="post" action="/live/ai-trader/{{ pool.id }}/close-all" onsubmit="return confirm('Market-sell ALL signal positions now?');"><button type="submit" class="sell-btn">Close all signal positions</button></form>
       </div>
-      <p class="muted-line">Slots {{ summary.settings.max_positions }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · give-back guard {{ summary.settings.profit_giveback_pct }}% after the first target · stop locks {{ summary.settings.target_lock_pct }}% of each leg · last target sells {{ summary.settings.last_target_sell_pct }}% of its slice, runner trails with {{ summary.settings.runner_giveback_pct }}% give-back · entry window 12h.</p>
+      <p class="muted-line">Slots {{ summary.settings.max_positions }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · give-back guard {{ summary.settings.profit_giveback_pct }}% after the first target · {% if summary.settings.stop_from_target == 0 %}stop stays at the channel level{% else %}stop locks {{ summary.settings.target_lock_pct }}% of each leg from target {{ summary.settings.stop_from_target }}{% endif %} · last target sells {{ summary.settings.last_target_sell_pct }}% of its slice, runner trails with {{ summary.settings.runner_giveback_pct }}% give-back · entry window 12h.</p>
       <details>
         <summary>Edit settings</summary>
         <form method="post" action="/live/ai-trader/{{ pool.id }}/settings" class="form-grid" style="margin-top:8px;">
@@ -119,6 +119,7 @@
           </label>
           <label>% below 1st leg (for that option)<input type="number" name="leg2_below_pct" step="0.5" min="0.5" max="15" value="{{ summary.settings.leg2_below_pct }}"></label>
           <label>2nd leg fallback: buy at market after (h) if still in zone, 0 = off<input type="number" name="leg2_fallback_hours" step="1" min="0" max="168" value="{{ summary.settings.leg2_fallback_hours }}"></label>
+          <label>Start moving the stop from target (0 = never: keep the channel stop)<input type="number" name="stop_from_target" step="1" min="0" max="10" value="{{ summary.settings.stop_from_target }}"></label>
           <label>Stop after target n: lock % of the leg (100 = at the target itself)<input type="number" name="target_lock_pct" step="5" min="0" max="100" value="{{ summary.settings.target_lock_pct }}"></label>
           <label>Last target: sell % of its fraction (rest = runner)<input type="number" name="last_target_sell_pct" step="5" min="0" max="100" value="{{ summary.settings.last_target_sell_pct }}"></label>
           <label>Runner give-back (%)<input type="number" name="runner_giveback_pct" step="5" min="10" max="100" value="{{ summary.settings.runner_giveback_pct }}"></label>

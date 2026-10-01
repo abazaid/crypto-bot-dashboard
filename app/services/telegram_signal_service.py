@@ -529,7 +529,8 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
         leg2 = plan.get("leg2")
         if leg2 and not leg2.get("filled") and not leg2.get("cancelled"):
             leg2["cancelled"] = "first target hit"  # never add size to a trade that is already taking profit
-        if pos.status == "open":
+        stop_from = int(pool.stop_from_target if pool.stop_from_target is not None else 1)
+        if pos.status == "open" and stop_from > 0 and i + 1 >= stop_from:
             # Stop after target n: previous level (entry for n=1) + target_lock_pct of the leg to target n.
             prev_level = float(pos.avg_entry) if i == 0 else float(targets[i - 1]["price"])
             lock = float(pool.target_lock_pct if pool.target_lock_pct is not None else 50.0) / 100.0
@@ -540,6 +541,7 @@ def manage_signal_position(db: Session, pool: AiPool, pos: AiPoolPosition, price
             if new_stop > float(pos.stop_price):
                 pos.stop_price = new_stop
                 pools._log(db, pool.id, "STOP_MOVE", f"target {i + 1} hit: stop raised to {new_stop:.6g} ({lock * 100:.0f}% of the leg above {prev_level:.6g})", pos.symbol)
+        if pos.status == "open":
             pos.tp1_done = True
         pos.plan_json = json.dumps(plan)
         sync_signal_status(db, pos)

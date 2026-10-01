@@ -76,7 +76,7 @@ LAST_TARGET_SELL = 0.0  # nothing sold at the last target: the whole last slice 
 ENTRY_SPLIT = 0.5  # half at first touch of the zone, half at the zone bottom (before T1, within 72h)
 
 
-def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float, target_lock: float = TARGET_LOCK, giveback: float = GIVEBACK, runner_giveback: float = RUNNER_GIVEBACK, last_target_sell: float = LAST_TARGET_SELL, entry_split: float = ENTRY_SPLIT, leg2_level: str = "mid", leg2_below_pct: float = 3.0, leg2_fallback_hours: float = 24.0) -> dict:
+def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours: float, target_lock: float = TARGET_LOCK, giveback: float = GIVEBACK, runner_giveback: float = RUNNER_GIVEBACK, last_target_sell: float = LAST_TARGET_SELL, entry_split: float = ENTRY_SPLIT, leg2_level: str = "mid", leg2_below_pct: float = 3.0, leg2_fallback_hours: float = 24.0, stop_from_target: int = 1) -> dict:
     """
     Replay one signal over candles [open_time, open, high, low, close, ...] under OUR rules.
     PnL is expressed on the FULL allocated amount: if the second leg never fills, only the first
@@ -166,7 +166,8 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
             hits.append(f"T{next_target + 1}")
             prev_level = entry if next_target == 0 else float(targets[next_target - 1].price)
             lock_stop = float(tg.price) * 0.997 if target_lock >= 0.999 else prev_level + target_lock * (float(tg.price) - prev_level)
-            stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0), lock_stop)
+            if stop_from_target > 0 and next_target + 1 >= stop_from_target:
+                stop = max(stop, entry * (1.0 + FEE_RT_PCT / 100.0), lock_stop)
             next_target += 1
         # give-back guard from the peak (tighter for the runner after the last target)
         if next_target > 0:
