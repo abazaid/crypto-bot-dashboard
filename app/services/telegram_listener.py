@@ -169,16 +169,44 @@ async def fetch_message(msg_id: int, channel: str | None = None) -> Optional[dic
 
 
 async def fetch_channel_posts(channel: str, limit: int = 40) -> dict:
-    """Read-only peek at ANY public channel (to learn a new channel's format). Requires a connected session."""
+    """
+    Read-only peek at a channel (to learn a new channel's format). `channel` is a username, link,
+    numeric id, or — for private channels the account already joined — the exact channel title.
+    Requires a connected session.
+    """
     if _state.get("status") != "connected" or _client is None:
         raise RuntimeError("Telegram is not connected")
-    entity = await _client.get_entity(str(channel).strip().lstrip("@"))
-    msgs = await _client.get_messages(entity, limit=max(1, min(200, int(limit))))
+    entity = await _resolve_joined_entity(str(channel).strip().lstrip("@"))
+    msgs = await _client.get_messages(entity, limit=max(1, min(1000, int(limit))))
     return {
         "channel": str(channel).strip().lstrip("@"),
         "title": getattr(entity, "title", None),
         "posts": [{"id": m.id, "date": m.date.isoformat(timespec="minutes") if m.date else None, "text": m.message or "", "has_media": bool(m.media)} for m in msgs],
     }
+
+
+async def _resolve_joined_entity(name: str):
+    """get_entity, falling back to the account's dialogs (title or id match) for private channels without a username."""
+    from telethon.errors import RPCError
+
+    try:
+        return await _client.get_entity(int(name) if name.lstrip("-").isdigit() else name)
+    except (ValueError, TypeError, RPCError) as exc:
+        lookup_error = exc
+    wanted = name.casefold()
+    matches = []
+    async for dialog in _client.iter_dialogs():
+        if (dialog.title or "").strip().casefold() == wanted or str(dialog.id) == name or str(getattr(dialog.entity, "id", "")) == name:
+            matches.append(dialog)
+    # A channel's discussion group can share its title: prefer the broadcast channel itself.
+    channels = [d for d in matches if d.is_channel and not d.is_group]
+    candidates = channels or matches
+    if len(candidates) == 1:
+        return candidates[0].entity
+    if not candidates:
+        raise ValueError(f"channel '{name}' not found by username/link ({lookup_error}) nor among joined chats by title")
+    ids = ", ".join(f"{d.title} (id {d.entity.id})" for d in candidates)
+    raise ValueError(f"'{name}' matches several joined chats: {ids}; pass the id instead")
 
 
 async def _begin_listening(client) -> None:
