@@ -33,6 +33,9 @@ _state: dict[str, Any] = {
 }
 _lock = asyncio.Lock()
 _retry_task: Optional[asyncio.Task] = None
+_poll_task: Optional[asyncio.Task] = None
+_WATCHED: list[tuple[str, Any]] = []
+POLL_SECONDS = 120.0
 RETRY_BASE_DELAY_S = 20.0
 RETRY_MAX_DELAY_S = 300.0
 _ENTITY_TO_CHANNEL: dict[int, str] = {}
@@ -95,10 +98,23 @@ async def start() -> None:
             _state["status"] = "error"
             _state["error"] = str(exc)[:300]
             logger.warning("telegram listener start failed: %s", exc)
+            await _drop_client()
     if _state["status"] == "error":
         _schedule_retry()
     else:
         _state["retry_attempt"] = 0
+
+
+async def _drop_client() -> None:
+    """Discard the client so the next start builds a fresh one (a half-connected client may never receive updates)."""
+    global _client
+    if _client is None:
+        return
+    try:
+        await _client.disconnect()
+    except Exception as exc:  # already broken; nothing else to clean up
+        logger.info("telegram disconnect after failed start: %s", exc)
+    _client = None
 
 
 def _schedule_retry() -> None:
@@ -278,15 +294,7 @@ async def _begin_listening(client) -> None:
 
         # Catch up on posts missed while the server was down (at most the entry window old).
         if last_seen > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=float(settings.telegram_entry_window_hours))
-            try:
-                missed = await client.get_messages(entity, min_id=last_seen, limit=50)
-                for m in reversed(list(missed)):
-                    if m.date and m.date < cutoff:
-                        continue
-                    await _handle(channel, m.id, m.message or "", m.date)
-            except Exception as exc:
-                logger.warning("telegram catch-up failed for @%s: %s", channel, exc)
+            await _catch_up(client, channel, entity)
 
     _state["channel_titles"] = titles
     _state["channel_title"] = ", ".join(titles.values()) if titles else None
@@ -296,9 +304,67 @@ async def _begin_listening(client) -> None:
         return
     client.remove_event_handler(_on_new_message)
     client.add_event_handler(_on_new_message, events.NewMessage(chats=[e for _c, e in entities]))
+    _WATCHED[:] = entities
+    _ensure_poll_task()
     _state["status"] = "connected"
     _state["error"] = "; ".join(errors)[:300] if errors else None
     logger.info("Telegram listener connected as %s, watching %s", _state["user"], ", ".join("@" + c for c, _e in entities))
+
+
+async def _catch_up(client, channel: str, entity) -> int:
+    """Ingest posts newer than the last one recorded for `channel` (at most the entry window old)."""
+    from app.core.database import SessionLocal
+    from app.services import telegram_signal_service as svc
+
+    db = SessionLocal()
+    try:
+        last_seen = svc.get_last_msg_id(db, channel)
+    finally:
+        db.close()
+    if last_seen <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=float(settings.telegram_entry_window_hours))
+    handled = 0
+    try:
+        missed = await client.get_messages(entity, min_id=last_seen, limit=50)
+        for m in reversed(list(missed)):
+            if m.date and m.date < cutoff:
+                continue
+            await _handle(channel, m.id, m.message or "", m.date)
+            handled += 1
+    except Exception as exc:
+        logger.warning("telegram catch-up failed for @%s: %s", channel, exc)
+    return handled
+
+
+def _ensure_poll_task() -> None:
+    global _poll_task
+    if _poll_task is None or _poll_task.done():
+        _poll_task = asyncio.get_running_loop().create_task(_poll_loop())
+
+
+async def _poll_loop() -> None:
+    """
+    Safety net under the push updates: Telegram can silently stop delivering them to a session that
+    still reports "connected" (seen after redeploys). Every POLL_SECONDS, read each channel's newest
+    posts directly and ingest anything not recorded yet (ingest dedupes by message id), and restart
+    the listener if it is not connected.
+    """
+    while True:
+        await asyncio.sleep(POLL_SECONDS)
+        try:
+            if _client is None or _state.get("status") != "connected" or not _client.is_connected():
+                logger.warning("telegram poll: listener is %s; restarting", _state.get("status"))
+                await start()
+                continue
+            caught = 0
+            for channel, entity in list(_WATCHED):
+                caught += await _catch_up(_client, channel, entity)
+            _state["last_poll_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            if caught:
+                logger.warning("telegram poll picked up %d post(s) the push updates missed", caught)
+        except Exception as exc:  # the loop must survive any single failure
+            logger.exception("telegram poll failed: %s", exc)
 
 
 async def _on_new_message(event) -> None:

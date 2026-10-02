@@ -136,3 +136,51 @@ def test_listener_retries_after_a_failed_start(monkeypatch):
 
     assert asyncio.run(scenario()) == "connected"
     assert calls["n"] == 2
+
+
+def _run_one_poll(monkeypatch):
+    """Run _poll_loop for exactly one iteration."""
+    sleeps = {"n": 0}
+
+    async def fake_sleep(_s):
+        sleeps["n"] += 1
+        if sleeps["n"] > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(tl.asyncio, "sleep", fake_sleep)
+    try:
+        asyncio.run(tl._poll_loop())
+    except asyncio.CancelledError:
+        pass
+
+
+def test_poll_picks_up_posts_the_push_updates_missed(monkeypatch):
+    class Client:
+        def is_connected(self):
+            return True
+
+    seen = []
+
+    async def catch_up(client, channel, entity):
+        seen.append(channel)
+        return 2
+
+    monkeypatch.setattr(tl, "_client", Client())
+    monkeypatch.setitem(tl._state, "status", "connected")
+    monkeypatch.setattr(tl, "_WATCHED", [("signal252", object()), ("Shaban vip", object())])
+    monkeypatch.setattr(tl, "_catch_up", catch_up)
+    _run_one_poll(monkeypatch)
+    assert seen == ["signal252", "Shaban vip"]
+
+
+def test_poll_restarts_a_listener_that_is_not_connected(monkeypatch):
+    restarted = []
+
+    async def fake_start():
+        restarted.append(True)
+
+    monkeypatch.setattr(tl, "_client", None)
+    monkeypatch.setitem(tl._state, "status", "error")
+    monkeypatch.setattr(tl, "start", fake_start)
+    _run_one_poll(monkeypatch)
+    assert restarted == [True]

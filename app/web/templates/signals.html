@@ -30,7 +30,7 @@
       <p class="muted-line">Status: <strong class="{{ 'pnl-pos' if st == 'connected' else 'pnl-neg' }}">{{ st }}</strong>
         {% if telegram.user %} · account: {{ telegram.user }}{% endif %}
         {% if telegram.channel_title %} · channel: {{ telegram.channel_title }}{% endif %}
-        {% if telegram.last_event_at %} · last post seen {{ telegram.last_event_at }} UTC ({{ telegram.messages_seen }} seen){% endif %}
+        {% if telegram.last_event_at %} · last post seen {{ telegram.last_event_at }} UTC ({{ telegram.messages_seen }} seen){% endif %}{% if telegram.last_poll_at %} · last channel check {{ telegram.last_poll_at }} UTC{% endif %}
         {% if telegram.error %} · <span class="pnl-neg">{{ telegram.error }}</span>{% endif %}
       </p>
       {% if not telegram.configured %}
