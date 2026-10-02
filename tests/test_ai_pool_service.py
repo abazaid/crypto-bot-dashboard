@@ -460,3 +460,33 @@ def test_protective_mode_secures_small_profit_before_1r(db_session, fake_exchang
     qty0 = pos.qty
     svc._manage_position(db_session, pool, pos, 110.0, "bullish")
     assert pos.tp1_done and pos.qty == pytest.approx(qty0 * 0.6, abs=0.001)
+
+
+def test_new_pool_cannot_reuse_cash_another_pool_already_holds(db_session, fake_exchange):
+    fake_exchange.usdt_free = 150.0
+    svc.create_pool(db_session, 100.0, kind="telegram", name="A", channel="chan_a")
+    with pytest.raises(ValueError, match="at most 50.00"):
+        svc.create_pool(db_session, 80.0, kind="telegram", name="B", channel="chan_b")
+    assert svc.create_pool(db_session, 50.0, kind="telegram", name="B", channel="chan_b").cash_usdt == 50.0
+
+
+def test_add_funds_counts_every_pool_on_the_account(db_session, fake_exchange):
+    fake_exchange.usdt_free = 150.0
+    a = svc.create_pool(db_session, 100.0, kind="telegram", name="A", channel="chan_a")
+    b = svc.create_pool(db_session, 30.0, kind="telegram", name="B", channel="chan_b")
+    with pytest.raises(ValueError, match="at most 20.00"):
+        svc.add_funds(db_session, b, 50.0)  # 100 + 30 + 50 > 150 even though 30 + 50 < 150
+    svc.add_funds(db_session, a, 20.0)
+    assert a.cash_usdt == 120.0
+
+
+def test_cash_coverage_reports_the_shortfall(db_session, fake_exchange):
+    fake_exchange.usdt_free = 200.0
+    svc.create_pool(db_session, 150.0, kind="telegram", name="A", channel="chan_a")
+    svc._COVERAGE_CACHE.clear()
+    fake_exchange.usdt_free = 60.0  # USDT left the account outside the pools
+    cov = svc.cash_coverage(db_session)
+    assert cov == {"free": 60.0, "reserved": 150.0, "shortfall": 90.0}
+    fake_exchange.balances_down = True
+    svc._COVERAGE_CACHE.clear()
+    assert svc.cash_coverage(db_session) is None  # unknown balance: no false alarm, no crash

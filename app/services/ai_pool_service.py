@@ -227,8 +227,12 @@ def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced",
         if existing:
             raise ValueError("A pool of this kind already exists on this account (for this channel). Add funds to it instead.")
         free = float(_balances_or_raise(ex).get("USDT", {}).get("free", 0.0))
-        if free < amount:
-            raise ValueError(f"Account free USDT ({free:.2f}) is below the requested amount ({amount:.2f})")
+        reserved = reserved_cash_usdt(db, account)
+        if free < reserved + amount:
+            raise ValueError(
+                f"Account free USDT ({free:.2f}) cannot cover the cash every pool already holds ({reserved:.2f}) "
+                f"plus {amount:.2f}; at most {max(0.0, free - reserved):.2f} USDT is really available"
+            )
         pool = AiPool(name=name.strip() or ("Signals" if kind == "telegram" else "AI Trader"), account=account, status="running", kind=kind, channel=(channel or None) if kind == "telegram" else None)
         _apply_profile(pool, risk_profile)
         if kind == "telegram":
@@ -247,6 +251,36 @@ def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced",
     return pool
 
 
+def reserved_cash_usdt(db: Session, account: str) -> float:
+    """Uninvested cash every live pool on `account` counts as its own (AI Trader and all signal pools)."""
+    pools = db.query(AiPool).filter(AiPool.account == account, AiPool.status != "deleted").all()
+    return sum(max(0.0, float(p.cash_usdt or 0.0)) for p in pools)
+
+
+_COVERAGE_CACHE: dict[str, Any] = {}
+COVERAGE_CACHE_SECONDS = 60.0
+
+
+def cash_coverage(db: Session, account: str = "binance_1") -> Optional[dict]:
+    """
+    Pools' combined cash vs the USDT actually free on the account: {free, reserved, shortfall}.
+    The balance is cached briefly (page views must not hammer the API). None when it can't be read.
+    """
+    now = time.time()
+    cached = _COVERAGE_CACHE.get(account)
+    if cached and now - cached[0] < COVERAGE_CACHE_SECONDS:
+        free = cached[1]
+    else:
+        try:
+            free = float(_balances_or_raise(_exchange(account)).get("USDT", {}).get("free", 0.0))
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("cash coverage: balance unavailable for %s: %s", account, exc)
+            return None
+        _COVERAGE_CACHE[account] = (now, free)
+    reserved = reserved_cash_usdt(db, account)
+    return {"free": free, "reserved": reserved, "shortfall": max(0.0, reserved - free)}
+
+
 def add_funds(db: Session, pool: AiPool, amount_usdt: float) -> None:
     amount = finite_amount(amount_usdt)
     if amount <= 0:
@@ -255,8 +289,12 @@ def add_funds(db: Session, pool: AiPool, amount_usdt: float) -> None:
     with _LEDGER_LOCK:
         db.refresh(pool)
         free = float(_balances_or_raise(ex).get("USDT", {}).get("free", 0.0))
-        if free < float(pool.cash_usdt) + amount:
-            raise ValueError(f"Account free USDT ({free:.2f}) cannot cover pool cash after deposit ({float(pool.cash_usdt) + amount:.2f})")
+        reserved = reserved_cash_usdt(db, pool.account)  # includes this pool's own cash
+        if free < reserved + amount:
+            raise ValueError(
+                f"Account free USDT ({free:.2f}) cannot cover the cash every pool already holds ({reserved:.2f}) "
+                f"plus {amount:.2f}; at most {max(0.0, free - reserved):.2f} USDT is really available"
+            )
         pool.allocated_usdt = float(pool.allocated_usdt) + amount
         pool.cash_usdt = float(pool.cash_usdt) + amount
         _log(db, pool.id, "DEPOSIT", f"Added {amount:.2f} USDT | cash={pool.cash_usdt:.2f}")

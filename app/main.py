@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy import desc
 from sqlalchemy import or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
@@ -3963,6 +3963,7 @@ async def ai_trader_page(request: Request, notice: str = "", error: str = "") ->
                 trades=trades,
                 closed=closed,
                 account_free_usdt=account_free,
+                cash_coverage=_cash_coverage_or_none(db),
                 notice=notice[:300],
                 error=error[:300],
             ),
@@ -4182,6 +4183,7 @@ async def signals_page(request: Request, notice: str = "", error: str = "", chan
                 channel=channel,
                 channels=channels,
                 account_free_usdt=account_free,
+                cash_coverage=_cash_coverage_or_none(db),
                 notice=notice[:300],
                 error=error[:300],
             ),
@@ -4252,6 +4254,15 @@ async def signals_telegram_logout() -> RedirectResponse:
         return _ai_trader_redirect(msg="Telegram session removed.", kind="telegram")
     except Exception as e:
         return _ai_trader_redirect(error=f"Telegram: {e}", kind="telegram")
+
+
+def _cash_coverage_or_none(db: Session) -> dict | None:
+    """Pools' combined cash vs real free USDT, for the page warning; never breaks the page."""
+    try:
+        return ai_pool_service.cash_coverage(db)
+    except Exception as exc:  # the page must render even when the check can't run
+        logger.warning("cash coverage check failed: %s", exc)
+        return None
 
 
 @app.post("/live/signals/telegram/reconnect")

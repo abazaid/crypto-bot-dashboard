@@ -16,6 +16,7 @@
       <h1>AI Trader (Binance 1)</h1>
       <p>An isolated sub-wallet inside the account. It trades only its own capital and its own coins: breakout, trend-pullback and squeeze strategies, ATR stops, partial take-profit, trailing stop, daily-loss and drawdown breakers.</p>
       {% if error %}<p class="pnl-neg">{{ error }}</p>{% endif %}
+      {% if cash_coverage and cash_coverage.shortfall > 0.5 %}<p class="pnl-neg"><strong>Cash warning:</strong> the pools on Binance 1 count {{ "%.2f"|format(cash_coverage.reserved) }} USDT of cash, but only {{ "%.2f"|format(cash_coverage.free) }} USDT is free on the account (short {{ "%.2f"|format(cash_coverage.shortfall) }}). Buys will fail once the real balance runs out: deposit the difference or withdraw cash from a pool.</p>{% endif %}
       {% if notice %}<p class="pnl-pos">{{ notice }}</p>{% endif %}
     </section>
 
