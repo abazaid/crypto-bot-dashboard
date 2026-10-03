@@ -184,3 +184,121 @@ def test_poll_restarts_a_listener_that_is_not_connected(monkeypatch):
     monkeypatch.setattr(tl, "start", fake_start)
     _run_one_poll(monkeypatch)
     assert restarted == [True]
+
+
+ZEN_NEW = "💎 #ZEN | OKX spot \n\n📍 Entry: 6.700 6.400\n\n🎯 Targets:\n\n1️⃣ 7.275\n2️⃣ 8.400\n3️⃣ 9.600\n\n🛑5.760 CLOSE 1D"
+JOE_NEW = "💎 #JOE | okx\n\n📍 Entry: 0.0365 – 0.0392\n\n🎯 Targets:\n\n1️⃣ 0.0431 \n2️⃣ 0.0470 \n3️⃣ 0.0529 \n4️⃣ 0.0588 \n\n🛑0.0300"
+
+
+def test_new_short_layout_parses():
+    zen = parse_any(ZEN_NEW)
+    assert zen.symbol == "ZENUSDT" and zen.exchange == "binance"
+    assert (zen.entry_low, zen.entry_high, zen.stop_price) == (6.4, 6.7, 5.76)
+    assert [t.price for t in zen.targets] == [7.275, 8.4, 9.6]
+    assert validate_signal(zen) == []
+    joe = parse_any(JOE_NEW)
+    assert (joe.symbol, joe.entry_low, joe.entry_high, joe.stop_price) == ("JOEUSDT", 0.0365, 0.0392, 0.03)
+    assert [t.price for t in joe.targets] == [0.0431, 0.047, 0.0529, 0.0588]
+
+
+@pytest.mark.parametrize("text", [
+    "#JOE/USDT Entry 1 ✅\nAverage Entry Price: 0.03920 💵",
+    "Xlm long 10x\nEntry 0.2300\nTp1 0.2400\nTp2 0.2450\nTp3 0.2500\n🛑 stop 0.2210",
+])
+def test_new_layout_does_not_catch_progress_or_futures_posts(text):
+    assert parse_any(text) is None
+
+
+RENDER_AUG = """🚀 SHAABAN ELITE SIGNAL
+
+💎 #RENDER | Binance
+
+📍 منطقة الدخول: 1.330 – 1.372
+
+🎯 الأهداف:
+1️⃣ 1.850
+2️⃣ 2.650
+3️⃣ 3.100
+4️⃣ 3.950
+
+🛑 وقف الخسارة: إغلاق شمعة يومية أسفل 1.270"""
+
+ICP_AUG_SPLIT_LINES = """💎 #ICP | Binance
+
+📍 منطقة الدخول:
+2.022 – 2.076
+
+🎯 الأهداف:
+1️⃣ 2.20✅
+2️⃣ 2.35✅
+
+🛑 وقف الخسارة:
+إغلاق شمعة 4 ساعات أسفل 1.87"""
+
+ZERO_G_V4 = """🚀 SHAABAN ELITE SIGNAL
+
+💎 #0G | 15 m
+⚡ Strong Setup | 9.8/10
+
+🏦 Available on: Binance | KuCoin | MEXC
+📊 Signal based on: Binance
+
+💰 Entry: $0.181
+🛑 SL: $0.163
+
+🎯 Targets
+• TP1: $0.19 (+4.97%)
+• TP2: $0.2 (+10.50%)
+• TP3: $0.24 (+32.60%)
+• TP4: $0.27 (+49.17%)
+
+⏳ Live Opportunity"""
+
+ASTR_ARROWS = """🚀 SHAABAN SIGNAL
+
+💎 #ASTR | ⏰ 15 m
+
+💰 Entry: $0.008170
+🛑 SL: $0.007467
+
+🎯 Targets:
+⬜ TP1 → $0.008578 (+5.0%)
+⬜ TP2 → $0.008986 (+10.0%)"""
+
+T_SINGLE_LETTER = ZERO_G_V4.replace("#0G", "#T")
+KUCOIN_ONLY = ZERO_G_V4.replace("Available on: Binance | KuCoin | MEXC", "Available on: KuCoin | MEXC")
+
+
+def test_arabic_zone_layout_takes_the_level_after_asfal_not_the_hours():
+    r = parse_any(RENDER_AUG)
+    assert (r.symbol, r.entry_low, r.entry_high, r.stop_price) == ("RENDERUSDT", 1.33, 1.372, 1.27)
+    assert [t.price for t in r.targets] == [1.85, 2.65, 3.1, 3.95]
+    icp = parse_any(ICP_AUG_SPLIT_LINES)  # values on the line after the label, ✅ marks after targets
+    assert (icp.entry_low, icp.entry_high, icp.stop_price) == (2.022, 2.076, 1.87)
+    assert [t.price for t in icp.targets] == [2.2, 2.35]
+
+
+@pytest.mark.parametrize("text,symbol,entry,stop,targets", [
+    (ZERO_G_V4, "0GUSDT", 0.181, 0.163, [0.19, 0.2, 0.24, 0.27]),
+    (ASTR_ARROWS, "ASTRUSDT", 0.00817, 0.007467, [0.008578, 0.008986]),
+    (T_SINGLE_LETTER, "TUSDT", 0.181, 0.163, [0.19, 0.2, 0.24, 0.27]),
+])
+def test_single_price_entry_layouts_are_market_entries(text, symbol, entry, stop, targets):
+    s = parse_any(text)
+    assert (s.symbol, s.entry_low, s.entry_high, s.stop_price) == (symbol, entry, entry, stop)
+    assert s.entry_kind == "market"
+    assert [t.price for t in s.targets] == targets
+    assert validate_signal(s) == []
+
+
+def test_kucoin_only_signal_is_not_binance():
+    assert any("not Binance" in p for p in validate_signal(parse_any(KUCOIN_ONLY)))
+
+
+@pytest.mark.parametrize("text", [
+    ZERO_G_V4.replace("⏳ Live Opportunity", "🏁 Closed | 🏆 Profit: +10.01%"),  # edited after the fact
+    "🟡 تم الإغلاق\n🔹 العملة: #CHR\n💰 السعر: $0.0201\n🛑 الوقف: $0.0185\n• TP1: $0.0211 (+4.98%)",
+    "🎯 تحقق الهدف 1 (+4.97%) - #APT\n• TP1: $0.992 (+4.97%)",
+])
+def test_closed_and_progress_posts_are_not_signals(text):
+    assert parse_any(text) is None

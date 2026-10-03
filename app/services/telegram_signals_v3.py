@@ -10,6 +10,16 @@ Parser for the "Shaban vip"-style bot posts (buy zone + T1..Tn + stop), spot onl
     🟢 T5: 1.0121
     🔴 Stop Loss: 0.6827  اغلاق يوم
 
+Since 2026-10-02 the channel also posts a shorter layout, parsed the same way:
+
+    💎 #ZEN | OKX spot
+    📍 Entry: 6.700 6.400
+    🎯 Targets:
+    1️⃣ 7.275
+    2️⃣ 8.400
+    3️⃣ 9.600
+    🛑5.760 CLOSE 1D
+
 The channel names OKX; the user trades these on Binance only (listing is verified at ingest).
 Futures posts ("FUTURES LONG 10X", "Xlm long 10x", "short") are NOT signals and return None, as are
 progress posts ("#X/USDT Entered entry zone ✅", "Take-Profit target 2 ✅"). Targets carry no sell
@@ -23,15 +33,46 @@ import re
 from app.services.telegram_signals import ParsedSignal, ParsedTarget, _clean, _numbers
 
 _SYMBOL_RE = re.compile(r"([A-Za-z0-9]{2,15})\s*/\s*USDT", re.IGNORECASE)
-_ZONE_RE = re.compile(r"Buy\s*Zone\s*:\s*(.+)", re.IGNORECASE)
+_HASH_SYMBOL_RE = re.compile(r"#([A-Za-z0-9]{1,15})\s*\|")  # "💎 #ZEN | OKX spot"
+_ZONE_RE = re.compile(r"(?:Buy\s*Zone|Entry|منطقة الدخول)\s*:\s*(.*)", re.IGNORECASE)
 _TARGET_RE = re.compile(r"\bT(\d+)\s*:\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
-_STOP_RE = re.compile(r"Stop\s*Loss\s*:\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+_KEYCAP_TARGET_RE = re.compile(r"^(\d{1,2})️?⃣\s*(\d+(?:[.,]\d+)?)\s*✅?\s*$")  # "1️⃣ 7.275", "1️⃣ 2.20✅"
+_STOP_RE = re.compile(r"(?:Stop\s*Loss\s*:|وقف الخسارة\s*:|🛑)\s*(.*)", re.IGNORECASE)
+_CLOSED_RE = re.compile(r"🏁\s*Closed|تم الإغلاق|الحالة:\s*مغلقة")
+
+
+def _value_after(lines: list[str], rx: re.Pattern) -> str | None:
+    """Text after the label on the same line, or the next line when the label stands alone ("منطقة الدخول:\\n2.022 – 2.076")."""
+    for i, ln in enumerate(lines):
+        m = rx.search(ln)
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        if not re.search(r"\d", rest) and i + 1 < len(lines):
+            rest = lines[i + 1]
+        return rest if re.search(r"\d", rest) else None
+    return None
+
+
+def _stop_level(text: str) -> float | None:
+    """"5.760 CLOSE 1D" -> 5.76; "إغلاق شمعة 4 ساعات أسفل 1.87" -> 1.87 (the level after أسفل, not the 4 hours)."""
+    if "أسفل" in text:
+        nums = _numbers(text.split("أسفل", 1)[1])
+    else:
+        nums = _numbers(text)
+    return nums[0] if nums else None
+
+
 _FUTURES_RE = re.compile(r"\b(long|short)\b|\b\d+\s*x\b|futures", re.IGNORECASE)
 
 
 def looks_like_signal_v3(text: str) -> bool:
     t = text or ""
-    return bool(_ZONE_RE.search(t) and _TARGET_RE.search(t) and _STOP_RE.search(t)) and not is_futures(t)
+    if _CLOSED_RE.search(t) or is_futures(t):
+        return False
+    lines = [ln for ln in (_clean(x) for x in t.splitlines()) if ln]
+    has_targets = bool(_TARGET_RE.search(t)) or any(_KEYCAP_TARGET_RE.match(ln) for ln in lines)
+    return bool(has_targets and _value_after(lines, _ZONE_RE) and _value_after(lines, _STOP_RE))
 
 
 def is_futures(text: str) -> bool:
@@ -48,22 +89,25 @@ def parse_signal_v3(text: str) -> ParsedSignal | None:
     lines = [ln for ln in (_clean(x) for x in (text or "").splitlines()) if ln]
     body = "\n".join(lines)
 
-    sm = _SYMBOL_RE.search(body)
-    zm = _ZONE_RE.search(body)
-    stm = _STOP_RE.search(body)
-    if not (sm and zm and stm):
+    sm = _SYMBOL_RE.search(body) or _HASH_SYMBOL_RE.search(body)
+    zone_text = _value_after(lines, _ZONE_RE)
+    stop_text = _value_after(lines, _STOP_RE)
+    if not (sm and zone_text and stop_text):
         return None
     base = sm.group(1).upper()
-    zone = _numbers(zm.group(1))[:2]
-    if not zone:
+    zone = _numbers(zone_text)[:2]
+    stop = _stop_level(stop_text)
+    if not zone or stop is None:
         return None
     entry_low, entry_high = min(zone), max(zone)
-    stop = float(stm.group(1).replace(",", "."))
 
     by_index: dict[int, float] = {}
     for ln in lines:
         for m in _TARGET_RE.finditer(ln):
             by_index.setdefault(int(m.group(1)), float(m.group(2).replace(",", ".")))
+        km = _KEYCAP_TARGET_RE.match(ln)
+        if km:
+            by_index.setdefault(int(km.group(1)), float(km.group(2).replace(",", ".")))
     if not by_index:
         return None
     targets = [ParsedTarget(price=p, pct=None, sell_fraction=0.0) for p in sorted(by_index.values())]
@@ -73,7 +117,7 @@ def parse_signal_v3(text: str) -> ParsedSignal | None:
     targets[-1].sell_fraction = max(0.0, 1.0 - sum(t.sell_fraction for t in targets[:-1]))
 
     warnings: list[str] = []
-    if re.search(r"اغلاق|إغلاق", body):
+    if re.search(r"اغلاق|إغلاق|close\s*1d", stop_text, re.IGNORECASE):
         warnings.append("channel stop is on a daily close; the bot uses a hard stop")
     return ParsedSignal(
         symbol=f"{base}USDT",
