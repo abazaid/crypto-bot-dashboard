@@ -457,3 +457,17 @@ def test_stop_from_target_two_waits_for_the_second_target(db_session, fake_excha
 
 def test_stop_from_target_default_is_unchanged_for_existing_pools(db_session, tg_pool):
     assert pools.pool_summary(db_session, tg_pool)["settings"]["stop_from_target"] == 1
+
+
+def test_expiry_keeps_the_real_reason_when_slots_were_full(db_session, fake_exchange, tg_pool, monkeypatch):
+    pools.update_settings(db_session, tg_pool, max_positions=1)
+    _price(fake_exchange, monkeypatch, 0.150)
+    svc.ingest_message_db(db_session, "signal252", 1301, ALICE, datetime.utcnow())  # takes the only slot
+    svc.ingest_message_db(db_session, "signal252", 1302, ALICE.replace("#ALICE", "#BOB"), datetime.utcnow())
+    row = db_session.query(TelegramSignal).filter(TelegramSignal.msg_id == 1302).first()
+    assert row.status == "pending_entry" and "slots busy" in row.status_note  # price is in the zone
+    row.expires_at = datetime.utcnow() - timedelta(minutes=1)
+    db_session.commit()
+    svc.check_pending_signals(db_session, tg_pool)
+    assert row.status == "missed"
+    assert "slots busy" in row.status_note and "never returned" not in row.status_note

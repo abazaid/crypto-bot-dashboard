@@ -172,8 +172,13 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
     if row.status != "pending_entry":
         return False
     if row.expires_at and datetime.utcnow() > row.expires_at:
+        last_wait = (row.status_note or "").strip()
         row.status = "missed"
-        row.status_note = "price never returned to the entry zone within the window"
+        if last_wait and "above the entry zone" not in last_wait:
+            # keep the real blocker (slots full, pool paused, no price...) instead of blaming the price
+            row.status_note = f"entry window ended without entering; last reason: {last_wait}"[:240]
+        else:
+            row.status_note = "price never returned to the entry zone within the window"
         pools._log(db, pool.id, "SIGNAL_MISSED", row.status_note, row.symbol)
         return False
     if price is None:
