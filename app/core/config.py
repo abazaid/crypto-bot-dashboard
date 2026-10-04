@@ -42,6 +42,7 @@ class Settings:
         if c.strip()
     ]
     telegram_entry_window_hours = float(os.getenv("TELEGRAM_ENTRY_WINDOW_HOURS", "12"))
+    telegram_default_stop_pct = float(os.getenv("TELEGRAM_DEFAULT_STOP_PCT", "10"))  # posts without a stop
     telegram_session_path = os.getenv("TELEGRAM_SESSION_PATH", "").strip()
     loop_excluded_symbols = {
         s.strip().upper()

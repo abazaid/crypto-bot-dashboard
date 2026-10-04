@@ -99,10 +99,17 @@ def test_futures_posts_are_never_signals(text):
     "#DOGE/USDT Entered entry zone ✅",
     "#VIRTUAL/USDT Take-Profit target 2 ✅\nProfit: 3.9888% 📈\nPeriod: 1 day 1 hr ⏰",
     "#XLM/USDT Stop Target Hit ⛔\nLoss: 39.1304% 📉",
-    NO_STOP,  # no stop: never traded
 ])
-def test_progress_posts_and_stopless_posts_are_ignored(text):
+def test_progress_posts_are_ignored(text):
     assert parse_any(text) is None
+
+
+def test_stopless_post_gets_the_bot_default_stop():
+    sig = parse_any(NO_STOP)
+    assert sig.symbol == "OPUSDT"
+    assert sig.stop_price == pytest.approx(0.0850 * 0.9)
+    assert [t.price for t in sig.targets] == [0.0912, 0.0934]
+    assert validate_signal(sig) == []
 
 
 def test_listener_retries_after_a_failed_start(monkeypatch):
