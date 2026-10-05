@@ -30,7 +30,12 @@ from app.models.trading import AppSetting
 from app.services import ai_pool_service as pools
 from app.services.ai_strategy import Signal
 from app.services.telegram_signals import ParsedSignal, looks_like_any_signal, parse_any, validate_signal
-from app.services.telegram_signals_v2 import MARKET_ENTRY_TOLERANCE
+from app.services.telegram_signals_v2 import (
+    IMMEDIATE_ENTRY_MAX_PREMIUM,
+    IMMEDIATE_ENTRY_MIN_T1_ROOM,
+    MARKET_ENTRY_TOLERANCE,
+    is_immediate_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -204,10 +209,19 @@ def _try_enter(db: Session, pool: AiPool, row: TelegramSignal, price: Optional[f
         row.status_note = reached
         pools._log(db, pool.id, "SIGNAL_MISSED", row.status_note, row.symbol)
         return False
-    tolerance = 1.0 + (MARKET_ENTRY_TOLERANCE if (row.entry_kind or "zone") == "market" else 0.002)
+    immediate = (row.entry_kind or "zone") == "market" and is_immediate_entry(row.raw_text or "")
+    if immediate:
+        tolerance = 1.0 + IMMEDIATE_ENTRY_MAX_PREMIUM
+    else:
+        tolerance = 1.0 + (MARKET_ENTRY_TOLERANCE if (row.entry_kind or "zone") == "market" else 0.002)
     if price > float(row.entry_high) * tolerance:
         row.status_note = f"price {price:.6g} above the entry zone; waiting (never chase)"
         return False
+    if immediate:
+        t1 = _first_target_price(row)
+        if t1 is not None and price * (1.0 + IMMEDIATE_ENTRY_MIN_T1_ROOM) > t1:
+            row.status_note = f"price {price:.6g} too close to target 1 ({t1:.6g}); waiting (never chase)"
+            return False
 
     with pools._LEDGER_LOCK:
         db.refresh(pool)
@@ -322,6 +336,14 @@ def _held_by_other_signal_pool(db: Session, pool: AiPool, symbol: str) -> Option
     if hit is None:
         return None
     return hit.channel or hit.name or f"pool {hit.id}"
+
+
+def _first_target_price(row: TelegramSignal) -> Optional[float]:
+    try:
+        targets = json.loads(row.targets_json or "[]")
+    except ValueError:
+        return None
+    return float(targets[0]["price"]) if targets else None
 
 
 def _first_target_reached(row: TelegramSignal, price: float) -> Optional[str]:

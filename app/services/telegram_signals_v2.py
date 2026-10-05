@@ -30,7 +30,15 @@ _PRICE_LINE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)\s*\$?\s*$")
 _MARKET_ENTRY_KEYS = ("دخول فوري", "دخول فورى")
 _SECOND_ENTRY_KEYS = ("دخول ثاني", "دخول ثانى", "الدخول الثاني")
 _NOT_SIGNAL_KEYS = ("متوسط الدخول", "سعر المستوى", "أُلغي الدخول", "الغي الدخول", "تم تفعيل الدخول")
-MARKET_ENTRY_TOLERANCE = 0.015  # buy up to 1.5% above the posted "immediate entry" price, never chase further
+MARKET_ENTRY_TOLERANCE = 0.015  # buy up to 1.5% above the posted market-entry price, never chase further
+# "دخول فوري" means "buy now": the channel writes the price with trailing digits dropped (0.1 for a
+# live 0.102), so these posts get a wider premium, still capped and still needing room to target 1.
+IMMEDIATE_ENTRY_MAX_PREMIUM = 0.04
+IMMEDIATE_ENTRY_MIN_T1_ROOM = 0.01
+
+
+def is_immediate_entry(text: str) -> bool:
+    return any(k in (text or "") for k in _MARKET_ENTRY_KEYS)
 
 
 def looks_like_signal_v2(text: str) -> bool:
@@ -136,6 +144,7 @@ def parse_signal_v2(text: str) -> ParsedSignal | None:
         warnings=warnings,
     )
     sig.entry_kind = "market"  # type: ignore[attr-defined]
+    sig.immediate = True  # type: ignore[attr-defined]
     sig.leg2_price = float(second) if second is not None else None  # type: ignore[attr-defined]
     sig.risk_note = risk_note  # type: ignore[attr-defined]
     return sig

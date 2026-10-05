@@ -348,10 +348,10 @@ def test_market_entry_never_chases_beyond_tolerance(db_session, fake_exchange, m
 
     b = pools.create_pool(db_session, 60.0, kind="telegram", name="B", channel="Ox3rwah_eth")
     pools.update_settings(db_session, b, max_positions=3, entry_split_pct=0)
-    _price(fake_exchange, monkeypatch, 0.0190)  # 3.3% above the posted entry
+    _price(fake_exchange, monkeypatch, 0.01915)  # 4.1% above the posted "immediate" entry: past the cap
     res = svc.ingest_message_db(db_session, "Ox3rwah_eth", 5, DODO, datetime.utcnow())
     assert res["status"] == "pending_entry"
-    _price(fake_exchange, monkeypatch, 0.0186)  # back within 1.5%
+    _price(fake_exchange, monkeypatch, 0.0190)  # 3.3% above: accepted (posted price is rounded)
     assert svc.check_pending_signals(db_session, b) == 1
 
 

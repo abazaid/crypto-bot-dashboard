@@ -20,6 +20,7 @@ from typing import Optional
 from app.core.config import settings
 from app.services.binance_public import get_klines_range
 from app.services.telegram_signals import ParsedSignal, parse_any, validate_signal
+from app.services.telegram_signals_v2 import IMMEDIATE_ENTRY_MAX_PREMIUM, IMMEDIATE_ENTRY_MIN_T1_ROOM
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,14 @@ def simulate(sig: ParsedSignal, klines: list[list], posted_ms: int, window_hours
                 if o <= sig.entry_high:
                     return {"status": "invalid", "note": "opened inside the zone but the same candle hit the stop"}
                 continue
-            top = sig.entry_high * (1.0 + MARKET_TOL) if getattr(sig, "entry_kind", "zone") == "market" else sig.entry_high
+            if getattr(sig, "immediate", False):
+                top = sig.entry_high * (1.0 + IMMEDIATE_ENTRY_MAX_PREMIUM)
+                if targets:
+                    top = min(top, targets[0].price / (1.0 + IMMEDIATE_ENTRY_MIN_T1_ROOM))
+            elif getattr(sig, "entry_kind", "zone") == "market":
+                top = sig.entry_high * (1.0 + MARKET_TOL)
+            else:
+                top = sig.entry_high
             if o <= top:
                 entry = o
             elif lo <= top:
