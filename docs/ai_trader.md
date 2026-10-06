@@ -60,8 +60,19 @@ risk stays ≤ 2× the configured risk.
 * `ai_pool_tick` every 5s: stops, TP1, trailing, time stop, reconcile, breakers.
 * `ai_pool_scan` every 5min: regime, universe scan, sized entries.
 
+## Paper trading (`/live/ai-trader-paper`)
+
+The same engine on a simulated account: pool `kind="paper"`, `account="paper"`.
+`_exchange("paper")` returns `app/services/paper_exchange.py`, which never sends an
+order and needs no API key. Buys fill at the live best ask, sells at the best bid,
+each with `PAPER_SLIPPAGE_PCT` (0.05%) extra and `TRADING_FEE_PCT`, using Binance lot
+rules. Scan, sizing, exits and breakers are the live code paths, so paper results
+track what the real pool would do. Paper pools never count toward Binance 1 cash,
+skip the "account holdings" filter, and can be reset (`reset_paper_pool`) to start a
+new test. Klines are cached, so the extra scan adds almost no API load.
+
 ## Tests
 
 ```bash
-pytest tests/test_ai_indicators.py tests/test_ai_strategy.py tests/test_ai_pool_service.py -q
+pytest tests/test_ai_indicators.py tests/test_ai_strategy.py tests/test_ai_pool_service.py tests/test_paper_pool.py -q
 ```

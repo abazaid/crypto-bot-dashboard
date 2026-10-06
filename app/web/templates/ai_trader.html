@@ -5,7 +5,8 @@
     <h3>Live Menu</h3>
     <a class="side-link" href="/live">Campaigns Home</a>
     <a class="side-link" href="/live/all-coins">All Coins</a>
-    <a class="side-link active" href="/live/ai-trader">AI Trader</a>
+    <a class="side-link {% if not paper %}active{% endif %}" href="/live/ai-trader">AI Trader</a>
+    <a class="side-link {% if paper %}active{% endif %}" href="/live/ai-trader-paper">AI Trader (Paper)</a>
     <a class="side-link" href="/live/accumulation">Accumulation Bot</a>
     <a class="side-link" href="/live/grid">Grid Bot</a>
     <a class="side-link" href="/live/history">Live History</a>
@@ -13,8 +14,13 @@
 
   <div class="layout-main">
     <section class="hero">
+      {% if paper %}
+      <h1>AI Trader — Paper Trading</h1>
+      <p>The same AI engine as the live AI Trader (same scan, strategies, sizing, stops, take-profit, trailing and breakers), but with <strong>virtual money</strong>. Fills are simulated at the live Binance bid/ask with the {{ "%.2f"|format(fee_pct) }}% fee and a small slippage. <strong>No real order is ever sent.</strong></p>
+      {% else %}
       <h1>AI Trader (Binance 1)</h1>
       <p>An isolated sub-wallet inside the account. It trades only its own capital and its own coins: breakout, trend-pullback and squeeze strategies, ATR stops, partial take-profit, trailing stop, daily-loss and drawdown breakers.</p>
+      {% endif %}
       {% if error %}<p class="pnl-neg">{{ error }}</p>{% endif %}
       {% if cash_coverage and cash_coverage.shortfall > 0.5 %}<p class="pnl-neg"><strong>Cash warning:</strong> the pools on Binance 1 count {{ "%.2f"|format(cash_coverage.reserved) }} USDT of cash, but only {{ "%.2f"|format(cash_coverage.free) }} USDT is free on the account (short {{ "%.2f"|format(cash_coverage.shortfall) }}). Buys will fail once the real balance runs out: deposit the difference or withdraw cash from a pool.</p>{% endif %}
       {% if notice %}<p class="pnl-pos">{{ notice }}</p>{% endif %}
@@ -22,11 +28,19 @@
 
     {% if not pool %}
     <section class="card">
+      {% if paper %}
+      <h2>Create Paper Pool</h2>
+      <p class="muted-line">Enter any virtual amount. Nothing touches your Binance balance.</p>
+      <form method="post" action="/live/ai-trader-paper/create" class="form-grid">
+        <label>Virtual amount (USDT)
+          <input type="number" name="amount" step="0.01" min="10" value="1000" required>
+      {% else %}
       <h2>Create AI Pool</h2>
       <p class="muted-line">Account free USDT: <strong>{{ "%.2f"|format(account_free_usdt) }}</strong>. The amount you allocate is reserved for the AI; nothing else in the account is touched.</p>
       <form method="post" action="/live/ai-trader/create" class="form-grid">
         <label>Amount (USDT)
           <input type="number" name="amount" step="0.01" min="10" value="50" required>
+      {% endif %}
         </label>
         <label>Risk profile
           <select name="risk_profile">
@@ -36,10 +50,14 @@
           </select>
         </label>
         <label>Name
-          <input type="text" name="name" value="AI Trader" maxlength="80">
+          <input type="text" name="name" value="{{ 'AI Trader (Paper)' if paper else 'AI Trader' }}" maxlength="80">
         </label>
         <div class="full">
+          {% if paper %}
+          <button type="submit">Start paper trading</button>
+          {% else %}
           <button type="submit" onclick="return confirm('Allocate this amount to the AI pool and start live trading?');">Save &amp; Start</button>
+          {% endif %}
         </div>
       </form>
     </section>
@@ -87,6 +105,11 @@
         <form method="post" action="/live/ai-trader/{{ pool.id }}/close-all" onsubmit="return confirm('Market-sell ALL pool positions now? Only coins bought by the AI pool are sold.');">
           <button type="submit" class="sell-btn">Close all pool positions</button>
         </form>
+        {% if paper %}
+        <form method="post" action="/live/ai-trader-paper/{{ pool.id }}/reset" onsubmit="return confirm('Reset this paper pool and start over? Its history stays in the database.');">
+          <button type="submit" class="soft-btn">Reset paper pool</button>
+        </form>
+        {% endif %}
       </div>
       <p class="muted-line">Capture ratio (realized ÷ peak paper profit): <strong>{% if summary.capture_avg_pct is not none %}{{ "%.0f"|format(summary.capture_avg_pct) }}%{% else %}n/a{% endif %}</strong> over {{ summary.capture_samples }} winning trades · trades that reached 3R: {{ summary.big_winners_3r }} of {{ summary.closed_total }} closed. Rule of thumb after 30 trades: under 40% → tighten give-back; over 70% with no 3R winners → loosen it.</p>
       <p class="muted-line">Profile: <strong>{{ summary.risk_profile }}</strong> · risk/trade {{ summary.settings.risk_per_trade_pct }}% · max position {{ summary.settings.max_position_pct }}% · min score {{ summary.settings.min_entry_score }} · daily loss limit {{ summary.settings.daily_loss_limit_pct }}% · max drawdown {{ summary.settings.max_drawdown_pct }}% · cooldown {{ summary.settings.symbol_cooldown_hours }}h · time stop {{ summary.settings.time_stop_hours }}h · portfolio risk cap {{ summary.settings.max_portfolio_risk_pct }}% (open now {{ "%.2f"|format(summary.open_risk_usdt) }} USDT) · breaker cooldown {{ summary.settings.breaker_cooldown_hours }}h · profit give-back max {{ summary.settings.profit_giveback_pct }}% (30% while BTC is weak) · breakeven at {{ summary.settings.breakeven_at_r }}R · TP1 at {{ summary.settings.tp1_r }}R sells {{ (summary.settings.tp1_fraction * 100)|round|int }}%</p>
@@ -116,7 +139,7 @@
           <label>Breakeven + guard armed at (R)<input type="number" name="breakeven_at_r" step="0.1" min="0.3" max="1.5" value="{{ summary.settings.breakeven_at_r }}"></label>
           <label>TP1 at (R)<input type="number" name="tp1_r" step="0.1" min="0.8" max="3" value="{{ summary.settings.tp1_r }}"></label>
           <label>TP1 sell fraction<input type="number" name="tp1_fraction" step="0.05" min="0.2" max="0.8" value="{{ summary.settings.tp1_fraction }}"></label>
-          <label class="inline-check"><input type="checkbox" name="avoid_account_holdings" value="1" {% if summary.settings.avoid_account_holdings %}checked{% endif %}> Skip coins the account already holds</label>
+          {% if not paper %}<label class="inline-check"><input type="checkbox" name="avoid_account_holdings" value="1" {% if summary.settings.avoid_account_holdings %}checked{% endif %}> Skip coins the account already holds</label>{% endif %}
           <div class="full"><button type="submit" class="soft-btn">Save settings</button></div>
         </form>
       </details>

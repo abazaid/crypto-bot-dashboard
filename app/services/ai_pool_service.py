@@ -41,7 +41,9 @@ MIN_NOTIONAL_FLOOR = 6.0  # USDT; Binance minimum is 5, keep a buffer for roundi
 MIN_POOL_CAPITAL = 10.0
 DUST_USDT = 0.5
 RECONCILE_EVERY_SECONDS = 180
-SUPPORTED_ACCOUNTS = {"binance_1": "Binance 1 (All Coins)"}
+PAPER_ACCOUNT = "paper"
+SUPPORTED_ACCOUNTS = {"binance_1": "Binance 1 (All Coins)", PAPER_ACCOUNT: "Paper (simulated)"}
+POOL_KINDS = {"ai", "telegram", "paper"}  # paper = the AI engine on the simulated account
 EXCLUDED_SYMBOLS_SETTING_KEY = "ai_pool_excluded_symbols"
 WEAK_BTC_RISK_MULTIPLIER = 0.5
 WEAK_BTC_MAX_GIVEBACK_PCT = 30.0  # when BTC turns weak intraday, protect open profit harder
@@ -70,6 +72,9 @@ _LEDGER_LOCK = threading.RLock()
 def _exchange(account: str):
     if account == "binance_1":
         from app.services import binance_live as ex
+        return ex
+    if account == PAPER_ACCOUNT:
+        from app.services import paper_exchange as ex
         return ex
     raise RuntimeError(f"AI pool: unsupported account '{account}' (only binance_1 for now)")
 
@@ -210,12 +215,14 @@ def _apply_profile(pool: AiPool, profile: str) -> None:
 
 def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced", account: str = "binance_1", name: str = "AI Trader", kind: str = "ai", channel: Optional[str] = None) -> AiPool:
     amount = finite_amount(amount_usdt)
-    if kind not in {"ai", "telegram"}:
+    if kind not in POOL_KINDS:
         raise ValueError("Unsupported pool kind")
     if amount < MIN_POOL_CAPITAL:
         raise ValueError(f"Minimum pool capital is {MIN_POOL_CAPITAL:.0f} USDT")
     if account not in SUPPORTED_ACCOUNTS:
         raise ValueError("Unsupported account")
+    if (kind == "paper") != (account == PAPER_ACCOUNT):
+        raise ValueError("Paper pools run only on the paper account, and the paper account holds only paper pools")
     ex = _exchange(account)
     if not ex.is_configured():
         raise RuntimeError("Exchange API keys are not configured for this account")
@@ -239,6 +246,8 @@ def create_pool(db: Session, amount_usdt: float, risk_profile: str = "balanced",
             pool.max_positions = 5  # slots: capital is split evenly across concurrent signals
             pool.last_target_sell_pct = 0.0  # the last slice runs with the coin behind a trailing stop
             pool.time_stop_hours = 720.0  # signals can take weeks; no time stop in practice
+        if kind == "paper":
+            pool.avoid_account_holdings = False  # the simulated account holds nothing else
         pool.allocated_usdt = amount
         pool.cash_usdt = amount
         pool.peak_equity_usdt = amount
@@ -1298,6 +1307,23 @@ def close_all_positions(db: Session, pool: AiPool) -> int:
         _log(db, pool.id, "CLOSE_ALL", f"user requested close-all: {n}/{len(positions)} sold")
         db.commit()
     return n
+
+
+def reset_paper_pool(db: Session, pool: AiPool) -> None:
+    """Retire a PAPER pool (history is kept) so a new test can start. Never allowed on a real account."""
+    with _LEDGER_LOCK:
+        db.refresh(pool)
+        if pool.kind != "paper" or pool.account != PAPER_ACCOUNT:
+            raise ValueError("Only paper pools can be reset")
+        now = datetime.utcnow()
+        for pos in _open_positions(db, pool):
+            pos.status = "closed"
+            pos.closed_at = now
+            pos.close_reason = "reset"
+        pool.status = "deleted"
+        pool.halt_reason = "reset"
+        _log(db, pool.id, "RESET", f"Paper pool reset at equity snapshot: cash {pool.cash_usdt:.2f}, realized {pool.realized_pnl_usdt:+.2f}")
+        db.commit()
 
 
 # ── Read models for the UI ─────────────────────────────────────────────────────

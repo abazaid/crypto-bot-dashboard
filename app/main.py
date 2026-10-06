@@ -3895,7 +3895,7 @@ def _ai_pool_or_none(db, pool_id: int | None = None, kind: str | None = "ai"):
     return q.order_by(AiPool.id.asc()).first()
 
 
-_POOL_PAGES = {"ai": "/live/ai-trader", "telegram": "/live/signals"}
+_POOL_PAGES = {"ai": "/live/ai-trader", "telegram": "/live/signals", "paper": "/live/ai-trader-paper"}
 
 
 def _ai_trader_redirect(msg: str = "", error: str = "", kind: str = "ai", channel: str | None = None) -> RedirectResponse:
@@ -3928,11 +3928,10 @@ def _channel_or_default(channel: str) -> str:
     return chans[0] if chans else c
 
 
-@app.get("/live/ai-trader", response_class=HTMLResponse)
-async def ai_trader_page(request: Request, notice: str = "", error: str = "") -> HTMLResponse:
+def _render_ai_trader(request: Request, notice: str, error: str, paper: bool) -> HTMLResponse:
     db = SessionLocal()
     try:
-        pool = _ai_pool_or_none(db)
+        pool = _ai_pool_or_none(db, kind="paper" if paper else "ai")
         summary = None
         logs: list[dict] = []
         trades: list[dict] = []
@@ -3947,7 +3946,7 @@ async def ai_trader_page(request: Request, notice: str = "", error: str = "") ->
             logs = ai_pool_service.recent_logs(db, pool.id, limit=80)
             trades = ai_pool_service.recent_trades(db, pool.id, limit=60)
             closed = ai_pool_service.closed_positions(db, pool.id, limit=40)
-        else:
+        elif not paper:
             try:
                 account_free = float(get_balances().get("USDT", {}).get("free", 0.0))
             except Exception as e:
@@ -3955,19 +3954,61 @@ async def ai_trader_page(request: Request, notice: str = "", error: str = "") ->
         return templates.TemplateResponse(
             "ai_trader.html",
             _context(
-                "ai_trader",
+                "ai_trader_paper" if paper else "ai_trader",
                 request=request,
                 pool=pool,
                 summary=summary,
                 logs=logs,
                 trades=trades,
                 closed=closed,
+                paper=paper,
+                fee_pct=float(settings.trading_fee_pct),
                 account_free_usdt=account_free,
-                cash_coverage=_cash_coverage_or_none(db),
+                cash_coverage=None if paper else _cash_coverage_or_none(db),
                 notice=notice[:300],
                 error=error[:300],
             ),
         )
+    finally:
+        db.close()
+
+
+@app.get("/live/ai-trader", response_class=HTMLResponse)
+async def ai_trader_page(request: Request, notice: str = "", error: str = "") -> HTMLResponse:
+    return _render_ai_trader(request, notice, error, paper=False)
+
+
+@app.get("/live/ai-trader-paper", response_class=HTMLResponse)
+async def ai_trader_paper_page(request: Request, notice: str = "", error: str = "") -> HTMLResponse:
+    return _render_ai_trader(request, notice, error, paper=True)
+
+
+@app.post("/live/ai-trader-paper/create")
+async def ai_trader_paper_create(amount: str = Form(...), risk_profile: str = Form("balanced"), name: str = Form("AI Trader (Paper)")) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        amt = ai_pool_service.finite_amount(amount)
+        pool = ai_pool_service.create_pool(db, amt, risk_profile=risk_profile, account=ai_pool_service.PAPER_ACCOUNT, name=name, kind="paper")
+        return _ai_trader_redirect(msg=f"Paper pool #{pool.id} created with {amt:.2f} virtual USDT. First scan in about a minute.", kind="paper")
+    except (ValueError, RuntimeError) as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e), kind="paper")
+    finally:
+        db.close()
+
+
+@app.post("/live/ai-trader-paper/{pool_id:int}/reset")
+async def ai_trader_paper_reset(pool_id: int) -> RedirectResponse:
+    db = SessionLocal()
+    try:
+        pool = _ai_pool_or_none(db, pool_id)
+        if not pool:
+            return _ai_trader_redirect(error="pool not found", kind="paper")
+        ai_pool_service.reset_paper_pool(db, pool)
+        return _ai_trader_redirect(msg="Paper pool reset. Create a new one to start another test.", kind="paper")
+    except ValueError as e:
+        db.rollback()
+        return _ai_trader_redirect(error=str(e), kind="paper")
     finally:
         db.close()
 
@@ -4051,7 +4092,8 @@ async def ai_trader_withdraw(pool_id: int, amount: str = Form(...)) -> RedirectR
         if not pool:
             return _ai_trader_redirect(error="pool not found")
         ai_pool_service.withdraw_funds(db, pool, ai_pool_service.finite_amount(amount))
-        return _ai_trader_redirect(msg="Cash released from the pool (it stays in your Binance account).", kind=_pool_kind(pool), channel=_pool_channel(pool))
+        released = "Virtual cash removed from the paper pool." if _pool_kind(pool) == "paper" else "Cash released from the pool (it stays in your Binance account)."
+        return _ai_trader_redirect(msg=released, kind=_pool_kind(pool), channel=_pool_channel(pool))
     except (ValueError, RuntimeError) as e:
         db.rollback()
         return _ai_trader_redirect(error=str(e), kind=_pool_kind(pool) if pool else "ai", channel=_pool_channel(pool) if pool else None)
@@ -4108,10 +4150,10 @@ async def ai_trader_sell_position(position_id: int, fraction: str = Form("1")) -
     try:
         pos = db.query(AiPoolPosition).filter(AiPoolPosition.id == position_id).first()
         channel = None
-        if pos and pos.strategy == "telegram":
-            kind = "telegram"
-            p = db.query(AiPool).filter(AiPool.id == pos.pool_id).first()
-            channel = _pool_channel(p) if p else None
+        p = db.query(AiPool).filter(AiPool.id == pos.pool_id).first() if pos else None
+        if p:
+            kind = _pool_kind(p)
+            channel = _pool_channel(p)
         res = ai_pool_service.manual_sell_position(db, position_id, fraction)
         if res.get("ok"):
             return _ai_trader_redirect(msg=f"Sold {res['executed']:.8g} @ {res['avg']:.6g} (pnl {res['pnl']:+.2f} USDT)", kind=kind, channel=channel)
